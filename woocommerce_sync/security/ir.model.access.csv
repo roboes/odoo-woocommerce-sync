@@ -1,0 +1,3 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_woocommerce_connector,woocommerce.configuration,model_woocommerce_configuration,,1,1,1,1
+access_woocommerce_sync_log,woocommerce.sync.log access,model_woocommerce_sync_log,,1,1,1,1

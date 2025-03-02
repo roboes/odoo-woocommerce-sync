@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<odoo>
+  <record id="view_sale_order_tree_woocommerce" model="ir.ui.view">
+    <field name="name">sale.order.tree.woocommerce</field>
+    <field name="model">sale.order</field>
+    <field name="inherit_id" ref="sale.view_order_tree"/>
+    <field name="arch" type="xml">
+      <xpath expr="//tree" position="inside">
+        <field name="woocommerce_order_site_url" optional="show"/>
+        <field name="woocommerce_order_id" optional="show"/>
+        <field name="woocommerce_order_number" optional="show"/>
+        <field name="woocommerce_order_created_via" optional="show"/>
+        <field name="woocommerce_order_date_created_gmt" optional="show"/>
+        <field name="woocommerce_order_total" optional="hide"/>
+        <field name="woocommerce_order_total_tax" optional="hide"/>
+        <field name="woocommerce_order_customer_id" optional="hide"/>
+        <field name="woocommerce_order_payment_method" optional="hide"/>
+        <field name="woocommerce_order_payment_method_title" optional="hide"/>
+        <field name="woocommerce_order_billing_first_name" optional="hide"/>
+        <field name="woocommerce_order_billing_last_name" optional="hide"/>
+        <field name="woocommerce_order_billing_company" optional="hide"/>
+        <field name="woocommerce_order_billing_address_1" optional="hide"/>
+        <field name="woocommerce_order_billing_address_2" optional="hide"/>
+        <field name="woocommerce_order_billing_city" optional="hide"/>
+        <field name="woocommerce_order_billing_state" optional="hide"/>
+        <field name="woocommerce_order_billing_postcode" optional="hide"/>
+        <field name="woocommerce_order_billing_country" optional="hide"/>
+        <field name="woocommerce_order_billing_email" optional="hide"/>
+        <field name="woocommerce_order_billing_phone" optional="hide"/>
+        <field name="woocommerce_order_shipping_first_name" optional="hide"/>
+        <field name="woocommerce_order_shipping_last_name" optional="hide"/>
+        <field name="woocommerce_order_shipping_company" optional="hide"/>
+        <field name="woocommerce_order_shipping_address_1" optional="hide"/>
+        <field name="woocommerce_order_shipping_address_2" optional="hide"/>
+        <field name="woocommerce_order_shipping_city" optional="hide"/>
+        <field name="woocommerce_order_shipping_state" optional="hide"/>
+        <field name="woocommerce_order_shipping_postcode" optional="hide"/>
+        <field name="woocommerce_order_shipping_country" optional="hide"/>
+        <field name="order_language_code" optional="hide"/>
+      </xpath>
+    </field>
+  </record>
+</odoo>

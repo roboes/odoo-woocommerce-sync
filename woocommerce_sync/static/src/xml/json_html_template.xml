@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<templates>
+  <t t-name="JsonHtmlField" owl="1">
+    <div class="json-text" t-ref="jsonInput" t-raw="formattedValue"/>
+  </t>
+</templates>

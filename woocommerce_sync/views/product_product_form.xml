@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<odoo>
+  <record id="view_product_product_form_woocommerce" model="ir.ui.view">
+    <field name="name">product.product.form.woocommerce</field>
+    <field name="model">product.product</field>
+    <field name="inherit_id" ref="product.product_variant_easy_edit_view"/>
+    <field name="arch" type="xml">
+      <xpath expr="//group[@name='tags']" position="after">
+        <group string="Sync Details" attrs="{'invisible': [('product_stock_date_updated', '=', False)]}">
+          <field name="product_stock_date_updated"/>
+        </group>
+        <group string="General Information" attrs="{'invisible': [('woocommerce_product_variation_id', '=', False)]}">
+          <field name="woocommerce_product_variation_site_url"/>
+          <field name="woocommerce_product_variation_name"/>
+          <field name="woocommerce_product_variation_id"/>
+          <field name="woocommerce_product_type"/>
+          <field name="woocommerce_product_variation_sku"/>
+          <field name="woocommerce_product_variation_permalink"/>
+          <field name="woocommerce_product_variation_date_created_gmt"/>
+          <field name="woocommerce_product_variation_date_modified_gmt"/>
+          <field name="woocommerce_product_variation_description"/>
+        </group>
+        <group string="Pricing" attrs="{'invisible': [('woocommerce_product_variation_id', '=', False)]}">
+          <field name="woocommerce_product_variation_regular_price" options="{'currency_field': 'currency_id'}"/>
+          <field name="woocommerce_product_variation_sale_price" options="{'currency_field': 'currency_id'}"/>
+          <field name="woocommerce_product_variation_date_on_sale_from_gmt"/>
+          <field name="woocommerce_product_variation_date_on_sale_to_gmt"/>
+          <field name="woocommerce_product_variation_price" options="{'currency_field': 'currency_id'}"/>
+          <field name="woocommerce_product_variation_on_sale"/>
+        </group>
+        <group string="Product Variation Status" attrs="{'invisible': [('woocommerce_product_variation_id', '=', False)]}">
+          <field name="woocommerce_product_variation_status"/>
+          <field name="woocommerce_product_variation_purchasable"/>
+        </group>
+        <group string="Variations and Attributes" attrs="{'invisible': [('woocommerce_product_variation_id', '=', False)]}">
+          <field name="woocommerce_product_variation_attributes" widget="json_html"/>
+        </group>
+        <group string="Stock and Inventory" attrs="{'invisible': [('woocommerce_product_variation_id', '=', False)]}">
+          <field name="woocommerce_product_variation_manage_stock"/>
+          <field name="woocommerce_product_variation_stock_quantity"/>
+          <field name="woocommerce_product_variation_stock_status"/>
+          <field name="woocommerce_product_variation_backorders"/>
+          <field name="woocommerce_product_variation_backorders_allowed"/>
+        </group>
+        <group string="Shipping and Dimensions" attrs="{'invisible': [('woocommerce_product_variation_id', '=', False)]}">
+          <field name="woocommerce_product_variation_weight"/>
+          <field name="woocommerce_product_variation_dimensions"/>
+          <field name="woocommerce_product_variation_shipping_class"/>
+        </group>
+        <group string="Meta Data" style="width: 100%; display: block;" attrs="{'invisible': [('woocommerce_product_variation_id', '=', False)]}">
+          <details>
+            <summary>Meta Data</summary>
+            <field name="woocommerce_product_variation_meta_data" widget="json_html"/>
+          </details>
+        </group>
+      </xpath>
+    </field>
+  </record>
+</odoo>

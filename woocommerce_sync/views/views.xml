@@ -1,0 +1,136 @@
+<?xml version="1.0"?>
+<odoo>
+  <data>
+    <record model="ir.ui.view" id="tree_view_woocommerce">
+      <field name="name">WooCommerce Configuration List</field>
+      <field name="model">woocommerce.configuration</field>
+      <field name="arch" type="xml">
+        <tree>
+          <field name="woocommerce_connection_sequence"/>
+          <field name="settings_woocommerce_connection_name"/>
+          <field name="settings_woocommerce_connection_url"/>
+          <field name="settings_woocommerce_consumer_key"/>
+          <field name="settings_woocommerce_consumer_secret" password="True"/>
+          <field name="settings_woocommerce_timeout"/>
+          <field name="woocommerce_last_synced"/>
+          <button type="object" name="woocommerce_sync_action" string="Sync Now" icon="fa-refresh"/>
+        </tree>
+      </field>
+    </record>
+    <record model="ir.ui.view" id="form_view_woocommerce">
+      <field name="name">WooCommerce Configuration Form</field>
+      <field name="model">woocommerce.configuration</field>
+      <field name="arch" type="xml">
+        <form string="WooCommerce Configuration Form">
+          <sheet>
+            <div class="oe_title">
+              <h1>
+                <field name="woocommerce_connection_sequence"/>
+              </h1>
+            </div>
+            <notebook>
+              <page string="WooCommerce REST API">
+                <group>
+                  <field name="settings_woocommerce_connection_name"/>
+                  <field name="settings_woocommerce_connection_url"/>
+                  <field name="settings_woocommerce_consumer_key"/>
+                  <field name="settings_woocommerce_consumer_secret" password="True"/>
+                  <field name="settings_woocommerce_timeout"/>
+                </group>
+              </page>
+              <page string="Sync Items">
+                <group string="General Settings">
+                  <field name="settings_woocommerce_user_responsible"/>
+                  <field name="settings_woocommerce_modified_records_import"/>
+                  <field name="settings_woocommerce_images_sync"/>
+                </group>
+                <group string="Sync Settings">
+                  <table class="o_group o_inner_group" style="width: 100%; border-collapse: collapse;">
+                    <thead>
+                      <tr style="border-bottom: 1px solid #dee2e6;">
+                        <th style="padding: 8px; text-align: left; width: 25%;">Sync</th>
+                        <th style="padding: 8px; text-align: center; width: 37.5%;">From WooCommerce to Odoo</th>
+                        <th style="padding: 8px; text-align: center; width: 37.5%;">From Odoo to WooCommerce</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td style="padding: 8px; vertical-align: top;">
+                          <div class="oe_label">Products</div>
+                        </td>
+                        <td style="padding: 8px; text-align: center; vertical-align: top;">
+                          <field name="settings_woocommerce_to_odoo_products_sync" class="oe_inline"/>
+                        </td>
+                        <td style="padding: 8px; text-align: center; vertical-align: top;">
+                          <field name="settings_odoo_to_woocommerce_products_sync" class="oe_inline"/>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px; vertical-align: top;">
+                          <div class="oe_label">Product Variations</div>
+                        </td>
+                        <td style="padding: 8px; text-align: center; vertical-align: top;">
+                          <field name="settings_woocommerce_to_odoo_product_variations_sync" class="oe_inline" attrs="{'invisible': [('settings_woocommerce_to_odoo_products_sync', '=', False)]}"/>
+                        </td>
+                        <td style="padding: 8px; text-align: center; vertical-align: top;">
+                          <field name="settings_odoo_to_woocommerce_product_variations_sync" class="oe_inline" attrs="{'invisible': [('settings_odoo_to_woocommerce_products_sync', '=', False)]}"/>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px; vertical-align: top;">
+                          <div class="oe_label">Customers</div>
+                        </td>
+                        <td style="padding: 8px; text-align: center; vertical-align: top;">
+                          <field name="settings_woocommerce_to_odoo_customers_sync" class="oe_inline"/>
+                        </td>
+                        <td style="padding: 8px; text-align: center; vertical-align: top;"/>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px; vertical-align: top;">
+                          <div class="oe_label">Orders</div>
+                        </td>
+                        <td style="padding: 8px; text-align: center; vertical-align: top;">
+                          <field name="settings_woocommerce_to_odoo_orders_sync" class="oe_inline"/>
+                        </td>
+                        <td style="padding: 8px; text-align: center; vertical-align: top;"/>
+                      </tr>
+                    </tbody>
+                  </table>
+                </group>
+                <group string="WooCommerce to Odoo Products Import Settings">
+                  <field name="settings_woocommerce_products_stock_management"/>
+                  <field name="settings_woocommerce_products_warehouse_location" attrs="{'invisible': [('settings_woocommerce_products_stock_management', '=', False)]}"/>
+                  <field name="settings_woocommerce_products_related_ids_map"/>
+                  <field name="settings_woocommerce_to_odoo_products_language_code"/>
+                </group>
+                <group string="WooCommerce to Odoo Orders Import Settings">
+                  <field name="settings_woocommerce_orders_customers_map"/>
+                  <field name="settings_woocommerce_order_line_items_product_map"/>
+                </group>
+                <group string="Odoo to WooCommerce Products Import Settings">
+                  <field name="settings_woocommerce_odoo_to_woocommerce_products_language_code"/>
+                </group>
+              </page>
+              <page string="Scheduled Sync">
+                <group>
+                  <field name="settings_woocommerce_sync_scheduled"/>
+                  <field name="settings_woocommerce_sync_scheduled_interval_minutes" attrs="{'invisible': [('settings_woocommerce_sync_scheduled','=',False)]}"/>
+                </group>
+              </page>
+            </notebook>
+          </sheet>
+        </form>
+      </field>
+    </record>
+    <!-- Actions opening views on models -->
+    <record model="ir.actions.act_window" id="action_woocommerce_configuration">
+      <field name="name">WooCommerce Configuration</field>
+      <field name="res_model">woocommerce.configuration</field>
+      <field name="view_mode">tree,form</field>
+    </record>
+    <!-- Top menu item -->
+    <menuitem name="WooCommerce Sync" id="woocommerce_menu_root" sequence="50"/>
+    <!-- Menu categories -->
+    <menuitem name="Configuration" id="woocommerce_configuration_menu" parent="woocommerce_menu_root" action="action_woocommerce_configuration"/>
+  </data>
+</odoo>

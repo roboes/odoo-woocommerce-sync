@@ -1,0 +1,121 @@
+<?xml version="1.0"?>
+<odoo>
+  <record id="view_sale_order_form_woocommerce" model="ir.ui.view">
+    <field name="name">sale.order.form.woocommerce</field>
+    <field name="model">sale.order</field>
+    <field name="inherit_id" ref="sale.view_order_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='product_template_id']" position="attributes">
+        <attribute name="optional">hide</attribute>
+      </xpath>
+      <xpath expr="//notebook" position="inside">
+        <page string="WooCommerce" attrs="{'invisible': [('woocommerce_order_id', '=', False)]}">
+          <group>
+            <group string="General Information">
+              <field name="woocommerce_order_site_url"/>
+              <field name="woocommerce_order_id"/>
+              <!-- <field name="woocommerce_order_parent_id"/> -->
+              <field name="woocommerce_order_number"/>
+              <field name="woocommerce_order_order_key"/>
+              <field name="woocommerce_order_created_via"/>
+              <field name="woocommerce_order_version"/>
+              <field name="woocommerce_order_status"/>
+              <field name="woocommerce_order_currency"/>
+              <field name="order_language_code" attrs="{'invisible': [('order_language_code', '=', None)]}"/>
+              <field name="woocommerce_order_date_created_gmt"/>
+              <field name="woocommerce_order_date_modified_gmt"/>
+              <field name="woocommerce_order_date_completed_gmt"/>
+              <field name="woocommerce_order_customer_id"/>
+              <field name="woocommerce_order_customer_ip_address"/>
+              <field name="woocommerce_order_customer_user_agent"/>
+              <field name="woocommerce_order_customer_note"/>
+              <field name="woocommerce_order_cart_hash"/>
+            </group>
+            <group string="Payment">
+              <field name="woocommerce_order_transaction_id"/>
+              <field name="woocommerce_order_payment_method"/>
+              <field name="woocommerce_order_payment_method_title"/>
+              <field name="woocommerce_order_date_paid_gmt"/>
+              <field name="woocommerce_order_prices_include_tax"/>
+              <field name="woocommerce_order_discount_total" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+              <field name="woocommerce_order_discount_tax" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+              <field name="woocommerce_order_shipping_total" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+              <field name="woocommerce_order_shipping_tax" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+              <field name="woocommerce_order_cart_tax" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+              <field name="woocommerce_order_total_tax" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+              <field name="woocommerce_order_total" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+              <field name="woocommerce_order_transaction_fee" widget="monetary" options="{'currency_field': 'currency_id'}" attrs="{'invisible': [('woocommerce_order_transaction_fee', '=', 0.0)]}"/>
+              <field name="woocommerce_order_payout" widget="monetary" options="{'currency_field': 'currency_id'}" attrs="{'invisible': [('woocommerce_order_transaction_fee', '=', 0.0)]}"/>
+            </group>
+            <group string="Billing">
+              <field name="woocommerce_order_billing_first_name"/>
+              <field name="woocommerce_order_billing_last_name"/>
+              <field name="woocommerce_order_billing_company"/>
+              <field name="woocommerce_order_billing_address_1"/>
+              <field name="woocommerce_order_billing_address_2"/>
+              <field name="woocommerce_order_billing_city"/>
+              <field name="woocommerce_order_billing_state"/>
+              <field name="woocommerce_order_billing_postcode"/>
+              <field name="woocommerce_order_billing_country"/>
+              <field name="woocommerce_order_billing_email"/>
+              <field name="woocommerce_order_billing_phone"/>
+            </group>
+            <group string="Shipping">
+              <field name="woocommerce_order_shipping_first_name"/>
+              <field name="woocommerce_order_shipping_last_name"/>
+              <field name="woocommerce_order_shipping_company"/>
+              <field name="woocommerce_order_shipping_address_1"/>
+              <field name="woocommerce_order_shipping_address_2"/>
+              <field name="woocommerce_order_shipping_city"/>
+              <field name="woocommerce_order_shipping_state"/>
+              <field name="woocommerce_order_shipping_postcode"/>
+              <field name="woocommerce_order_shipping_country"/>
+            </group>
+            <group string="Line Items" style="width: 100%; display: block;">
+              <details>
+                <summary>Line Items</summary>
+                <field name="woocommerce_order_line_items" widget="json_html"/>
+              </details>
+            </group>
+            <group string="Coupon, Fee, Shipping and Tax Lines" style="width: 100%; display: block;">
+              <details>
+                <summary>Coupon Lines</summary>
+                <field name="woocommerce_order_coupon_lines" widget="json_html"/>
+              </details>
+              <details>
+                <summary>Fee Lines</summary>
+                <field name="woocommerce_order_fee_lines" widget="json_html"/>
+              </details>
+              <details>
+                <summary>Shipping Lines</summary>
+                <field name="woocommerce_order_shipping_lines" widget="json_html"/>
+              </details>
+              <details>
+                <summary>Tax Lines</summary>
+                <field name="woocommerce_order_tax_lines" widget="json_html"/>
+              </details>
+            </group>
+            <group string="Refunds" style="width: 100%; display: block;">
+              <details>
+                <summary>Refunds</summary>
+                <field name="woocommerce_order_refunds" widget="json_html"/>
+              </details>
+            </group>
+            <group string="Meta Data" style="width: 100%; display: block;">
+              <details>
+                <summary>Meta Data</summary>
+                <field name="woocommerce_order_meta_data" widget="json_html"/>
+              </details>
+            </group>
+          </group>
+        </page>
+      </xpath>
+      <xpath expr="//group[@name='sale_total']" position="after" attrs="{'invisible': [('woocommerce_order_transaction_fee', '=', 0.0)]}">
+        <group class="oe_subtotal_footer oe_right" colspan="2" name="sale_total">
+          <field name="woocommerce_order_transaction_fee" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+          <field name="woocommerce_order_payout" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+        </group>
+      </xpath>
+    </field>
+  </record>
+</odoo>
