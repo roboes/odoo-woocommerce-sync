@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<odoo>
+  <record id="view_res_partner_form_woocommerce" model="ir.ui.view">
+    <field name="name">res.partner.form.woocommerce</field>
+    <field name="model">res.partner</field>
+    <field name="inherit_id" ref="base.view_partner_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//notebook" position="inside">
+        <page string="WooCommerce" attrs="{'invisible': [('woocommerce_customer_id', '=', False)]}">
+          <group string="General Information">
+            <field name="woocommerce_customer_site_url"/>
+            <field name="woocommerce_customer_id"/>
+            <field name="woocommerce_customer_date_created_gmt"/>
+            <field name="woocommerce_customer_date_modified_gmt"/>
+            <field name="woocommerce_customer_email"/>
+            <field name="woocommerce_customer_first_name"/>
+            <field name="woocommerce_customer_last_name"/>
+            <field name="woocommerce_customer_username"/>
+            <field name="woocommerce_customer_role"/>
+            <field name="woocommerce_customer_date_last_login"/>
+          </group>
+          <group string="Billing Information">
+            <field name="woocommerce_customer_billing_first_name"/>
+            <field name="woocommerce_customer_billing_last_name"/>
+            <field name="woocommerce_customer_billing_company"/>
+            <field name="woocommerce_customer_billing_address_1"/>
+            <field name="woocommerce_customer_billing_address_2"/>
+            <field name="woocommerce_customer_billing_city"/>
+            <field name="woocommerce_customer_billing_state"/>
+            <field name="woocommerce_customer_billing_postcode"/>
+            <field name="woocommerce_customer_billing_country"/>
+            <field name="woocommerce_customer_billing_email"/>
+            <field name="woocommerce_customer_billing_phone"/>
+          </group>
+          <group string="Shipping Information">
+            <field name="woocommerce_customer_shipping_first_name"/>
+            <field name="woocommerce_customer_shipping_last_name"/>
+            <field name="woocommerce_customer_shipping_company"/>
+            <field name="woocommerce_customer_shipping_address_1"/>
+            <field name="woocommerce_customer_shipping_address_2"/>
+            <field name="woocommerce_customer_shipping_city"/>
+            <field name="woocommerce_customer_shipping_state"/>
+            <field name="woocommerce_customer_shipping_postcode"/>
+            <field name="woocommerce_customer_shipping_country"/>
+          </group>
+          <group string="Other Details">
+            <field name="woocommerce_customer_is_paying_customer"/>
+            <field name="woocommerce_customer_avatar_url"/>
+          </group>
+          <group string="Meta Data" style="width: 100%; display: block;">
+            <details>
+              <summary>Meta Data</summary>
+              <field name="woocommerce_customer_meta_data" widget="json_html"/>
+            </details>
+          </group>
+        </page>
+      </xpath>
+    </field>
+  </record>
+</odoo>
