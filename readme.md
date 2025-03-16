@@ -82,6 +82,13 @@ While not mandatory, the following Odoo Community Association (OCA) add-ons are 
 - **Product Brand Manager** (`product_brand`): Adds a `product_brand_id` field to facilitate the import and management of product brands from WooCommerce (requires WooCommerce 9.6+) (only one brand per product allowed).
   - [GitHub](https://github.com/OCA/brand/tree/16.0/product_brand) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/product_brand)
 
+##### Odoo Localization (Optional)
+
+Brazil:
+
+- **Módulo Fiscal Brasileiro** (`l10n_br_fiscal`): Supports Cadastro de Pessoa Física (CPF), Cadastro Nacional da Pessoa Jurídica (CNPJ), local taxes, shipping costs, and electronic fiscal documents.
+  - [GitHub](https://github.com/OCA/l10n-brazil/tree/16.0/l10n_br_fiscal) | [Odoo Apps Store](https://odoo-community.org/shop/brazilian-localization-base-1252)
+
 ### WordPress
 
 #### WordPress Plugins (Optional)
@@ -92,6 +99,12 @@ While not mandatory, the following Odoo Community Association (OCA) add-ons are 
   - The custom code snippet provided in [this file](./woocommerce-rest-api/woocommerce-rest-api-polylang-language-slug.php), saved either into the `functions.php` file or into a code snippet plugin (e.g. [WPCode](https://wordpress.org/plugins/insert-headers-and-footers/)).
 - **Orders Transactions Fee** (`woocommerce_order_transaction_fee` field): Requires the [WooCommerce PayPal Payments](https://wordpress.org/plugins/woocommerce-paypal-payments/) and/or [Payment Plugins for Stripe WooCommerce](https://wordpress.org/plugins/woo-stripe-payment/) plugin.
   - For the [Payment Plugins for Stripe WooCommerce](https://wordpress.org/plugins/woo-stripe-payment/), the following setting needs to be changed in order to enable the Stripe transaction fee field: `WooCommerce` > `Stripe by Payment Plugins` > `Settings` > `Advanced Settings` > Enable `Display Stripe Fee`.
+
+##### WordPress Localization (Optional)
+
+Brazil:
+
+- **Cadastro de Pessoa Física (CPF)** (`l10n_br_cpf_code` field) and **Cadastro Nacional da Pessoa Jurídica (CNPJ)** (`cnpj_cpf` field): Requires the [Brazilian Market on WooCommerce](https://wordpress.org/plugins/woocommerce-extra-checkout-fields-for-brazil/) plugin.
 
 ## Installation
 
