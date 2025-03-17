@@ -117,6 +117,11 @@
                   <field name="settings_woocommerce_sync_scheduled_interval_minutes" attrs="{'invisible': [('settings_woocommerce_sync_scheduled','=',False)]}"/>
                 </group>
               </page>
+              <page string="Test Mode">
+                <group>
+                  <field name="settings_woocommerce_test_mode"/>
+                </group>
+              </page>
             </notebook>
           </sheet>
         </form>

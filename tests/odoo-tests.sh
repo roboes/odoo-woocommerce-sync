@@ -30,7 +30,7 @@ ps aux | grep odoo | grep -v grep | awk '{print $2}' | xargs -r kill -9
 
 # Retrieve all field information for product templates
 # fields = self.env['product.template'].fields_get()
-# print(fields)
+# fields
 
 # Retrieve default values for product template fields
 # print(self.env['product.template'].default_get(self.env['product.template']._fields.keys()))
