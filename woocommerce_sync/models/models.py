@@ -1673,9 +1673,6 @@ class WoocommerceConnector(models.Model):
                         if order['billing']['cpf'] or order['billing']['cnpj']:
                             order_values.update({'cnpj_cpf': order['billing']['cpf'] or order['billing']['cnpj']})
 
-                        if order['shipping_total']:
-                            order_values.update({'amount_freight_value': order['shipping_total']})
-
                     # Odoo 'sale.order' model fields
                     order_values.update(
                         {
@@ -1719,7 +1716,9 @@ class WoocommerceConnector(models.Model):
                         odoo_sale_order = self.env['sale.order'].create(order_values)
 
                     # Order line items
-                    for line_item in order_values['woocommerce_order_line_items']:
+                    order_line_items_total = sum(float(line_item['total']) for line_item in order['line_items'])
+
+                    for line_item in order['line_items']:
                         # WooCommerce site URL field
                         order_line_values = {
                             'woocommerce_order_line_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
@@ -1780,6 +1779,13 @@ class WoocommerceConnector(models.Model):
                         # Unit of measure
                         if order_line_values['woocommerce_order_line_item_weight_unit']:
                             odoo_order_line_item_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(order_line_values['woocommerce_order_line_item_weight_unit'])
+
+                        # Localization
+
+                        ## Brazil (requires 'l10n_br_fiscal' add-on)
+                        if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
+                            if order['shipping_total']:
+                                order_line_values.update({'freight_value': float(order['shipping_total']) * (float(line_item['total']) / order_line_items_total)})
 
                         # Odoo 'sale.order.line' model fields
                         order_line_values.update(
