@@ -307,7 +307,7 @@ class ResPartner(models.Model):
     woocommerce_customer_date_created_gmt = fields.Datetime(string='Created Date', readonly=True)
     woocommerce_customer_date_modified = fields.Datetime(string='Modified Date', readonly=True)
     woocommerce_customer_date_modified_gmt = fields.Datetime(string='Modified Date', readonly=True)
-    woocommerce_customer_email = fields.Char(string='Email', readonly=True, required=True)
+    woocommerce_customer_email = fields.Char(string='Email', readonly=True)
     woocommerce_customer_first_name = fields.Char(string='First Name', readonly=True)
     woocommerce_customer_last_name = fields.Char(string='Last Name', readonly=True)
     woocommerce_customer_role = fields.Char(string='Role', readonly=True)
