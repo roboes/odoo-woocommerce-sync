@@ -208,6 +208,9 @@ class WoocommerceConnector(models.Model):
         woocommerce_tax_rates = woocommerce_api.get(endpoint='taxes').json()
         woocommerce_tax_rates = {woocommerce_tax_rate['class']: float(woocommerce_tax_rate['rate']) for woocommerce_tax_rate in woocommerce_tax_rates}
 
+        ### WooCommerce shipping methods
+        woocommerce_shipping_methods = woocommerce_api.get(endpoint='shipping_methods').json()
+
         ## Products
         if woocommerce_sync_config.settings_woocommerce_to_odoo_products_sync:
             self.woocommerce_to_odoo_products_sync(
@@ -242,7 +245,7 @@ class WoocommerceConnector(models.Model):
 
         ## Orders
         if woocommerce_sync_config.settings_woocommerce_to_odoo_orders_sync:
-            self.woocommerce_to_odoo_orders_sync(woocommerce_sync_config, woocommerce_api, woocommerce_tax_rates, woocommerce_weight_unit)
+            self.woocommerce_to_odoo_orders_sync(woocommerce_sync_config, woocommerce_api, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods)
 
         # Odoo to WooCommerce
 
@@ -432,6 +435,7 @@ class WoocommerceConnector(models.Model):
             return odoo_currency
 
         else:
+            _logger.error(f"'{currency}' not found in Odoo.")
             return False
 
     @api.returns('account.tax')
@@ -566,6 +570,41 @@ class WoocommerceConnector(models.Model):
                 odoo_product_placeholder.write({'active': False})
 
         return odoo_product_placeholder
+
+    @api.returns('delivery.carrier')
+    def odoo_delivery_carrier_create_or_retrieve(self, woocommerce_sync_config, woocommerce_shipping_methods, shipping_line):
+        """Create or retrieve an Odoo delivery carrier."""
+
+        if not shipping_line:
+            return False
+
+        odoo_delivery_carrier = self.env['delivery.carrier'].search([('active', '=', True), ('name', '=', shipping_line['method_title'])], limit=1)
+
+        if not odoo_delivery_carrier:
+            # woocommerce_shipping_method = next((shipping_method for shipping_method in woocommerce_shipping_methods if shipping_method.get('id') == shipping_line['method_id']), None)
+
+            # Create a new delivery product (if it doesn't exist)
+            delivery_product = self.env['product.product'].search(
+                [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('name', '=', 'Shipping Product for ' + shipping_line['method_title'])],
+                limit=1,
+            )
+
+            if not delivery_product:
+                # Create the product if it doesn't exist
+                delivery_product = self.env['product.product'].create(
+                    {
+                        'name': 'Shipping Product for ' + shipping_line['method_title'],
+                        'type': 'service',
+                        'sale_ok': True,
+                        'purchase_ok': False,
+                        'list_price': 0.0,
+                    },
+                )
+
+            # Create the delivery carrier with the associated product_id
+            odoo_delivery_carrier = self.env['delivery.carrier'].create({'name': shipping_line['method_title'], 'product_id': delivery_product.id, 'delivery_type': 'fixed'})
+
+        return odoo_delivery_carrier
 
     def product_stock_quantity_create_or_update(self, woocommerce_sync_config, woocommerce_api):
         """Synchronize stock quantity levels between WooCommerce and Odoo using 'product.product records'. In WooCommerce, if a stock quantity level changes due to a purchase, the 'date_modified_gmt' field is updated accordingly."""
@@ -844,9 +883,9 @@ class WoocommerceConnector(models.Model):
                     # Category
                     odoo_product_categories_ids = []
                     for category in product['categories']:
-                        odoo_category = self.odoo_category_create_or_retrieve(category['name'])
-                        if odoo_category:
-                            odoo_product_categories_ids.append(odoo_category.id)
+                        odoo_product_category = self.odoo_category_create_or_retrieve(category['name'])
+                        if odoo_product_category:
+                            odoo_product_categories_ids.append(odoo_product_category.id)
 
                     # Categories (requires 'product_multi_category' add-on)
                     if self.env['ir.module.module'].search([('name', '=', 'product_multi_category'), ('state', '=', 'installed')], limit=1):
@@ -1429,7 +1468,7 @@ class WoocommerceConnector(models.Model):
                 self.env.cr.rollback()
                 _logger.exception(f'Error syncing customer {customer["id"]}: {error}')
 
-    def woocommerce_to_odoo_orders_sync(self, woocommerce_sync_config, woocommerce_api, woocommerce_tax_rates, woocommerce_weight_unit):
+    def woocommerce_to_odoo_orders_sync(self, woocommerce_sync_config, woocommerce_api, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods):
         # WooCommerce REST API parameters
         search_parameters = {}
 
@@ -1714,6 +1753,13 @@ class WoocommerceConnector(models.Model):
                     # Create new sale order in Odoo if it does not yet exist
                     if not odoo_sale_order:
                         odoo_sale_order = self.env['sale.order'].create(order_values)
+
+                    # Delivery carrier
+                    if order['shipping_lines']:
+                        odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_sync_config, woocommerce_shipping_methods, order['shipping_lines'][0])
+
+                        if odoo_delivery_carrier:
+                            odoo_sale_order.set_delivery_line(odoo_delivery_carrier, order['shipping_lines'][0]['total'])
 
                     # Order line items
                     order_line_items_total = sum(float(line_item['total']) for line_item in order['line_items'])
