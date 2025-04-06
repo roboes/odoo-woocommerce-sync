@@ -61,6 +61,8 @@ python -m pip install woocommerce
   - Enable [Product Variants](https://www.odoo.com/documentation/16.0/applications/sales/sales/products_prices/products/variants.html):
     - `Home Menu` > `Settings` > `Sales` > `Product Catalog` > Enable `Variants`.
 - **Inventory** (`stock`)
+  - Enable Delivery Methods:
+    `Home Menu` > `Settings` > `Inventory` > `Shipping` > Enable `Delivery Methods`.
   - Enable Units of Measure:
     - `Home Menu` > `Settings` > `Inventory` > `Products` > Enable `Units of Measure`.
   - (Optional) Set up a dedicated warehouse for WooCommerce sales:
