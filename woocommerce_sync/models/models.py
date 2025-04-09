@@ -1754,13 +1754,6 @@ class WoocommerceConnector(models.Model):
                     if not odoo_sale_order:
                         odoo_sale_order = self.env['sale.order'].create(order_values)
 
-                    # Delivery carrier
-                    if order['shipping_lines']:
-                        odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_sync_config, woocommerce_shipping_methods, order['shipping_lines'][0])
-
-                        if odoo_delivery_carrier:
-                            odoo_sale_order.set_delivery_line(odoo_delivery_carrier, order['shipping_lines'][0]['total'])
-
                     # Order line items
                     order_line_items_total = sum(float(line_item['total']) for line_item in order['line_items'])
 
@@ -1877,6 +1870,17 @@ class WoocommerceConnector(models.Model):
 
                         else:
                             self.env['sale.order.line'].create(order_line_values)
+
+                    # Delivery carrier
+                    if order['shipping_lines']:
+                        odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_sync_config, woocommerce_shipping_methods, order['shipping_lines'][0])
+
+                        if odoo_delivery_carrier:
+                            odoo_sale_order.set_delivery_line(odoo_delivery_carrier, order['shipping_lines'][0]['total'])
+
+                    # Ensure order confirmation irrespective of shipping lines, based on the order status
+                    if order['status'] in ('processing', 'on-hold', 'completed'):
+                        odoo_sale_order.action_confirm()
 
                     # Commit changes
                     self.env.cr.commit()
