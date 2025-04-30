@@ -1,5 +1,11 @@
 # Changelog
 
+## 2025-04-30
+
+### Fix
+
+- Fixes for the Guest Customer Mapping and Line Item Product Mapping.
+
 ## 2025-04-06
 
 ### Features
