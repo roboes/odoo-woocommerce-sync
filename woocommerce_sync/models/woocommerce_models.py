@@ -1,6 +1,27 @@
 from odoo import api, fields, models
 
 
+# Account Move Line
+class AccountMoveLine(models.Model):
+    _inherit = 'account.move.line'
+
+    # Override the existing 'product_id' field to add the ondelete cascade
+    product_id = fields.Many2one(
+        comodel_name='product.product',
+        string='Product',
+        inverse='_inverse_product_id',
+        ondelete='cascade',
+    )
+
+
+# Delivery Carrier
+class DeliveryCarrier(models.Model):
+    _inherit = 'delivery.carrier'
+
+    # Override the existing 'product_id' field to add the ondelete cascade
+    product_id = fields.Many2one(comodel_name='product.product', string='Delivery Product', required=True, ondelete='cascade')
+
+
 # Stock
 class StockQuant(models.Model):
     _inherit = 'stock.quant'

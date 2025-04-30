@@ -1832,7 +1832,7 @@ class WoocommerceConnector(models.Model):
                                 # General information
                                 'order_id': odoo_sale_order.id,
                                 'name': order_line_values['woocommerce_order_line_item_name'],
-                                'product_id': odoo_product.product_variant_ids[:1].id,
+                                'product_id': odoo_product_variation.id if woocommerce_sync_config.settings_woocommerce_order_line_items_product_map else odoo_product.product_variant_ids[:1].id,
                                 # Shipping and stock
                                 'warehouse_id': woocommerce_sync_config.settings_woocommerce_products_warehouse_location.id,
                                 # Dimensions
@@ -1877,10 +1877,6 @@ class WoocommerceConnector(models.Model):
 
                         if odoo_delivery_carrier:
                             odoo_sale_order.set_delivery_line(odoo_delivery_carrier, order['shipping_lines'][0]['total'])
-
-                    # Ensure order confirmation irrespective of shipping lines, based on the order status
-                    if order['status'] in ('processing', 'on-hold', 'completed'):
-                        odoo_sale_order.action_confirm()
 
                     # Commit changes
                     self.env.cr.commit()
