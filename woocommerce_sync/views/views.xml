@@ -104,6 +104,7 @@
                   <field name="settings_woocommerce_to_odoo_products_language_code"/>
                 </group>
                 <group string="WooCommerce to Odoo Orders Import Settings">
+                  <field name="settings_woocommerce_order_status" widget="many2many_checkboxes"/>
                   <field name="settings_woocommerce_orders_customers_map"/>
                   <field name="settings_woocommerce_order_line_items_product_map"/>
                 </group>

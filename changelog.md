@@ -1,5 +1,15 @@
 # Changelog
 
+## 2025-05-22
+
+### Features
+
+- Add the possibility to filter WooCommerce orders import by order statuses.
+
+### Fix
+
+- Resolved issue where product mapping in WooCommerce order line items only worked for variable products. Mapping logic has been updated to correctly handle simple products as well.
+
 ## 2025-04-30
 
 ### Fix

@@ -7,7 +7,7 @@ import pytz
 import requests
 
 from odoo import models, fields, api, _
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 
 from woocommerce import API
 
@@ -48,8 +48,8 @@ class WoocommerceConnector(models.Model):
     settings_woocommerce_user_responsible = fields.Many2one(
         comodel_name='res.users',
         string='Responsible',
-        default=lambda self: self.env.user,
         help='Default responsible user for WooCommerce operations.',
+        default=lambda self: self.env.user,
     )
     settings_woocommerce_modified_records_import = fields.Boolean(
         string='Import only modified records?',
@@ -63,13 +63,40 @@ class WoocommerceConnector(models.Model):
     settings_woocommerce_products_warehouse_location = fields.Many2one(
         comodel_name='stock.location',
         string='Warehouse location',
-        default=lambda self: self.env.ref('stock.stock_location_stock'),
         help='Warehouse location for syncing WooCommerce products stock quantity.',
+        default=lambda self: self.env.ref('stock.stock_location_stock'),
     )
     settings_woocommerce_products_related_ids_map = fields.Boolean(string='Map related products?', help="Automatically map WooCommerce 'related_ids' products to their Odoo equivalents.", default=False)
     settings_woocommerce_to_odoo_products_language_code = fields.Char(string='Filter WooCommerce products by language (requires Polylang)', help="2-digit language code (ISO 639-1) (e.g. 'en').")
 
     # WooCommerce to Odoo orders import settings
+
+    ## WooCommerce Order Status
+    settings_woocommerce_order_status = fields.Many2many(
+        comodel_name='woocommerce.order.status',
+        string='Order statuses to import',
+        help='Select which order statuses to import from WooCommerce.',
+        default=lambda self: self.env['woocommerce.order.status'].search([('status', '=', 'any')]),
+    )
+
+    @api.onchange('settings_woocommerce_order_status')
+    def order_status_selection_onchange(self):
+        if self.settings_woocommerce_order_status:
+            # Settings
+            field_attribute = 'status'
+            field_exclusive = 'any'
+
+            selected = self.settings_woocommerce_order_status.mapped(field_attribute)
+
+            if field_exclusive in selected:
+                self.settings_woocommerce_order_status = self.settings_woocommerce_order_status.filtered(lambda record: getattr(record, field_attribute) == field_exclusive)
+
+    @api.constrains('settings_woocommerce_order_status')
+    def order_status_selection_check(self):
+        for record in self:
+            if not record.settings_woocommerce_order_status:
+                raise ValidationError(f"At least one value must be selected for the '{record._fields['settings_woocommerce_order_status'].string}' field.")
+
     settings_woocommerce_orders_customers_map = fields.Boolean(
         string='Map guest customers to Odoo customers in orders?',
         help='If enabled, orders purchased by guest (unregistered) customers will be mapped to existing Odoo customers by email address. If the customer does not exist in the database, a new customer will be created automatically. If disabled, a customer placeholder will be assigned to the order.',
@@ -1470,7 +1497,7 @@ class WoocommerceConnector(models.Model):
 
     def woocommerce_to_odoo_orders_sync(self, woocommerce_sync_config, woocommerce_api, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods):
         # WooCommerce REST API parameters
-        search_parameters = {}
+        search_parameters = {'status': ','.join(woocommerce_sync_config.settings_woocommerce_order_status.mapped('status')) or 'any'}
 
         if woocommerce_sync_config.settings_woocommerce_modified_records_import:
             woocommerce_last_execution_datetime = self.woocommerce_last_execution_datetime()
@@ -1791,20 +1818,32 @@ class WoocommerceConnector(models.Model):
                         )
 
                         # Odoo Product ID
-                        odoo_product_variation = None
+                        odoo_product_mapped = None
 
                         if woocommerce_sync_config.settings_woocommerce_order_line_items_product_map:
-                            # Product variation (for 'simple' products, Odoo still creates a single default variant under 'product.product' model)
-                            odoo_product_variation = self.env['product.product'].search(
-                                [
-                                    ('woocommerce_product_variation_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
-                                    ('active', '=', True),
-                                    ('woocommerce_product_id', '=', order_line_values['woocommerce_order_line_item_product_id']),
-                                ],
-                                limit=1,
-                            )
+                            # Product
+                            if line_item['variation_id'] == 0:
+                                odoo_product_mapped = self.env['product.template'].search(
+                                    [
+                                        ('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
+                                        ('active', '=', True),
+                                        ('woocommerce_product_id', '=', order_line_values['woocommerce_order_line_item_product_id']),
+                                    ],
+                                    limit=1,
+                                )
 
-                        if not odoo_product_variation:
+                            # Product variation
+                            else:
+                                odoo_product_mapped = self.env['product.product'].search(
+                                    [
+                                        ('woocommerce_product_variation_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
+                                        ('active', '=', True),
+                                        ('woocommerce_product_variation_id', '=', order_line_values['woocommerce_order_line_item_variation_id']),
+                                    ],
+                                    limit=1,
+                                )
+
+                        if not odoo_product_mapped:
                             # Create/retrieve product placeholder
                             odoo_product = self.odoo_product_placeholder_create_or_retrieve()
 
@@ -1832,7 +1871,7 @@ class WoocommerceConnector(models.Model):
                                 # General information
                                 'order_id': odoo_sale_order.id,
                                 'name': order_line_values['woocommerce_order_line_item_name'],
-                                'product_id': odoo_product_variation.id if woocommerce_sync_config.settings_woocommerce_order_line_items_product_map else odoo_product.product_variant_ids[:1].id,
+                                'product_id': odoo_product_mapped.id if woocommerce_sync_config.settings_woocommerce_order_line_items_product_map else odoo_product.product_variant_ids[:1].id,
                                 # Shipping and stock
                                 'warehouse_id': woocommerce_sync_config.settings_woocommerce_products_warehouse_location.id,
                                 # Dimensions
