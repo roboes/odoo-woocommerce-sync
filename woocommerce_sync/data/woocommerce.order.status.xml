@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <record id="woocommerce_order_status_any" model="woocommerce.order.status">
+    <field name="name">Any</field>
+    <field name="status">any</field>
+  </record>
+  <record id="woocommerce_order_status_pending" model="woocommerce.order.status">
+    <field name="name">Pending</field>
+    <field name="status">pending</field>
+  </record>
+  <record id="woocommerce_order_status_processing" model="woocommerce.order.status">
+    <field name="name">Processing</field>
+    <field name="status">processing</field>
+  </record>
+  <record id="woocommerce_order_status_on_hold" model="woocommerce.order.status">
+    <field name="name">On Hold</field>
+    <field name="status">on-hold</field>
+  </record>
+  <record id="woocommerce_order_status_completed" model="woocommerce.order.status">
+    <field name="name">Completed</field>
+    <field name="status">completed</field>
+  </record>
+  <record id="woocommerce_order_status_cancelled" model="woocommerce.order.status">
+    <field name="name">Cancelled</field>
+    <field name="status">cancelled</field>
+  </record>
+  <record id="woocommerce_order_status_refunded" model="woocommerce.order.status">
+    <field name="name">Refunded</field>
+    <field name="status">refunded</field>
+  </record>
+  <record id="woocommerce_order_status_failed" model="woocommerce.order.status">
+    <field name="name">Failed</field>
+    <field name="status">failed</field>
+  </record>
+</odoo>

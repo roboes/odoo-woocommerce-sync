@@ -1,6 +1,0 @@
-odoo==1.0
-Pillow==10.1.0
-Pillow==11.2.1
-pytz==2023.3.post1
-Requests==2.32.3
-woocommerce==3.0.0

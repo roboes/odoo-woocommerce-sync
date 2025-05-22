@@ -10,6 +10,7 @@
     'depends': ['account', 'contacts', 'queue_job', 'product', 'sale_management', 'stock'],
     'data': [
         'security/ir.model.access.csv',
+        'data/woocommerce.order.status.xml',
         'data/sequence.xml',
         'views/product_product_form.xml',
         'views/product_product_tree.xml',

@@ -493,3 +493,12 @@ class SaleOrderLine(models.Model):
 
     # Additional fields
     woocommerce_order_line_item_weight_unit = fields.Char(string='Weight Unit', readonly=True)
+
+
+# Order status
+class WoocommerceOrderStatus(models.Model):
+    _name = 'woocommerce.order.status'
+    _description = 'WooCommerce Order Status'
+
+    name = fields.Char(string='WooCommerce Order Status', required=True)
+    status = fields.Char(string='WooCommerce Order Status Code', required=True)
