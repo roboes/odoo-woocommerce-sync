@@ -47,6 +47,8 @@ python -m pip install woocommerce
 
 #### Odoo Add-ons (Required)
 
+To automatically download and install the required and optional Odoo add-ons listed below, follow the instructions in [dependencies-installation.md](./installation/dependencies-installation.md).
+
 - **Products & Pricelists** (`product`)
   - The user should have **Administrator** privileges:
     - `Home Menu` > `Settings` > `Users & Companies` > `Users` > Select the user > `Sales` > `Sales` > `Administrator`.

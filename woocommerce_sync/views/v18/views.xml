@@ -4,8 +4,9 @@
     <record model="ir.ui.view" id="tree_view_woocommerce">
       <field name="name">WooCommerce Configuration List</field>
       <field name="model">woocommerce.configuration</field>
+      <field name="type">qweb</field>
       <field name="arch" type="xml">
-        <tree>
+        <list string="WooCommerce Configurations">
           <field name="woocommerce_connection_sequence"/>
           <field name="settings_woocommerce_connection_name"/>
           <field name="settings_woocommerce_connection_url"/>
@@ -14,7 +15,7 @@
           <field name="settings_woocommerce_timeout"/>
           <field name="woocommerce_last_synced"/>
           <button type="object" name="woocommerce_sync_action" string="Sync Now" icon="fa-refresh"/>
-        </tree>
+        </list>
       </field>
     </record>
     <record model="ir.ui.view" id="form_view_woocommerce">
@@ -70,10 +71,10 @@
                           <div class="oe_label">Product Variations</div>
                         </td>
                         <td style="padding: 8px; text-align: center; vertical-align: top;">
-                          <field name="settings_woocommerce_to_odoo_product_variations_sync" class="oe_inline" attrs="{'invisible': [('settings_woocommerce_to_odoo_products_sync', '=', False)]}"/>
+                          <field name="settings_woocommerce_to_odoo_product_variations_sync" class="oe_inline" invisible="[('settings_woocommerce_to_odoo_products_sync', '=', False)]"/>
                         </td>
                         <td style="padding: 8px; text-align: center; vertical-align: top;">
-                          <field name="settings_odoo_to_woocommerce_product_variations_sync" class="oe_inline" attrs="{'invisible': [('settings_odoo_to_woocommerce_products_sync', '=', False)]}"/>
+                          <field name="settings_odoo_to_woocommerce_product_variations_sync" class="oe_inline" invisible="[('settings_odoo_to_woocommerce_products_sync', '=', False)]"/>
                         </td>
                       </tr>
                       <tr>
@@ -99,7 +100,7 @@
                 </group>
                 <group string="WooCommerce to Odoo Products Import Settings">
                   <field name="settings_woocommerce_products_stock_management"/>
-                  <field name="settings_woocommerce_products_warehouse_location" attrs="{'invisible': [('settings_woocommerce_products_stock_management', '=', False)]}"/>
+                  <field name="settings_woocommerce_products_warehouse_location" invisible="[('settings_woocommerce_products_stock_management', '=', False)]"/>
                   <field name="settings_woocommerce_products_related_ids_map"/>
                   <field name="settings_woocommerce_to_odoo_products_language_code"/>
                 </group>
@@ -115,7 +116,7 @@
               <page string="Scheduled Sync">
                 <group>
                   <field name="settings_woocommerce_sync_scheduled"/>
-                  <field name="settings_woocommerce_sync_scheduled_interval_minutes" attrs="{'invisible': [('settings_woocommerce_sync_scheduled','=',False)]}"/>
+                  <field name="settings_woocommerce_sync_scheduled_interval_minutes" invisible="[('settings_woocommerce_sync_scheduled','=',False)]"/>
                 </group>
               </page>
               <page string="Test Mode">
@@ -132,7 +133,7 @@
     <record model="ir.actions.act_window" id="action_woocommerce_configuration">
       <field name="name">WooCommerce Configuration</field>
       <field name="res_model">woocommerce.configuration</field>
-      <field name="view_mode">tree,form</field>
+      <field name="view_mode">list,form</field>
     </record>
     <!-- Top menu item -->
     <menuitem name="WooCommerce Sync" id="woocommerce_menu_root" sequence="50"/>

@@ -6,8 +6,9 @@ from PIL import Image
 import pytz
 import requests
 
-from odoo import models, fields, api, _
+from odoo import _, api, fields, models
 from odoo.exceptions import UserError, ValidationError
+from odoo.release import version_info
 
 from woocommerce import API
 
@@ -50,6 +51,7 @@ class WoocommerceConnector(models.Model):
         string='Responsible',
         help='Default responsible user for WooCommerce operations.',
         default=lambda self: self.env.user,
+        ondelete='set null',
     )
     settings_woocommerce_modified_records_import = fields.Boolean(
         string='Import only modified records?',
@@ -65,6 +67,7 @@ class WoocommerceConnector(models.Model):
         string='Warehouse location',
         help='Warehouse location for syncing WooCommerce products stock quantity.',
         default=lambda self: self.env.ref('stock.stock_location_stock'),
+        ondelete='set null',
     )
     settings_woocommerce_products_related_ids_map = fields.Boolean(string='Map related products?', help="Automatically map WooCommerce 'related_ids' products to their Odoo equivalents.", default=False)
     settings_woocommerce_to_odoo_products_language_code = fields.Char(string='Filter WooCommerce products by language (requires Polylang)', help="2-digit language code (ISO 639-1) (e.g. 'en').")
@@ -301,7 +304,6 @@ class WoocommerceConnector(models.Model):
             self.env['woocommerce.sync.log'].create({'woocommerce_last_synced': fields.Datetime.now()})
 
     @api.depends('settings_woocommerce_connection_url', 'settings_woocommerce_consumer_key', 'settings_woocommerce_consumer_secret', 'settings_woocommerce_timeout')
-    @api.returns('woocommerce.api')
     def woocommerce_api_get(self, woocommerce_sync_config):
         """Retrieves WooCommerce REST API instance."""
 
@@ -410,13 +412,14 @@ class WoocommerceConnector(models.Model):
         return None
 
     @api.model
-    def image_process_attachments(self, woocommerce_product_images, product):
-        """Downloads images from WooCommerce, converts them to base64 encoding, and stores them as attachments. Returns a list of attachment IDs."""
+    def image_process_attachments(self, woocommerce_product_images, product, create_attachments=False):
+        """Downloads images and either creates ir.attachment records or prepares data for product.image records."""
         if not woocommerce_product_images:
             return None
 
-        attachments = []
-        for image_data in woocommerce_product_images:
+        images = []
+
+        for index, image_data in enumerate(woocommerce_product_images):
             if not image_data['src'] or not image_data['name']:
                 continue
 
@@ -424,33 +427,38 @@ class WoocommerceConnector(models.Model):
                 response = requests.get(image_data['src'], timeout=10)
                 response.raise_for_status()
 
-                # Convert image to base64
-                img = Image.open(BytesIO(response.content))
-                buffered = BytesIO()
-                img.save(buffered, format='PNG')  # Save as PNG
-                img_base64 = b64encode(buffered.getvalue()).decode('utf-8')
+                img_base64 = b64encode(response.content)
 
-                # Create attachment in Odoo
-                attachment = self.env['ir.attachment'].create(
-                    {
-                        'name': image_data['name'],
-                        'type': 'binary',
-                        'datas': img_base64,
-                        'mimetype': 'image/png',
-                        'res_model': 'product.template',
-                        'res_id': product.id,
-                    },
-                )
-                attachments.append(attachment.id)
+                if create_attachments:
+                    # Odoo < 17: Create attachments and append the ID
+                    attachment = self.env['ir.attachment'].create(
+                        {
+                            'name': image_data['name'],
+                            'type': 'binary',
+                            'datas': img_base64,
+                            'mimetype': response.headers.get('Content-Type', 'image/jpeg'),
+                            'res_model': 'product.template',
+                            'res_id': product.id,
+                        },
+                    )
+                    images.append(attachment.id)
+
+                else:
+                    images.append(
+                        {
+                            'name': image_data['name'],
+                            'sequence': index,
+                            'image_1920': img_base64,
+                        },
+                    )
 
             except requests.exceptions.RequestException as error:
                 _logger.error(f'Failed to download image from {image_data["src"]}: {error}')
             except Exception as error:
                 _logger.error(f'Error processing the image from {image_data["src"]}: {error}')
 
-        return attachments if attachments else None
+        return images if images else None
 
-    @api.returns('res.currency')
     def odoo_currency_retrieve(self, currency):
         """Retrieve an Odoo currency."""
         if not currency:
@@ -465,7 +473,6 @@ class WoocommerceConnector(models.Model):
             _logger.error(f"'{currency}' not found in Odoo.")
             return False
 
-    @api.returns('account.tax')
     def odoo_tax_create_or_retrieve(self, tax_rate, price_include_flag=False):
         """Create or retrieve an Odoo tax."""
         if tax_rate is None or tax_rate == 0.0:
@@ -478,7 +485,6 @@ class WoocommerceConnector(models.Model):
 
         return odoo_tax
 
-    @api.returns('product.brand')
     def odoo_brand_create_or_retrieve(self, brand_name):
         """Create or retrieve an Odoo brand."""
         if not brand_name:
@@ -491,7 +497,6 @@ class WoocommerceConnector(models.Model):
 
         return odoo_brand
 
-    @api.returns('product.category')
     def odoo_category_create_or_retrieve(self, category_name):
         """Create or retrieve an Odoo category."""
         if not category_name:
@@ -504,7 +509,6 @@ class WoocommerceConnector(models.Model):
 
         return odoo_category
 
-    @api.returns('product.tag')
     def odoo_tag_create_or_retrieve(self, tag_name):
         """Create or retrieve an Odoo tag."""
         if not tag_name:
@@ -517,7 +521,6 @@ class WoocommerceConnector(models.Model):
 
         return odoo_tag
 
-    @api.returns('uom.uom')
     def odoo_unit_of_measure_create_or_retrieve(self, unit_of_measure_name):
         """Create or retrieve an Odoo unit of measure."""
         if not unit_of_measure_name:
@@ -530,7 +533,6 @@ class WoocommerceConnector(models.Model):
 
         return odoo_unit_of_measure
 
-    @api.returns('uom.uom')
     def odoo_unit_of_measure_dimension_retrieve(self, dimensional_uom_name):
         """Retrieve an Odoo dimensional unit of measure."""
         if not dimensional_uom_name:
@@ -543,7 +545,6 @@ class WoocommerceConnector(models.Model):
 
         return odoo_dimensional_uom
 
-    @api.returns('res.partner')
     def odoo_customer_placeholder_create_or_retrieve(self):
         """Create or retrieve an Odoo placeholder customer for WooCommerce Order integration. The customer placeholder is archived (active=False) and can be used to satisfy the product requirement on sale orders."""
 
@@ -570,7 +571,6 @@ class WoocommerceConnector(models.Model):
 
         return odoo_customer_placeholder
 
-    @api.returns('product.template')
     def odoo_product_placeholder_create_or_retrieve(self):
         """Create or retrieve an Odoo placeholder product for WooCommerce Order Line Item integration. The product placeholder is archived (active=False) and can be used to satisfy the product requirement on sale order lines."""
 
@@ -598,7 +598,6 @@ class WoocommerceConnector(models.Model):
 
         return odoo_product_placeholder
 
-    @api.returns('delivery.carrier')
     def odoo_delivery_carrier_create_or_retrieve(self, woocommerce_sync_config, woocommerce_shipping_methods, shipping_line):
         """Create or retrieve an Odoo delivery carrier."""
 
@@ -1003,10 +1002,16 @@ class WoocommerceConnector(models.Model):
 
                     # Product gallery
                     if odoo_product and woocommerce_sync_config.settings_woocommerce_images_sync and len(product['images']) > 0:
-                        product_images_ids = self.image_process_attachments(product['images'], odoo_product)
+                        if version_info[0] == 16:
+                            attachment_ids = self.image_process_attachments(product['images'], odoo_product, create_attachments=True)
+                            if attachment_ids:
+                                odoo_product.write({'product_image_ids': [(6, 0, attachment_ids)]})
 
-                        if product_images_ids:
-                            odoo_product.write({'product_images_ids': [(6, 0, product_images_ids)]})
+                        elif version_info[0] == 18:
+                            image_values_list = self.image_process_attachments(product['images'], odoo_product, create_attachments=False)
+                            if image_values_list:
+                                # Clear the gallery ((5, 0, 0)), then create new images ((0, 0, {vals}))
+                                odoo_product.write({'product_image_ids': [(5, 0, 0)] + [(0, 0, values) for values in image_values_list]})
 
                     # Commit changes
                     self.env.cr.commit()
