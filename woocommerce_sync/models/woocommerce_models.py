@@ -1,4 +1,5 @@
 from odoo import api, fields, models
+from odoo.release import version_info
 
 
 # Account Move Line
@@ -204,8 +205,8 @@ class ProductTemplate(models.Model):
         product_language_code = fields.Char(string='Language', help='Polylang 2-digit ISO 639-1 language code.')  # Polylang
     if not hasattr(models.BaseModel, '_fields') or 'product_stock_date_updated' not in ProductTemplate._fields:
         product_stock_date_updated = fields.Datetime(string='Stock Date Updated', readonly=True)
-    if not hasattr(models.BaseModel, '_fields') or 'product_images_ids' not in ProductTemplate._fields:
-        product_images_ids = fields.Many2many(comodel_name='ir.attachment', string='Images', help='Multiple product images', domain=[('mimetype', 'ilike', 'image')], readonly=True)
+    if version_info[0] == 16 and (not hasattr(models.BaseModel, '_fields') or 'product_image_ids' not in ProductTemplate._fields):
+        product_image_ids = fields.Many2many(comodel_name='ir.attachment', string='Images', help='Multiple product images', domain=[('mimetype', 'ilike', 'image')], readonly=True)
     woocommerce_product_service = fields.Boolean(string='Is service?')
 
 
