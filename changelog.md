@@ -1,10 +1,16 @@
 # Changelog
 
+## 2025-06-21
+
+### Features
+
+- New [odoo-settings-configuration.md](./installation/odoo-settings-configuration.md) with instructions to automatically configure Odoo settings.
+
 ## 2025-06-17
 
 ### Features
 
-- New [dependencies-installation.md](./installation/dependencies-installation.md) instructions, to automatically download and install the required and optional Odoo add-ons.
+- New [odoo-module-dependency-installer.md](./installation/odoo-module-dependency-installer.md) with instructions to automatically download and install the required and optional Odoo add-ons.
 - Updated codebase for initial Odoo 18 compatibility and easier future migration.
 
 ## 2025-05-22

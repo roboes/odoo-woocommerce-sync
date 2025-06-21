@@ -1,4 +1,4 @@
-# Odoo-WooCommerce Sync Dependencies Installation
+# Odoo-WooCommerce Sync Odoo Module Dependency Installer
 
 > [!NOTE]
 > Last update: 2025-06-17
@@ -30,7 +30,7 @@ declare -A repos=(
   ["product-attribute"]="https://github.com/OCA/product-attribute.git"
   ["brand"]="https://github.com/OCA/brand.git"
   # Optional Localization add-ons
-  ["l10n-brazil"]="https://github.com/OCA/l10n-brazil.git"
+  # ["l10n-brazil"]="https://github.com/OCA/l10n-brazil.git"
 )
 
 # Mapping for known modules to auto-install
@@ -42,7 +42,7 @@ declare -A modules_to_install=(
   ["product-attribute"]="product_dimension product_multi_category"
   ["brand"]="product_brand"
   # Optional Localization add-ons
-  ["l10n-brazil"]="l10n_br_fiscal"
+  # ["l10n-brazil"]="l10n_br_fiscal"
 )
 
 # Create addons directory (if necessary)
