@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+<?xml version="1.0" encoding="utf-8"?>
 <templates>
   <t t-name="JsonHtmlField" owl="1">
     <div class="json-text" t-ref="jsonInput" t-raw="formattedValue"/>

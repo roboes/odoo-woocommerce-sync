@@ -1,7 +1,7 @@
 # Odoo-WooCommerce Sync Odoo Module Dependency Installer
 
 > [!NOTE]
-> Last update: 2025-06-17
+> Last update: 2025-06-23
 
 ## Settings
 
@@ -23,6 +23,7 @@ addons_path="$website_root_path/odoo/addons"
 ```.sh
 # Repositories to clone
 declare -A repos=(
+  ["odoo-woocommerce-sync"]="https://github.com/roboes/odoo-woocommerce-sync.git"
   # Required Odoo Community Association (OCA) add-ons
   ["queue"]="https://github.com/OCA/queue.git"
   # Optional Odoo Community Association (OCA) add-ons
@@ -35,6 +36,7 @@ declare -A repos=(
 
 # Mapping for known modules to auto-install
 declare -A modules_to_install=(
+  ["odoo-woocommerce-sync"]="woocommerce_sync"
   # Required Odoo Community Association (OCA) add-ons
   ["queue"]="queue_job"
   # Optional Odoo Community Association (OCA) add-ons

@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+<?xml version="1.0" encoding="utf-8"?>
 <odoo>
   <data>
     <record model="ir.ui.view" id="tree_view_woocommerce">
@@ -115,7 +115,7 @@
               <page string="Scheduled Sync">
                 <group>
                   <field name="settings_woocommerce_sync_scheduled"/>
-                  <field name="settings_woocommerce_sync_scheduled_interval_minutes" attrs="{'invisible': [('settings_woocommerce_sync_scheduled','=',False)]}"/>
+                  <field name="settings_woocommerce_sync_scheduled_interval_minutes" attrs="{'invisible': [('settings_woocommerce_sync_scheduled', '=', False)]}"/>
                 </group>
               </page>
               <page string="Test Mode">

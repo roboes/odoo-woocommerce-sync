@@ -1,5 +1,11 @@
 # Changelog
 
+## 2025-06-23
+
+### Features
+
+- Updated codebase for initial Odoo 18 compatibility and easier future migration.
+
 ## 2025-06-21
 
 ### Features

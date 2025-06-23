@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+<?xml version="1.0" encoding="utf-8"?>
 <odoo>
   <record id="view_sale_order_form_woocommerce" model="ir.ui.view">
     <field name="name">sale.order.form.woocommerce</field>
@@ -6,7 +6,7 @@
     <field name="inherit_id" ref="sale.view_order_form"/>
     <field name="arch" type="xml">
       <xpath expr="//notebook" position="inside">
-        <page string="WooCommerce" attrs="{'invisible': [('woocommerce_order_id', '=', False)]}">
+        <page string="WooCommerce" attrs="{'invisible': ['|', ('woocommerce_order_id', '=', False), ('woocommerce_order_id', '=', '')]}">
           <group>
             <group string="General Information">
               <field name="woocommerce_order_site_url"/>
@@ -18,7 +18,7 @@
               <field name="woocommerce_order_version"/>
               <field name="woocommerce_order_status"/>
               <field name="woocommerce_order_currency"/>
-              <field name="order_language_code" attrs="{'invisible': [('order_language_code', '=', None)]}"/>
+              <field name="order_language_code" attrs="{'invisible': ['|', ('order_language_code', '=', False), ('order_language_code', '=', '')]}"/>
               <field name="woocommerce_order_date_created_gmt"/>
               <field name="woocommerce_order_date_modified_gmt"/>
               <field name="woocommerce_order_date_completed_gmt"/>

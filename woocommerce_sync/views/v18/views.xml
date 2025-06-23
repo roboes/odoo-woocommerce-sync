@@ -1,10 +1,9 @@
-<?xml version="1.0"?>
+<?xml version="1.0" encoding="utf-8"?>
 <odoo>
   <data>
     <record model="ir.ui.view" id="tree_view_woocommerce">
       <field name="name">WooCommerce Configuration List</field>
       <field name="model">woocommerce.configuration</field>
-      <field name="type">qweb</field>
       <field name="arch" type="xml">
         <list string="WooCommerce Configurations">
           <field name="woocommerce_connection_sequence"/>
@@ -71,10 +70,10 @@
                           <div class="oe_label">Product Variations</div>
                         </td>
                         <td style="padding: 8px; text-align: center; vertical-align: top;">
-                          <field name="settings_woocommerce_to_odoo_product_variations_sync" class="oe_inline" invisible="[('settings_woocommerce_to_odoo_products_sync', '=', False)]"/>
+                          <field name="settings_woocommerce_to_odoo_product_variations_sync" class="oe_inline" invisible="not settings_woocommerce_to_odoo_products_sync"/>
                         </td>
                         <td style="padding: 8px; text-align: center; vertical-align: top;">
-                          <field name="settings_odoo_to_woocommerce_product_variations_sync" class="oe_inline" invisible="[('settings_odoo_to_woocommerce_products_sync', '=', False)]"/>
+                          <field name="settings_odoo_to_woocommerce_product_variations_sync" class="oe_inline" invisible="not settings_odoo_to_woocommerce_products_sync"/>
                         </td>
                       </tr>
                       <tr>
@@ -100,7 +99,7 @@
                 </group>
                 <group string="WooCommerce to Odoo Products Import Settings">
                   <field name="settings_woocommerce_products_stock_management"/>
-                  <field name="settings_woocommerce_products_warehouse_location" invisible="[('settings_woocommerce_products_stock_management', '=', False)]"/>
+                  <field name="settings_woocommerce_products_warehouse_location" invisible="not settings_woocommerce_products_stock_management"/>
                   <field name="settings_woocommerce_products_related_ids_map"/>
                   <field name="settings_woocommerce_to_odoo_products_language_code"/>
                 </group>
@@ -116,7 +115,7 @@
               <page string="Scheduled Sync">
                 <group>
                   <field name="settings_woocommerce_sync_scheduled"/>
-                  <field name="settings_woocommerce_sync_scheduled_interval_minutes" invisible="[('settings_woocommerce_sync_scheduled','=',False)]"/>
+                  <field name="settings_woocommerce_sync_scheduled_interval_minutes" invisible="not settings_woocommerce_sync_scheduled"/>
                 </group>
               </page>
               <page string="Test Mode">
