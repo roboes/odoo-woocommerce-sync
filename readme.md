@@ -26,6 +26,9 @@ Some features require additional setup, as detailed in the [Requirements](#requi
 > [!WARNING]
 > This add-on is provided without any warranty and may contain bugs as it is a recently developed solution. Testing in a controlled environment is recommended before deployment, and usage is at one's own risk.
 
+> [!TIP]
+> This add-on is being ported to Odoo 18 while maintaining compatibility with Odoo 16. Both versions currently coexist in the same repository, and most of the codebase already works on Odoo 18. To test this add-on on Odoo 18, edit the [manifest file](./woocommerce_sync/__manifest__.py) accordingly.
+
 ## Limitations
 
 - **Performance:** Updating product variations may take long, as each variable product is processed through a separate WooCommerce REST API call.

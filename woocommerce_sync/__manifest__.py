@@ -35,8 +35,10 @@
     ],
     'assets': {
         'web.assets_backend': [
-            'woocommerce_sync/static/src/js/json_html_widget.js',
-            'woocommerce_sync/static/src/xml/json_html_template.xml',
+            'woocommerce_sync/static/src/js/v16/json_html_widget.js',
+            'woocommerce_sync/static/src/xml/v16/json_html_template.xml',
+            # 'woocommerce_sync/static/src/js/v18/json_html_widget.js',
+            # 'woocommerce_sync/static/src/xml/v18/json_html_template.xml',
         ],
     },
     'installable': True,

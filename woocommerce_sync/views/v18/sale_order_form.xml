@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+<?xml version="1.0" encoding="utf-8"?>
 <odoo>
   <record id="view_sale_order_form_woocommerce" model="ir.ui.view">
     <field name="name">sale.order.form.woocommerce</field>
@@ -6,7 +6,7 @@
     <field name="inherit_id" ref="sale.view_order_form"/>
     <field name="arch" type="xml">
       <xpath expr="//notebook" position="inside">
-        <page string="WooCommerce" invisible="[('woocommerce_order_id', '=', False)]">
+        <page string="WooCommerce" invisible="not woocommerce_order_id">
           <group>
             <group string="General Information">
               <field name="woocommerce_order_site_url"/>
@@ -18,7 +18,7 @@
               <field name="woocommerce_order_version"/>
               <field name="woocommerce_order_status"/>
               <field name="woocommerce_order_currency"/>
-              <field name="order_language_code" invisible="[('order_language_code', '=', None)]"/>
+              <field name="order_language_code" invisible="not order_language_code"/>
               <field name="woocommerce_order_date_created_gmt"/>
               <field name="woocommerce_order_date_modified_gmt"/>
               <field name="woocommerce_order_date_completed_gmt"/>
@@ -41,8 +41,8 @@
               <field name="woocommerce_order_cart_tax" widget="monetary" options="{'currency_field': 'currency_id'}"/>
               <field name="woocommerce_order_total_tax" widget="monetary" options="{'currency_field': 'currency_id'}"/>
               <field name="woocommerce_order_total" widget="monetary" options="{'currency_field': 'currency_id'}"/>
-              <field name="woocommerce_order_transaction_fee" widget="monetary" options="{'currency_field': 'currency_id'}" invisible="[('woocommerce_order_transaction_fee', '=', 0.0)]"/>
-              <field name="woocommerce_order_payout" widget="monetary" options="{'currency_field': 'currency_id'}" invisible="[('woocommerce_order_transaction_fee', '=', 0.0)]"/>
+              <field name="woocommerce_order_transaction_fee" widget="monetary" options="{'currency_field': 'currency_id'}" invisible="woocommerce_order_transaction_fee == 0.0"/>
+              <field name="woocommerce_order_payout" widget="monetary" options="{'currency_field': 'currency_id'}" invisible="woocommerce_order_transaction_fee == 0.0"/>
             </group>
             <group string="Billing">
               <field name="woocommerce_order_billing_first_name"/>
@@ -108,7 +108,7 @@
         </page>
       </xpath>
       <xpath expr="//group[@name='sale_total']" position="after">
-        <group class="oe_subtotal_footer oe_right" colspan="2" name="sale_total" invisible="[('woocommerce_order_transaction_fee', '=', 0.0)]">
+        <group class="oe_subtotal_footer oe_right" colspan="2" name="sale_total" invisible="woocommerce_order_transaction_fee == 0.0">
           <field name="woocommerce_order_transaction_fee" widget="monetary" options="{'currency_field': 'currency_id'}"/>
           <field name="woocommerce_order_payout" widget="monetary" options="{'currency_field': 'currency_id'}"/>
         </group>

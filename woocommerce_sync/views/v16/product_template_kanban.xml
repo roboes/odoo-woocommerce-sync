@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+<?xml version="1.0" encoding="utf-8"?>
 <odoo>
   <record id="view_product_template_kanban_woocommerce" model="ir.ui.view">
     <field name="name">product.template.kanban.woocommerce</field>
@@ -7,10 +7,10 @@
     <field name="arch" type="xml">
       <xpath expr="//div[contains(concat(' ', normalize-space(@class), ' '), ' oe_kanban_details ')]" position="inside">
         <div class="float-end">
-          <field name="product_source" widget="badge" attrs="{'invisible': [('product_source', '=', False)]}"/>
+          <field name="product_source" widget="badge" attrs="{'invisible': ['|', ('product_source', '=', False), ('product_source', '=', '')]}"/>
         </div>
         <div class="float-end">
-          <field name="product_language_code" widget="badge" attrs="{'invisible': [('product_language_code', '=', False)]}"/>
+          <field name="product_language_code" widget="badge" attrs="{'invisible': ['|', ('product_language_code', '=', False), ('product_language_code', '=', '')]}"/>
         </div>
       </xpath>
     </field>

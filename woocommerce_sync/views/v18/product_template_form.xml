@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+<?xml version="1.0" encoding="utf-8"?>
 <odoo>
   <record id="view_product_template_form_woocommerce" model="ir.ui.view">
     <field name="name">product.template.form.woocommerce</field>
@@ -12,21 +12,21 @@
         </span>
       </xpath>
       <xpath expr="//page[@name='general_information']//group[@name='group_general']" position="inside">
-        <field name="product_language_code" invisible="[('product_language_code', '=', None)]"/>
-        <field name="product_stock_date_updated" invisible="[('product_stock_date_updated', '=', False)]"/>
+        <field name="product_language_code" invisible="not product_language_code"/>
+        <field name="product_stock_date_updated" invisible="not product_stock_date_updated"/>
       </xpath>
       <xpath expr="//field[@name='categ_id']" position="after">
-        <field name="default_code" invisible="[('product_variant_count', '=', 1)]"/>
+        <field name="default_code" invisible="product_variant_count == 1"/>
       </xpath>
       <xpath expr="//notebook" position="inside">
-        <page string="WooCommerce" invisible="[('woocommerce_product_id', '=', False)]">
+        <page string="WooCommerce" invisible="not woocommerce_product_id">
           <group string="General Information">
             <field name="woocommerce_product_site_url"/>
             <field name="woocommerce_product_name"/>
             <field name="woocommerce_product_id"/>
             <field name="woocommerce_product_type"/>
             <field name="woocommerce_product_sku"/>
-            <field name="product_language_code" invisible="[('product_language_code', '=', None)]"/>
+            <field name="product_language_code" invisible="not product_language_code"/>
             <field name="woocommerce_product_slug"/>
             <field name="woocommerce_product_permalink"/>
             <field name="woocommerce_product_date_created_gmt"/>

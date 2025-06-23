@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+<?xml version="1.0" encoding="utf-8"?>
 <odoo>
   <record id="view_res_partner_form_woocommerce" model="ir.ui.view">
     <field name="name">res.partner.form.woocommerce</field>
@@ -6,7 +6,7 @@
     <field name="inherit_id" ref="base.view_partner_form"/>
     <field name="arch" type="xml">
       <xpath expr="//notebook" position="inside">
-        <page string="WooCommerce" attrs="{'invisible': [('woocommerce_customer_id', '=', False)]}">
+        <page string="WooCommerce" attrs="{'invisible': ['|', ('woocommerce_customer_id', '=', False), ('woocommerce_customer_id', '=', '')]}">
           <group string="General Information">
             <field name="woocommerce_customer_site_url"/>
             <field name="woocommerce_customer_id"/>

@@ -63,10 +63,10 @@ class WoocommerceConnector(models.Model):
     # WooCommerce to Odoo products import settings
     settings_woocommerce_products_stock_management = fields.Boolean(string='Sync stock quantity?', default=True)
     settings_woocommerce_products_warehouse_location = fields.Many2one(
-        comodel_name='stock.location',
-        string='Warehouse location',
-        help='Warehouse location for syncing WooCommerce products stock quantity.',
-        default=lambda self: self.env.ref('stock.stock_location_stock'),
+        comodel_name='stock.warehouse',
+        string='Warehouse',
+        help='Warehouse for syncing WooCommerce products stock quantity.',
+        default=lambda self: self.env.ref('stock.warehouse0'),
         ondelete='set null',
     )
     settings_woocommerce_products_related_ids_map = fields.Boolean(string='Map related products?', help="Automatically map WooCommerce 'related_ids' products to their Odoo equivalents.", default=False)
@@ -133,13 +133,19 @@ class WoocommerceConnector(models.Model):
         for record in self:
             record.woocommerce_last_synced = sync_log.woocommerce_last_synced if sync_log else False
 
-    @api.model
-    def create(self, values):
-        if values.get('woocommerce_connection_sequence', _('New')) == _('New'):
-            values['woocommerce_connection_sequence'] = self.env['ir.sequence'].next_by_code('woocommerce.configuration.sequence') or _('New')
-        rec = super().create(values)
-        rec.cron_job_update()
-        return rec
+    @api.model_create_multi
+    def create(self, values_list):
+        for values in values_list:
+            if values.get('woocommerce_connection_sequence', _('New')) == _('New'):
+                values['woocommerce_connection_sequence'] = self.env['ir.sequence'].next_by_code('woocommerce.configuration.sequence') or _('New')
+
+        records = super().create(values_list)
+
+        # Run post-creation logic per record
+        for record in records:
+            record.cron_job_update()
+
+        return records
 
     def write(self, values):
         # Skip cron update if called from cron context
@@ -189,7 +195,7 @@ class WoocommerceConnector(models.Model):
                 'params': {
                     'title': _('Sync Started (Queue Job)'),
                     'message': _('WooCommerce sync process has been started in the background. %s'),
-                    'links': [{'label': _('Open Job Queue'), 'url': f'#action={self.env["ir.actions.act_window"].search([("res_model", "=", "queue.job")], limit=1).id}&model=queue.job&view_type=list'}],
+                    'links': [{'label': _('Open Job Queue'), 'url': '/web#action=%d&model=queue.job&view_type=list' % self.env['ir.actions.act_window'].search([('res_model', '=', 'queue.job')], limit=1).id}],
                     'sticky': False,
                 },
             }
@@ -300,6 +306,7 @@ class WoocommerceConnector(models.Model):
 
         if woocommerce_sync_log:
             woocommerce_sync_log.write({'woocommerce_last_synced': fields.Datetime.now()})
+
         else:
             self.env['woocommerce.sync.log'].create({'woocommerce_last_synced': fields.Datetime.now()})
 
@@ -541,7 +548,7 @@ class WoocommerceConnector(models.Model):
         odoo_dimensional_uom = self.env['uom.uom'].search([('active', '=', True), ('name', '=', dimensional_uom_name)], limit=1)
 
         if not odoo_dimensional_uom:
-            raise UserError(f'The dimensional UoM "{dimensional_uom_name}" does not exist.')
+            _logger.error(f'The dimensional UoM "{dimensional_uom_name}" does not exist.')
 
         return odoo_dimensional_uom
 
@@ -639,14 +646,15 @@ class WoocommerceConnector(models.Model):
         woocommerce_products_stock_map = {product['id']: product for product in woocommerce_products}
 
         # Fetch all Odoo 'product.product' records linked to WooCommerce
-        odoo_products = self.env['product.product'].search(
-            [
-                ('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
-                ('active', '=', True),
-                ('woocommerce_product_id', '!=', False),
-                ('detailed_type', '=', 'product'),
-            ],
-        )
+        if version_info[0] == 16:
+            odoo_products = self.env['product.product'].search(
+                [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '!=', False), ('detailed_type', '=', 'product')],
+            )
+
+        elif version_info[0] == 18:
+            odoo_products = self.env['product.product'].search(
+                [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '!=', False), ('type', '=', 'product')],
+            )
 
         for product in odoo_products:
             # Determine the corresponding WooCommerce stock info
@@ -676,6 +684,7 @@ class WoocommerceConnector(models.Model):
 
                 if odoo_product_stock_quantity:
                     odoo_product_stock_quantity.with_company(self.env.company).write({'quantity': woocommerce_product_stock_quantity})
+
                 else:
                     self.env['stock.quant'].create(
                         {
@@ -960,7 +969,6 @@ class WoocommerceConnector(models.Model):
                             'default_code': product_values['woocommerce_product_sku'],
                             'create_date': product_values['woocommerce_product_date_created_gmt'],
                             # 'type': 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu',
-                            'detailed_type': 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu',
                             'description': 'Imported via Odoo-WooCommerce Sync',
                             'description_sale': product_values['woocommerce_product_description'],
                             'responsible_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
@@ -992,11 +1000,16 @@ class WoocommerceConnector(models.Model):
                         },
                     )
 
-                    # Update product in Odoo only if WooCommerce version is newer
+                    # Product type
+                    if version_info[0] == 16:
+                        product_values['detailed_type'] = 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu'
+
+                    elif version_info[0] == 18:
+                        product_values['type'] = 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu'
+
                     if odoo_product:
                         odoo_product.write(product_values)
 
-                    # Create new product in Odoo if it does not yet exist
                     else:
                         odoo_product = self.env['product.template'].create(product_values)
 
@@ -1007,11 +1020,11 @@ class WoocommerceConnector(models.Model):
                             if attachment_ids:
                                 odoo_product.write({'product_image_ids': [(6, 0, attachment_ids)]})
 
-                        elif version_info[0] == 18:
+                        elif version_info[0] == 18 and self.env['ir.module.module'].search([('name', '=', 'website_sale'), ('state', '=', 'installed')], limit=1):
                             image_values_list = self.image_process_attachments(product['images'], odoo_product, create_attachments=False)
                             if image_values_list:
                                 # Clear the gallery ((5, 0, 0)), then create new images ((0, 0, {vals}))
-                                odoo_product.write({'product_image_ids': [(5, 0, 0)] + [(0, 0, values) for values in image_values_list]})
+                                odoo_product.write({'product_template_image_ids': [(5, 0, 0)] + [(0, 0, values) for values in image_values_list]})
 
                     # Commit changes
                     self.env.cr.commit()
@@ -1273,9 +1286,6 @@ class WoocommerceConnector(models.Model):
                                 'default_code': product_variation_values['woocommerce_product_variation_sku'],
                                 'create_date': product_variation_values['woocommerce_product_variation_date_created_gmt'],
                                 # 'type': ('service' if product_variation_values['woocommerce_product_variation_service'] else 'product' if product_variation_values['woocommerce_product_variation_manage_stock'] else 'consu'),
-                                'detailed_type': (
-                                    'service' if product_variation_values['woocommerce_product_variation_service'] else 'product' if product_variation_values['woocommerce_product_variation_manage_stock'] else 'consu'
-                                ),
                                 'description': 'Imported via Odoo-WooCommerce Sync',
                                 'description_sale': product_variation_values['woocommerce_product_variation_description'],
                                 # Product status
@@ -1305,6 +1315,17 @@ class WoocommerceConnector(models.Model):
                                 ),
                             },
                         )
+
+                        # Product type
+                        if version_info[0] == 16:
+                            product_variation_values['detailed_type'] = (
+                                'service' if product_variation_values['woocommerce_product_variation_service'] else 'product' if product_variation_values['woocommerce_product_variation_manage_stock'] else 'consu'
+                            )
+
+                        elif version_info[0] == 18:
+                            product_variation_values['type'] = (
+                                'service' if product_variation_values['woocommerce_product_variation_service'] else 'product' if product_variation_values['woocommerce_product_variation_manage_stock'] else 'consu'
+                            )
 
                         # Update the product template so that all attribute lines are considered and variants are created
                         odoo_product._create_variant_ids()
@@ -1483,12 +1504,10 @@ class WoocommerceConnector(models.Model):
                         },
                     )
 
-                    # Update customer in Odoo only if WooCommerce version is newer
                     if odoo_customer:
                         if customer_values['woocommerce_customer_date_modified_gmt'] > odoo_customer.write_date:
                             odoo_customer.write(customer_values)
 
-                    # Create new customer in Odoo if it does not yet exist
                     else:
                         odoo_customer = self.env['res.partner'].create(customer_values)
 
@@ -1754,17 +1773,6 @@ class WoocommerceConnector(models.Model):
                             'origin': order_values['woocommerce_order_created_via'],
                             'type_name': 'Sales Order',
                             'date_order': order_values['woocommerce_order_date_created_gmt'],
-                            'state': (
-                                'draft'
-                                if order_values['woocommerce_order_status'] == 'pending'
-                                else 'sale'
-                                if order_values['woocommerce_order_status'] in ('processing', 'on-hold')
-                                else 'done'
-                                if order_values['woocommerce_order_status'] == 'completed'
-                                else 'cancel'
-                                if order_values['woocommerce_order_status'] in ('cancelled', 'refunded', 'failed', 'trash')
-                                else 'draft'
-                            ),
                             'note': order_values['woocommerce_order_customer_note'],
                             'user_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
                             # Customer
@@ -1782,9 +1790,19 @@ class WoocommerceConnector(models.Model):
                         },
                     )
 
-                    # Create new sale order in Odoo if it does not yet exist
-                    if not odoo_sale_order:
+                    if odoo_sale_order:
+                        odoo_sale_order.write(order_values)
+
+                    else:
                         odoo_sale_order = self.env['sale.order'].create(order_values)
+
+                    # Confirm order if WooCommerce status is 'processing', 'on-hold' or 'completed' (move order 'state' to 'sale')
+                    if order_values['woocommerce_order_status'] in ('processing', 'on-hold', 'completed') and odoo_sale_order.state in ('draft', 'sent'):
+                        odoo_sale_order.action_confirm()
+
+                    # Cancel order if WooCommerce status is 'cancelled', 'refunded', 'failed' or 'trash' (move order 'state' to 'cancel')
+                    elif order_values['woocommerce_order_status'] in ('cancelled', 'refunded', 'failed', 'trash') and odoo_sale_order.state not in ('cancel', 'done'):
+                        odoo_sale_order.action_cancel()
 
                     # Order line items
                     order_line_items_total = sum(float(line_item['total']) for line_item in order['line_items'])
@@ -1904,13 +1922,9 @@ class WoocommerceConnector(models.Model):
                             limit=1,
                         )
 
+                        # Update the sale order line
                         if odoo_sale_order_line:
-                            # Update the sale order line
                             odoo_sale_order_line.write(order_line_values)
-
-                            # Update sale order
-                            if odoo_sale_order:
-                                odoo_sale_order.write(order_values)
 
                         else:
                             self.env['sale.order.line'].create(order_line_values)
@@ -1990,7 +2004,6 @@ class WoocommerceConnector(models.Model):
                         'purchasable': product.sale_ok,
                         'tax_class': next((tax_class for tax_class, tax_amount in woocommerce_tax_rates.items() if product.taxes_id and product.taxes_id[0].amount == tax_amount), 'standard'),
                         'regular_price': f'{product.list_price:.2f}',
-                        'manage_stock': True if product.detailed_type == 'product' else False,
                         'type': 'simple',
                         'weight': product.weight if product.weight != 0.0 else '',
                         'dimensions': {
@@ -1999,6 +2012,13 @@ class WoocommerceConnector(models.Model):
                             'height': product.product_height if product.product_height != 0.0 else '',
                         },
                     }
+
+                    # Manage stock
+                    if version_info[0] == 16:
+                        product_values['manage_stock'] = True if product.detailed_type == 'product' else False
+
+                    elif version_info[0] == 18:
+                        product_values['manage_stock'] = True if product.type == 'product' else False
 
                     # Check if product has multiple variants
                     if len(product.product_variant_ids) > 1:
@@ -2118,9 +2138,15 @@ class WoocommerceConnector(models.Model):
                             variation_data = {
                                 'sku': odoo_product_variant.default_code or '',
                                 'regular_price': str(odoo_product_variant.list_price or 0.0),
-                                'manage_stock': True if product.detailed_type == 'product' else False,
                                 'attributes': variation_attributes,
                             }
+
+                            # Manage stock
+                            if version_info[0] == 16:
+                                variation_data['manage_stock'] = True if product.detailed_type == 'product' else False
+
+                            elif version_info[0] == 18:
+                                variation_data['manage_stock'] = True if product.type == 'product' else False
 
                             # Check if a variation with this SKU already exists
                             variation_existing = variations_by_sku.get(odoo_product_variant.default_code)
