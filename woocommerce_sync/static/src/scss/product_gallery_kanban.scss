@@ -1,0 +1,9 @@
+div[name="product_image_ids"] {
+    .o_kanban_renderer {
+        .o_kanban_record {
+            min-width: 20px !important;
+            width: fit-content !important;
+            margin: 2px !important;
+        }
+    }
+}

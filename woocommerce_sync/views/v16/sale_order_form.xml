@@ -5,6 +5,12 @@
     <field name="model">sale.order</field>
     <field name="inherit_id" ref="sale.view_order_form"/>
     <field name="arch" type="xml">
+      <xpath expr="//page[@name='order_lines']//group[@name='sale_total']" position="after">
+        <group class="oe_subtotal_footer oe_right" colspan="2" name="sale_total" attrs="{'invisible': [('woocommerce_order_transaction_fee', '=', 0.0)]}">
+          <field name="woocommerce_order_transaction_fee" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+          <field name="woocommerce_order_payout" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+        </group>
+      </xpath>
       <xpath expr="//notebook" position="inside">
         <page string="WooCommerce" attrs="{'invisible': ['|', ('woocommerce_order_id', '=', False), ('woocommerce_order_id', '=', '')]}">
           <group>
@@ -106,12 +112,6 @@
             </group>
           </group>
         </page>
-      </xpath>
-      <xpath expr="//group[@name='sale_total']" position="after">
-        <group class="oe_subtotal_footer oe_right" colspan="2" name="sale_total" attrs="{'invisible': [('woocommerce_order_transaction_fee', '=', 0.0)]}">
-          <field name="woocommerce_order_transaction_fee" widget="monetary" options="{'currency_field': 'currency_id'}"/>
-          <field name="woocommerce_order_payout" widget="monetary" options="{'currency_field': 'currency_id'}"/>
-        </group>
       </xpath>
     </field>
   </record>

@@ -1,5 +1,10 @@
 ## Odoo-WooCommerce Sync Tests
-# Last update: 2025-05-22
+# Last update: 2025-06-24
+
+
+# Logs:
+# ?debug=1
+# ?debug=assets
 
 
 # Settings

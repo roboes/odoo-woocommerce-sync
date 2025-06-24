@@ -183,7 +183,7 @@ class WoocommerceConnector(models.Model):
 
     def woocommerce_sync_action(self):
         self.ensure_one()
-        _logger.warning("Manual 'Sync Now' button pressed, triggering background sync.")
+        _logger.info("Manual 'Sync Now' button pressed, triggering background sync.")
 
         # Run woocommerce_sync in the background (requires 'queue_job' add-on)
         if self.env['ir.module.module'].search([('name', '=', 'queue_job'), ('state', '=', 'installed')], limit=1):
@@ -1015,12 +1015,11 @@ class WoocommerceConnector(models.Model):
 
                     # Product gallery
                     if odoo_product and woocommerce_sync_config.settings_woocommerce_images_sync and len(product['images']) > 0:
-                        if version_info[0] == 16:
-                            attachment_ids = self.image_process_attachments(product['images'], odoo_product, create_attachments=True)
-                            if attachment_ids:
-                                odoo_product.write({'product_image_ids': [(6, 0, attachment_ids)]})
+                        attachment_ids = self.image_process_attachments(product['images'], odoo_product, create_attachments=True)
+                        if attachment_ids:
+                            odoo_product.write({'product_image_ids': [(6, 0, attachment_ids)]})
 
-                        elif version_info[0] == 18 and self.env['ir.module.module'].search([('name', '=', 'website_sale'), ('state', '=', 'installed')], limit=1):
+                        if version_info[0] == 18 and self.env['ir.module.module'].search([('name', '=', 'website_sale'), ('state', '=', 'installed')], limit=1):
                             image_values_list = self.image_process_attachments(product['images'], odoo_product, create_attachments=False)
                             if image_values_list:
                                 # Clear the gallery ((5, 0, 0)), then create new images ((0, 0, {vals}))
