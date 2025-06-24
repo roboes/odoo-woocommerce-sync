@@ -37,16 +37,28 @@ class StockMove(models.Model):
     _inherit = 'stock.move'
 
     # Override the existing 'product_id' field to add the ondelete cascade
-    product_id = fields.Many2one(
-        comodel_name='product.product',
-        string='Product',
-        check_company=True,
-        domain="[('type', 'in', ['product', 'consu']), '|', ('company_id', '=', False), ('company_id', '=', company_id)]",
-        required=True,
-        index=True,
-        states={'done': [('readonly', True)]},
-        ondelete='cascade',
-    )
+    if version_info[0] == 16:
+        product_id = fields.Many2one(
+            comodel_name='product.product',
+            string='Product',
+            check_company=True,
+            domain="[('type', 'in', ['product', 'consu']), '|', ('company_id', '=', False), ('company_id', '=', company_id)]",
+            required=True,
+            index=True,
+            states={'done': [('readonly', True)]},
+            ondelete='cascade',
+        )
+
+    elif version_info[0] == 18:
+        product_id = fields.Many2one(
+            comodel_name='product.product',
+            string='Product',
+            check_company=True,
+            domain="[('type', '=', 'consu')]",
+            required=True,
+            index=True,
+            ondelete='cascade',
+        )
 
 
 class StockValuationLayer(models.Model):
@@ -205,8 +217,17 @@ class ProductTemplate(models.Model):
         product_language_code = fields.Char(string='Language', help='Polylang 2-digit ISO 639-1 language code.')  # Polylang
     if not hasattr(models.BaseModel, '_fields') or 'product_stock_date_updated' not in ProductTemplate._fields:
         product_stock_date_updated = fields.Datetime(string='Stock Date Updated', readonly=True)
-    if version_info[0] == 16 and (not hasattr(models.BaseModel, '_fields') or 'product_image_ids' not in ProductTemplate._fields):
-        product_image_ids = fields.Many2many(comodel_name='ir.attachment', string='Images', help='Multiple product images', domain=[('mimetype', 'ilike', 'image')], readonly=True)
+    if not hasattr(models.BaseModel, '_fields') or 'product_image_ids' not in ProductTemplate._fields:
+        product_image_ids = fields.Many2many(
+            comodel_name='ir.attachment',
+            string='Images',
+            help='Multiple product images',
+            relation='product_template_ir_attachment_rel',
+            column1='product_template_id',
+            column2='attachment_id',
+            domain=[('mimetype', 'ilike', 'image')],
+        )
+
     woocommerce_product_service = fields.Boolean(string='Is service?')
 
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2025-06-24
+
+### Features
+
+- First fully compatible version for Odoo 18, now maintained in its own branch.
+- Updated image storage logic for products with multiple images. The `Product Gallery` is now displayed under the `Sales` tab, following the same UX pattern as Odoo's `website_sale` module.
+
+### Fix
+
+- Fixed minor bugs.
+
 ## 2025-06-23
 
 ### Features

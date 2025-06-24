@@ -26,9 +26,6 @@ Some features require additional setup, as detailed in the [Requirements](#requi
 > [!WARNING]
 > This add-on is provided without any warranty and may contain bugs as it is a recently developed solution. Testing in a controlled environment is recommended before deployment, and usage is at one's own risk.
 
-> [!TIP]
-> This add-on is being ported to Odoo 18 while maintaining compatibility with Odoo 16. Both versions currently coexist in the same repository, and most of the codebase already works on Odoo 18. To test this add-on on Odoo 18, edit the [manifest file](./woocommerce_sync/__manifest__.py) accordingly.
-
 ## Limitations
 
 - **Performance:** Updating product variations may take long, as each variable product is processed through a separate WooCommerce REST API call.
@@ -65,7 +62,7 @@ To automatically apply the Odoo configuration listed below, follow the instructi
   - Enable full accounting features:
     - `Home Menu` > `Settings` > `Users & Company` > `Groups` > Select the `Technical / Show Full Accounting Features` group > `Add a line` > Select the user.
 - **Sales** (`sale_management`)
-  - Enable [Product Variants](https://www.odoo.com/documentation/16.0/applications/sales/sales/products_prices/products/variants.html):
+  - Enable [Product Variants](https://www.odoo.com/documentation/18.0/applications/sales/sales/products_prices/products/variants.html):
     - `Home Menu` > `Settings` > `Sales` > `Product Catalog` > Enable `Variants`.
 - **Inventory** (`stock`)
   - Enable Delivery Methods:
@@ -76,27 +73,27 @@ To automatically apply the Odoo configuration listed below, follow the instructi
     - `Home Menu` > `Settings` > `Inventory` > `Warehouse` > Enable `Storage Locations` and configure under `Locations` the warehouse accordingly.
 - **Contacts** (`contacts`)
 - **Job Queue** (`queue_job`)
-  - [GitHub](https://github.com/OCA/queue/tree/16.0/queue_job) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/queue_job) (requires additional [configuration instructions](https://github.com/OCA/queue/tree/16.0/queue_job#configuration)).
+  - [GitHub](https://github.com/OCA/queue/tree/18.0/queue_job) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/queue_job) (requires additional [configuration instructions](https://github.com/OCA/queue/tree/18.0/queue_job#configuration)).
 
 #### Odoo Add-ons (Optional)
 
 While not mandatory, the following Odoo Community Association (OCA) add-ons are recommended to enhance functionality:
 
 - **Module Auto Update** (`module_auto_update`): Automatically updates installed modules to their latest versions, ensuring the system remains current with minimal manual intervention.
-  - [GitHub](https://github.com/OCA/server-tools/tree/16.0/module_auto_update) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/module_auto_update)
+  - [GitHub](https://github.com/OCA/server-tools/tree/18.0/module_auto_update) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/module_auto_update)
 - **Product Dimension** (`product_dimension`): Adds fields for length, width, height, and unit of measure, enabling detailed management of product dimensions.
-  - [GitHub](https://github.com/OCA/product-attribute/tree/16.0/product_dimension) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/product_dimension)
+  - [GitHub](https://github.com/OCA/product-attribute/tree/18.0/product_dimension) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/product_dimension)
 - **Product - Many Categories** (`product_multi_category`): Enhances the standard single-category assignment (`categ_id`) by introducing a `categ_ids` field, allowing products to be organized into multiple categories.
-  - [GitHub](https://github.com/OCA/product-attribute/tree/16.0/product_multi_category) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/product_multi_category)
+  - [GitHub](https://github.com/OCA/product-attribute/tree/18.0/product_multi_category) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/product_multi_category)
 - **Product Brand Manager** (`product_brand`): Adds a `product_brand_id` field to facilitate the import and management of product brands from WooCommerce (requires WooCommerce 9.6+) (only one brand per product allowed).
-  - [GitHub](https://github.com/OCA/brand/tree/16.0/product_brand) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/product_brand)
+  - [GitHub](https://github.com/OCA/brand/tree/18.0/product_brand) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/product_brand)
 
 ##### Odoo Localization (Optional)
 
 Brazil:
 
 - **Módulo Fiscal Brasileiro** (`l10n_br_fiscal`): Supports Cadastro de Pessoa Física (CPF), Cadastro Nacional da Pessoa Jurídica (CNPJ), local taxes, shipping costs, and electronic fiscal documents.
-  - [GitHub](https://github.com/OCA/l10n-brazil/tree/16.0/l10n_br_fiscal) | [Odoo Apps Store](https://odoo-community.org/shop/brazilian-localization-base-1252)
+  - [GitHub](https://github.com/OCA/l10n-brazil/tree/18.0/l10n_br_fiscal) | [Odoo Apps Store](https://odoo-community.org/shop/brazilian-localization-base-1252)
 
 ### WordPress
 
@@ -123,7 +120,7 @@ Follow these steps to install the Odoo-WooCommerce Sync add-on:
 2. **Enable Odoo Add-ons:** Install and activate all [required](#odoo-add-ons-required) and, if applicable, [optional](#odoo-add-ons-optional) Odoo add-ons.
 3. **Configure WordPress (if applicable):** Install and set up the [optional plugins](#wordpress-plugins-optional) for WordPress. Retrieve the WooCommerce REST API `consumer key` and `consumer secret` from `WooCommerce` > `Settings` > `Advanced` > `REST API`.
 4. **Add the Add-on:** Download and place the [`woocommerce_sync`](./woocommerce_sync) directory into the Odoo `addons` directory.
-5. **Activate Debug Mode:** Log in to Odoo and enable [Debug Mode](https://www.odoo.com/documentation/16.0/applications/general/developer_mode.html).
+5. **Activate Debug Mode:** Log in to Odoo and enable [Debug Mode](https://www.odoo.com/documentation/18.0/applications/general/developer_mode.html).
 6. **Update the Apps List:** Navigate to `Home Menu` > `Apps` and click **Update Apps List**.
 7. **Activate the Add-on:** Use the filter to search for `woocommerce_sync` and activate the add-on.
 
