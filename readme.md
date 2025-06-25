@@ -17,7 +17,7 @@ The **Odoo-WooCommerce Sync** add-on enables synchronization between WooCommerce
 - **Extended Models and Views:** Enhance existing Odoo models and views for `product.template`, `product.product`, `res.partner`, `sale.order`, and `sale.order.line` to accommodate corresponding WooCommerce REST API fields.
 - **Automated and Manual Synchronization:** A built-in cron job scheduler enables regular synchronization, complemented by a dedicated button for manually triggering updates.
 - **Advanced Settings:** Support for multiple WooCommerce websites with specific configuration options for each instance (e.g. syncing only products from WooCommerce to Odoo).
-- **Image Synchronization:** Optionally synchronize product images from WooCommerce to Odoo. For products imported from WooCommerce that include multiple images/product gallery, an additional photo gallery tab is added to the `product.template` view.
+- **Image Synchronization:** Optionally synchronize product images from WooCommerce to Odoo. For products imported from WooCommerce that include multiple images/product gallery, an additional product gallery is added to the `product.template` view.
 - **Language Filtering:** Synchronize products by language (*requires Polylang*).
 - **Orders Transactions Fee Support:** Integrates additional fee fields into orders processed with PayPal and Stripe (*requires the respective plugins*).
 
@@ -47,9 +47,11 @@ python -m pip install woocommerce
 
 #### Odoo Add-ons (Required)
 
-To automatically download and install the required and optional Odoo add-ons listed below, follow the instructions in [odoo-module-dependency-installer.md](./installation/odoo-module-dependency-installer.md).
+> [!TIP]
+> To automatically download and install the required and optional Odoo add-ons listed below, follow the instructions in [odoo-module-dependency-installer.md](./installation/odoo-module-dependency-installer.md).
 
-To automatically apply the Odoo configuration listed below, follow the instructions in [odoo-settings-configuration.md](./installation/odoo-settings-configuration.md).
+> [!TIP]
+> To automatically apply the Odoo configuration listed below, follow the instructions in [odoo-settings-configuration.md](./installation/odoo-settings-configuration.md).
 
 - **Products & Pricelists** (`product`)
   - The user should have **Administrator** privileges:
