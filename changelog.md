@@ -1,5 +1,11 @@
 # Changelog
 
+## 2025-07-15
+
+### Features
+
+- New view configuration setting to control the status (`active`/`archived`) of imported WooCommerce delivery methods. By default, new delivery methods imported from WooCommerce orders will now be created as archived (inactive) in Odoo to prevent clutter in the Delivery Methods list. Existing methods will be updated to match this setting during sync.
+
 ## 2025-06-24
 
 ### Features

@@ -100,6 +100,7 @@ class WoocommerceConnector(models.Model):
             if not record.settings_woocommerce_order_status:
                 raise ValidationError(f"At least one value must be selected for the '{record._fields['settings_woocommerce_order_status'].string}' field.")
 
+    settings_woocommerce_order_delivery_methods_archive = fields.Boolean(string='Archive imported delivery methods?', help='If enabled, imported shipping methods will be created as archived (inactive).', default=True)
     settings_woocommerce_orders_customers_map = fields.Boolean(
         string='Map guest customers to Odoo customers in orders?',
         help='If enabled, orders purchased by guest (unregistered) customers will be mapped to existing Odoo customers by email address. If the customer does not exist in the database, a new customer will be created automatically. If disabled, a customer placeholder will be assigned to the order.',
@@ -611,14 +612,22 @@ class WoocommerceConnector(models.Model):
         if not shipping_line:
             return False
 
-        odoo_delivery_carrier = self.env['delivery.carrier'].search([('active', '=', True), ('name', '=', shipping_line['method_title'])], limit=1)
+        odoo_delivery_carrier = self.env['delivery.carrier'].search([('name', '=', shipping_line['method_title'])], limit=1)
 
-        if not odoo_delivery_carrier:
+        if odoo_delivery_carrier:
+            # If current view setting is "active" and delivery carrier setting is "archive", activate it
+            if not woocommerce_sync_config.settings_woocommerce_order_delivery_methods_archive and not odoo_delivery_carrier.active:
+                odoo_delivery_carrier.active = True
+            # If current view setting is "archive" and delivery carrier setting "active", archive it
+            elif woocommerce_sync_config.settings_woocommerce_order_delivery_methods_archive and odoo_delivery_carrier.active:
+                odoo_delivery_carrier.active = False
+
+        else:
             # woocommerce_shipping_method = next((shipping_method for shipping_method in woocommerce_shipping_methods if shipping_method.get('id') == shipping_line['method_id']), None)
 
             # Create a new delivery product (if it doesn't exist)
             delivery_product = self.env['product.product'].search(
-                [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('name', '=', 'Shipping Product for ' + shipping_line['method_title'])],
+                [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('name', '=', 'Shipping Product for ' + shipping_line['method_title'])],
                 limit=1,
             )
 
@@ -635,7 +644,9 @@ class WoocommerceConnector(models.Model):
                 )
 
             # Create the delivery carrier with the associated product_id
-            odoo_delivery_carrier = self.env['delivery.carrier'].create({'name': shipping_line['method_title'], 'product_id': delivery_product.id, 'delivery_type': 'fixed'})
+            odoo_delivery_carrier = self.env['delivery.carrier'].create(
+                {'name': shipping_line['method_title'], 'product_id': delivery_product.id, 'delivery_type': 'fixed', 'active': not (woocommerce_sync_config.settings_woocommerce_order_delivery_methods_archive)},
+            )
 
         return odoo_delivery_carrier
 
