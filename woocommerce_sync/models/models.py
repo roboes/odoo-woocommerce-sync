@@ -161,19 +161,35 @@ class WoocommerceConnector(models.Model):
     def cron_job_update(self):
         # Odoo-WooCommerce settings
         woocommerce_sync_config = self.env['woocommerce.configuration'].search([], limit=1)
-        cron_values = {
-            'name': f'WooCommerce Auto-Sync - {self.settings_woocommerce_connection_url}',
-            'model_id': self.env['ir.model']._get(self._name).id,
-            'code': (
-                f'model.with_context(cron_running=True).browse({self.id}).with_delay().woocommerce_sync()'
-                if self.env['ir.module.module'].search([('name', '=', 'queue_job'), ('state', '=', 'installed')], limit=1)
-                else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
-            ),
-            'active': self.settings_woocommerce_sync_scheduled,
-            'interval_number': woocommerce_sync_config.settings_woocommerce_sync_scheduled_interval_minutes,
-            'interval_type': 'minutes',
-            'numbercall': -1,
-        }
+
+        if version_info[0] == 16:
+            cron_values = {
+                'name': f'WooCommerce Auto-Sync - {self.settings_woocommerce_connection_url}',
+                'model_id': self.env['ir.model']._get(self._name).id,
+                'code': (
+                    f'model.with_context(cron_running=True).browse({self.id}).with_delay().woocommerce_sync()'
+                    if self.env['ir.module.module'].search([('name', '=', 'queue_job'), ('state', '=', 'installed')], limit=1)
+                    else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
+                ),
+                'active': self.settings_woocommerce_sync_scheduled,
+                'interval_number': woocommerce_sync_config.settings_woocommerce_sync_scheduled_interval_minutes,
+                'interval_type': 'minutes',
+                'numbercall': -1,
+            }
+
+        elif version_info[0] == 18:
+            cron_values = {
+                'name': f'WooCommerce Auto-Sync - {self.settings_woocommerce_connection_url}',
+                'model_id': self.env['ir.model']._get(self._name).id,
+                'code': (
+                    f'model.with_context(cron_running=True).browse({self.id}).with_delay().woocommerce_sync()'
+                    if self.env['ir.module.module'].search([('name', '=', 'queue_job'), ('state', '=', 'installed')], limit=1)
+                    else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
+                ),
+                'active': self.settings_woocommerce_sync_scheduled,
+                'interval_number': woocommerce_sync_config.settings_woocommerce_sync_scheduled_interval_minutes,
+                'interval_type': 'minutes',
+            }
 
         # Update the existing cron job
         if self.ir_cron_id:

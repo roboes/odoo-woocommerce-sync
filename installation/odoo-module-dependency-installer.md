@@ -1,7 +1,7 @@
 # Odoo-WooCommerce Sync Odoo Module Dependency Installer
 
 > [!NOTE]
-> Last update: 2025-06-23
+> Last update: 2025-07-20
 
 ## Settings
 
@@ -38,7 +38,7 @@ declare -A repos=(
 declare -A modules_to_install=(
   ["odoo-woocommerce-sync"]="woocommerce_sync"
   # Required Odoo Community Association (OCA) add-ons
-  ["queue"]="queue_job"
+  ["queue"]="queue_job queue_job_cron"
   # Optional Odoo Community Association (OCA) add-ons
   ["server-tools"]="module_auto_update"
   ["product-attribute"]="product_dimension product_multi_category"

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2025-07-20
+
+### Fix
+
+- Fixed an issue where the scheduled cron job was not executing in Odoo 18.
+
 ## 2025-07-15
 
 ### Features

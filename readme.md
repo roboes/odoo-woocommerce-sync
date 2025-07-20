@@ -83,6 +83,8 @@ While not mandatory, the following Odoo Community Association (OCA) add-ons are 
 
 - **Module Auto Update** (`module_auto_update`): Automatically updates installed modules to their latest versions, ensuring the system remains current with minimal manual intervention.
   - [GitHub](https://github.com/OCA/server-tools/tree/18.0/module_auto_update) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/module_auto_update)
+- **Scheduled Actions as Queue Jobs** (`queue_job_cron`): Extends the functionality of `queue_job` and allows to run an Odoo cron as a queue job.
+  - [GitHub](https://github.com/OCA/queue/tree/18.0/queue_job_cron) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/queue_job_cron)
 - **Product Dimension** (`product_dimension`): Adds fields for length, width, height, and unit of measure, enabling detailed management of product dimensions.
   - [GitHub](https://github.com/OCA/product-attribute/tree/18.0/product_dimension) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/product_dimension)
 - **Product - Many Categories** (`product_multi_category`): Enhances the standard single-category assignment (`categ_id`) by introducing a `categ_ids` field, allowing products to be organized into multiple categories.
