@@ -585,9 +585,6 @@ class WoocommerceConnector(models.Model):
             }
             odoo_customer_placeholder = self.env['res.partner'].create(customer_values)
 
-            # Commit changes
-            self.env.cr.commit()
-
         else:
             # Ensure the customer is archived
             if odoo_customer_placeholder.active:
@@ -611,9 +608,6 @@ class WoocommerceConnector(models.Model):
                 'product_sync_to_woocommerce': False,
             }
             odoo_product_placeholder = self.env['product.template'].create(product_values)
-
-            # Commit changes
-            self.env.cr.commit()
 
         else:
             # Ensure the product is archived
@@ -900,165 +894,175 @@ class WoocommerceConnector(models.Model):
         woocommerce_products = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', search_parameters=search_parameters)
 
         # Filter for WooCommerce products that have SKU
-        woocommerce_products = [product for product in woocommerce_products if product['sku']]
+        woocommerce_products = [woocommerce_product for woocommerce_product in woocommerce_products if woocommerce_product['sku']]
 
-        for product in woocommerce_products:
+        # Get all Odoo products with WooCommerce product ID
+        odoo_products = self.env['product.template'].search_read(
+            [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '!=', False)],
+            fields=['id', 'woocommerce_product_id', 'write_date', 'woocommerce_product_manage_stock', 'active'],
+        )
+        odoo_products = {odoo_product['woocommerce_product_id']: odoo_product for odoo_product in odoo_products}
+
+        for woocommerce_product in woocommerce_products:
             try:
-                # Search for existing product in Odoo
-                odoo_product = self.env['product.template'].search(
-                    [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '=', product['id'])],
-                    limit=1,
-                )
+                # Try to find the corresponding product in Odoo by its WooCommerce product ID
+                odoo_product = odoo_products.get(str(woocommerce_product['id']))
 
-                # If the product exists, check the 'manage_stock' field
                 if odoo_product:
-                    if odoo_product.woocommerce_product_manage_stock != product['manage_stock']:
-                        # Remove the product from Odoo so it can be re-imported fresh
-                        odoo_product.unlink()
-                        odoo_product = False
+                    # Skip if not modified and stock setting unchanged
+                    if self.datetime_convert(woocommerce_product['date_modified_gmt']) <= odoo_product['write_date'] and odoo_product['woocommerce_product_manage_stock'] == woocommerce_product['manage_stock']:
+                        _logger.info(f'Skipped WooCommerce product ID: {woocommerce_product["id"]}')
+                        continue
+
+                    # Sync if modified or stock setting changed
+                    elif (self.datetime_convert(woocommerce_product['date_modified_gmt']) > odoo_product['write_date']) or odoo_product['woocommerce_product_manage_stock'] != woocommerce_product['manage_stock']:
+                        odoo_product = self.env['product.template'].browse(odoo_product['id'])
+
+                        if odoo_product.woocommerce_product_manage_stock != woocommerce_product['manage_stock']:
+                            # Remove the product from Odoo so it can be re-imported fresh
+                            odoo_product.unlink()
+                            odoo_product = None
 
                 # Create new product in Odoo if it does not yet exist or update product in Odoo only if WooCommerce version is newer
-                if not odoo_product or (odoo_product and self.datetime_convert(product['date_modified_gmt']) > odoo_product.write_date):
-                    product_values = self.woocommerce_product_fields(woocommerce_sync_config, product, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates)
+                product_values = self.woocommerce_product_fields(woocommerce_sync_config, woocommerce_product, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates)
 
-                    # Currency
-                    if product_values['woocommerce_product_currency']:
-                        odoo_product_currency = self.odoo_currency_retrieve(product_values['woocommerce_product_currency'])
+                # Currency
+                if product_values['woocommerce_product_currency']:
+                    odoo_product_currency = self.odoo_currency_retrieve(product_values['woocommerce_product_currency'])
 
-                    # Tax
-                    odoo_product_tax_id = []
-                    if product_values['woocommerce_product_tax_rate']:
-                        odoo_product_tax = self.odoo_tax_create_or_retrieve(product_values['woocommerce_product_tax_rate'], woocommerce_product_prices_include_tax)
-                        if odoo_product_tax:
-                            odoo_product_tax_id = [(6, 0, [odoo_product_tax.id])]
+                # Tax
+                odoo_product_tax_id = []
+                if product_values['woocommerce_product_tax_rate']:
+                    odoo_product_tax = self.odoo_tax_create_or_retrieve(product_values['woocommerce_product_tax_rate'], woocommerce_product_prices_include_tax)
+                    if odoo_product_tax:
+                        odoo_product_tax_id = [(6, 0, [odoo_product_tax.id])]
 
-                    # Brand (requires 'product_brand' add-on)
-                    if self.env['ir.module.module'].search([('name', '=', 'product_brand'), ('state', '=', 'installed')], limit=1):
-                        odoo_product_brands_ids = []
-                        for brand in product['brands']:
-                            odoo_brand = self.odoo_brand_create_or_retrieve(brand['name'])
-                            if odoo_brand:
-                                odoo_product_brands_ids.append(odoo_brand.id)
+                # Brand (requires 'product_brand' add-on)
+                if self.env['ir.module.module'].search([('name', '=', 'product_brand'), ('state', '=', 'installed')], limit=1):
+                    odoo_product_brands_ids = []
+                    for brand in woocommerce_product['brands']:
+                        odoo_brand = self.odoo_brand_create_or_retrieve(brand['name'])
+                        if odoo_brand:
+                            odoo_product_brands_ids.append(odoo_brand.id)
 
-                        product_values.update({'product_brand_id': odoo_product_brands_ids[0] if odoo_product_brands_ids else False})
+                    product_values.update({'product_brand_id': odoo_product_brands_ids[0] if odoo_product_brands_ids else False})
 
-                    # Category
-                    odoo_product_categories_ids = []
-                    for category in product['categories']:
-                        odoo_product_category = self.odoo_category_create_or_retrieve(category['name'])
-                        if odoo_product_category:
-                            odoo_product_categories_ids.append(odoo_product_category.id)
+                # Category
+                odoo_product_categories_ids = []
+                for category in woocommerce_product['categories']:
+                    odoo_product_category = self.odoo_category_create_or_retrieve(category['name'])
+                    if odoo_product_category:
+                        odoo_product_categories_ids.append(odoo_product_category.id)
 
-                    # Categories (requires 'product_multi_category' add-on)
-                    if self.env['ir.module.module'].search([('name', '=', 'product_multi_category'), ('state', '=', 'installed')], limit=1):
-                        product_values.update({'categ_ids': [(6, 0, odoo_product_categories_ids)]})
+                # Categories (requires 'product_multi_category' add-on)
+                if self.env['ir.module.module'].search([('name', '=', 'product_multi_category'), ('state', '=', 'installed')], limit=1):
+                    product_values.update({'categ_ids': [(6, 0, odoo_product_categories_ids)]})
 
-                    # Tags
-                    odoo_product_tags_ids = []
-                    for tag in product['tags']:
-                        odoo_tag = self.odoo_tag_create_or_retrieve(tag['name'])
-                        if odoo_tag:
-                            odoo_product_tags_ids.append(odoo_tag.id)
+                # Tags
+                odoo_product_tags_ids = []
+                for tag in woocommerce_product['tags']:
+                    odoo_tag = self.odoo_tag_create_or_retrieve(tag['name'])
+                    if odoo_tag:
+                        odoo_product_tags_ids.append(odoo_tag.id)
 
-                    # Unit of measure
-                    if product_values['woocommerce_product_weight_unit']:
-                        odoo_product_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(product_values['woocommerce_product_weight_unit'])
+                # Unit of measure
+                if product_values['woocommerce_product_weight_unit']:
+                    odoo_product_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(product_values['woocommerce_product_weight_unit'])
 
-                    # Dimensions (requires 'product_dimension' add-on)
-                    if self.env['ir.module.module'].search([('name', '=', 'product_dimension'), ('state', '=', 'installed')], limit=1):
-                        odoo_product_unit_of_measure_dimension = self.odoo_unit_of_measure_dimension_retrieve(product_values['woocommerce_product_dimension_unit'])
+                # Dimensions (requires 'product_dimension' add-on)
+                if self.env['ir.module.module'].search([('name', '=', 'product_dimension'), ('state', '=', 'installed')], limit=1):
+                    odoo_product_unit_of_measure_dimension = self.odoo_unit_of_measure_dimension_retrieve(product_values['woocommerce_product_dimension_unit'])
 
-                        if odoo_product_unit_of_measure_dimension:
-                            odoo_product_unit_of_measure_dimension_id = odoo_product_unit_of_measure_dimension.id
+                    if odoo_product_unit_of_measure_dimension:
+                        odoo_product_unit_of_measure_dimension_id = odoo_product_unit_of_measure_dimension.id
 
-                        product_values.update(
-                            {
-                                'dimensional_uom_id': odoo_product_unit_of_measure_dimension_id,
-                                'product_length': product['dimensions']['length'],
-                                'product_width': product['dimensions']['width'],
-                                'product_height': product['dimensions']['height'],
-                            },
-                        )
-
-                    # Image featured
-                    if woocommerce_sync_config.settings_woocommerce_images_sync and len(product['images']) > 0:
-                        odoo_product_image_featured = self.image_download_file_to_base64(product['images'][0])
-
-                    else:
-                        odoo_product_image_featured = None
-
-                    # Odoo 'product.template' model fields
                     product_values.update(
                         {
-                            # General information
-                            'name': product_values['woocommerce_product_name'],
-                            'image_1920': odoo_product_image_featured,
-                            'default_code': product_values['woocommerce_product_sku'],
-                            'create_date': product_values['woocommerce_product_date_created_gmt'],
-                            # 'type': 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu',
-                            'description': 'Imported via Odoo-WooCommerce Sync',
-                            'description_sale': product_values['woocommerce_product_description'],
-                            'responsible_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
-                            # Product status
-                            'active': True if product_values['woocommerce_product_status'] == 'publish' else False,
-                            'sale_ok': product_values['woocommerce_product_purchasable'],
-                            # Pricing
-                            'currency_id': odoo_product_currency.id,
-                            'taxes_id': odoo_product_tax_id,
-                            'invoice_policy': 'order',
-                            'list_price': product_values['woocommerce_product_price'],
-                            # Category and tags
-                            'categ_id': odoo_product_categories_ids[0] if odoo_product_categories_ids else False,
-                            'product_tag_ids': [(6, 0, odoo_product_tags_ids)],
-                            # Variations and attributes
-                            'is_product_variant': True if product_values['woocommerce_product_type'] == 'variation' else False,
-                            'has_configurable_attributes': True if product_values['woocommerce_product_type'] == 'variation' and len(attribute_value_ids or []) > 0 else False,
-                            # Dimensions
-                            'weight': product_values['woocommerce_product_weight'],
-                            'uom_id': odoo_product_unit_of_measure.id if odoo_product_unit_of_measure else False,
-                            'uom_po_id': odoo_product_unit_of_measure.id if odoo_product_unit_of_measure else False,
-                            'volume': (
-                                float(product_values['woocommerce_product_dimensions']['length'])
-                                * float(product_values['woocommerce_product_dimensions']['width'])
-                                * float(product_values['woocommerce_product_dimensions']['height'])
-                                if (product_values['woocommerce_product_dimensions']['length'] and product_values['woocommerce_product_dimensions']['width'] and product_values['woocommerce_product_dimensions']['height'])
-                                else False
-                            ),
+                            'dimensional_uom_id': odoo_product_unit_of_measure_dimension_id,
+                            'product_length': woocommerce_product['dimensions']['length'],
+                            'product_width': woocommerce_product['dimensions']['width'],
+                            'product_height': woocommerce_product['dimensions']['height'],
                         },
                     )
 
-                    # Product type
-                    if version_info[0] == 16:
-                        product_values['detailed_type'] = 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu'
+                # Image featured
+                if woocommerce_sync_config.settings_woocommerce_images_sync and len(woocommerce_product['images']) > 0:
+                    odoo_product_image_featured = self.image_download_file_to_base64(woocommerce_product['images'][0])
 
-                    elif version_info[0] == 18:
-                        product_values['type'] = 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu'
+                else:
+                    odoo_product_image_featured = None
 
-                    if odoo_product:
-                        odoo_product.write(product_values)
+                # Odoo 'product.template' model fields
+                product_values.update(
+                    {
+                        # General information
+                        'name': product_values['woocommerce_product_name'],
+                        'image_1920': odoo_product_image_featured,
+                        'default_code': product_values['woocommerce_product_sku'],
+                        'create_date': product_values['woocommerce_product_date_created_gmt'],
+                        # 'type': 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu',
+                        'description': 'Imported via Odoo-WooCommerce Sync',
+                        'description_sale': product_values['woocommerce_product_description'],
+                        'responsible_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
+                        # Product status
+                        'active': True if product_values['woocommerce_product_status'] == 'publish' else False,
+                        'sale_ok': product_values['woocommerce_product_purchasable'],
+                        # Pricing
+                        'currency_id': odoo_product_currency.id,
+                        'taxes_id': odoo_product_tax_id,
+                        'invoice_policy': 'order',
+                        'list_price': product_values['woocommerce_product_price'],
+                        # Category and tags
+                        'categ_id': odoo_product_categories_ids[0] if odoo_product_categories_ids else False,
+                        'product_tag_ids': [(6, 0, odoo_product_tags_ids)],
+                        # Variations and attributes
+                        'is_product_variant': True if product_values['woocommerce_product_type'] == 'variation' else False,
+                        'has_configurable_attributes': True if product_values['woocommerce_product_type'] == 'variation' and len(attribute_value_ids or []) > 0 else False,
+                        # Dimensions
+                        'weight': product_values['woocommerce_product_weight'],
+                        'uom_id': odoo_product_unit_of_measure.id if odoo_product_unit_of_measure else False,
+                        'uom_po_id': odoo_product_unit_of_measure.id if odoo_product_unit_of_measure else False,
+                        'volume': (
+                            float(product_values['woocommerce_product_dimensions']['length'])
+                            * float(product_values['woocommerce_product_dimensions']['width'])
+                            * float(product_values['woocommerce_product_dimensions']['height'])
+                            if (product_values['woocommerce_product_dimensions']['length'] and product_values['woocommerce_product_dimensions']['width'] and product_values['woocommerce_product_dimensions']['height'])
+                            else False
+                        ),
+                    },
+                )
 
-                    else:
-                        odoo_product = self.env['product.template'].create(product_values)
+                # Product type
+                if version_info[0] == 16:
+                    product_values['detailed_type'] = 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu'
 
-                    # Product gallery
-                    if odoo_product and woocommerce_sync_config.settings_woocommerce_images_sync and len(product['images']) > 0:
-                        attachment_ids = self.image_process_attachments(product['images'], odoo_product, create_attachments=True)
-                        if attachment_ids:
-                            odoo_product.write({'product_image_ids': [(6, 0, attachment_ids)]})
+                elif version_info[0] == 18:
+                    product_values['type'] = 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu'
 
-                        if version_info[0] == 18 and self.env['ir.module.module'].search([('name', '=', 'website_sale'), ('state', '=', 'installed')], limit=1):
-                            image_values_list = self.image_process_attachments(product['images'], odoo_product, create_attachments=False)
-                            if image_values_list:
-                                # Clear the gallery ((5, 0, 0)), then create new images ((0, 0, {vals}))
-                                odoo_product.write({'product_template_image_ids': [(5, 0, 0)] + [(0, 0, values) for values in image_values_list]})
+                if odoo_product:
+                    odoo_product.write(product_values)
+                    _logger.info(f'Updated WooCommerce product ID: {woocommerce_product["id"]}')
 
-                    # Commit changes
-                    self.env.cr.commit()
+                else:
+                    odoo_product = self.env['product.template'].create(product_values)
+                    _logger.info(f'Imported WooCommerce product ID: {woocommerce_product["id"]}')
+
+                # Product gallery
+                if odoo_product and woocommerce_sync_config.settings_woocommerce_images_sync and len(woocommerce_product['images']) > 0:
+                    attachment_ids = self.image_process_attachments(woocommerce_product['images'], odoo_product, create_attachments=True)
+                    if attachment_ids:
+                        odoo_product.write({'product_image_ids': [(6, 0, attachment_ids)]})
+
+                    if version_info[0] == 18 and self.env['ir.module.module'].search([('name', '=', 'website_sale'), ('state', '=', 'installed')], limit=1):
+                        image_values_list = self.image_process_attachments(woocommerce_product['images'], odoo_product, create_attachments=False)
+                        if image_values_list:
+                            # Clear the gallery ((5, 0, 0)), then create new images ((0, 0, {vals}))
+                            odoo_product.write({'product_template_image_ids': [(5, 0, 0)] + [(0, 0, values) for values in image_values_list]})
 
             except Exception as error:
                 # Roll back changes
                 self.env.cr.rollback()
-                _logger.exception(f'Error syncing product {product["id"]}: {error}')
+                _logger.exception(f'Error syncing product {woocommerce_product["id"]}: {error}')
 
     def woocommerce_to_odoo_product_related_ids(self, woocommerce_sync_config):
         # Retrieve all Odoo products
@@ -1214,17 +1218,17 @@ class WoocommerceConnector(models.Model):
         woocommerce_products = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', search_parameters=search_parameters)
 
         # Filter for WooCommerce products that have SKU
-        woocommerce_products = [product for product in woocommerce_products if product['sku']]
+        woocommerce_products = [woocommerce_product for woocommerce_product in woocommerce_products if woocommerce_product['sku']]
 
-        for product in woocommerce_products:
+        for woocommerce_product in woocommerce_products:
             try:
                 # Search for existing product in Odoo
                 odoo_product = self.env['product.template'].search(
-                    [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '=', product['id'])],
+                    [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '=', woocommerce_product['id'])],
                     limit=1,
                 )
                 if not odoo_product:
-                    _logger.warning(f"Product template for WooCommerce product '{product['name']}' not found.")
+                    _logger.warning(f"Product template for WooCommerce product '{woocommerce_product['name']}' not found.")
                     continue
 
                 if odoo_product:
@@ -1239,7 +1243,7 @@ class WoocommerceConnector(models.Model):
                             search_parameters['modified_after'] = woocommerce_last_execution_datetime.strftime('%Y-%m-%dT%H:%M:%S')  # ISO 8601 date format
 
                     # WooCommerce product variations for the product
-                    woocommerce_product_variations = self.woocommerce_api_get_all_items(woocommerce_api, endpoint=f'products/{product["id"]}/variations', search_parameters=search_parameters)
+                    woocommerce_product_variations = self.woocommerce_api_get_all_items(woocommerce_api, endpoint=f'products/{woocommerce_product["id"]}/variations', search_parameters=search_parameters)
 
                     for product_variation in woocommerce_product_variations:
                         product_variation_values = self.woocommerce_product_variation_fields(
@@ -1372,9 +1376,6 @@ class WoocommerceConnector(models.Model):
                         # Update the variant with the WooCommerce values
                         odoo_variant.write(product_variation_values)
 
-                        # Commit changes
-                        self.env.cr.commit()
-
                 # After processing all variations for the current product
                 aggregated_tax_ids = []
                 for variant in odoo_product.product_variant_ids:
@@ -1394,7 +1395,7 @@ class WoocommerceConnector(models.Model):
             except Exception as error:
                 # Roll back changes
                 self.env.cr.rollback()
-                _logger.exception(f'Error syncing product {product["id"]}: {error}')
+                _logger.exception(f'Error syncing product {woocommerce_product["id"]}: {error}')
 
     def woocommerce_to_odoo_customers_sync(self, woocommerce_sync_config, woocommerce_api):
         # WooCommerce REST API parameters
@@ -1408,142 +1409,155 @@ class WoocommerceConnector(models.Model):
         # WooCommerce customers
         woocommerce_customers = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='customers', search_parameters=search_parameters)
 
-        for customer in woocommerce_customers:
+        # Get all Odoo partners with WooCommerce customer ID
+        odoo_customers = self.env['res.partner'].search_read(
+            [('woocommerce_customer_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_customer_id', '!=', False)],
+            fields=['id', 'woocommerce_customer_id', 'write_date', 'active'],
+        )
+        odoo_customers = {odoo_customer['woocommerce_customer_id']: odoo_customer for odoo_customer in odoo_customers}
+
+        for woocommerce_customer in woocommerce_customers:
             try:
-                # Search for existing customer in Odoo
-                odoo_customer = self.env['res.partner'].search(
-                    [('woocommerce_customer_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_customer_id', '=', customer['id'])],
-                    limit=1,
-                )
+                # Try to find the corresponding partner in Odoo by its WooCommerce customer ID
+                odoo_customer = odoo_customers.get(str(woocommerce_customer['id']))
+
+                if odoo_customer:
+                    # Skip if not modified
+                    if self.datetime_convert(woocommerce_customer['date_modified_gmt']) <= odoo_customer['write_date']:
+                        _logger.info(f'Skipped WooCommerce customer ID: {woocommerce_customer["id"]}')
+                        continue
+
+                    # Sync if modified
+                    elif self.datetime_convert(woocommerce_customer['date_modified_gmt']) > odoo_customer['write_date']:
+                        odoo_customer = self.env['res.partner'].browse(odoo_customer['id'])
 
                 # Create new customer in Odoo if it does not yet exist or update customer in Odoo only if WooCommerce version is newer
-                if not odoo_customer or (odoo_customer and self.datetime_convert(customer['date_modified_gmt']) > odoo_customer.write_date):
-                    # WooCommerce site URL field
-                    customer_values = {
-                        'woocommerce_customer_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
-                    }
 
-                    # WooCommerce REST API - Customer properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-properties
-                    customer_values.update(
-                        {
-                            'woocommerce_customer_id': customer['id'],
-                            'woocommerce_customer_date_created': customer['date_created'],
-                            'woocommerce_customer_date_created_gmt': customer['date_created_gmt'],
-                            'woocommerce_customer_date_modified': customer['date_modified'],
-                            'woocommerce_customer_date_modified_gmt': customer['date_modified_gmt'],
-                            'woocommerce_customer_email': customer['email'],
-                            'woocommerce_customer_first_name': customer['first_name'],
-                            'woocommerce_customer_last_name': customer['last_name'],
-                            'woocommerce_customer_role': customer['role'],
-                            'woocommerce_customer_username': customer['username'],
-                            'woocommerce_customer_is_paying_customer': customer['is_paying_customer'],
-                            'woocommerce_customer_avatar_url': customer['avatar_url'],
-                            'woocommerce_customer_meta_data': customer['meta_data'],
-                        },
-                    )
+                # WooCommerce site URL field
+                customer_values = {
+                    'woocommerce_customer_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
+                }
 
-                    # WooCommerce REST API - Customer billing properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-billing-properties
-                    customer_values.update(
-                        {
-                            'woocommerce_customer_billing_first_name': customer['billing']['first_name'],
-                            'woocommerce_customer_billing_last_name': customer['billing']['last_name'],
-                            'woocommerce_customer_billing_company': customer['billing']['company'],
-                            'woocommerce_customer_billing_address_1': customer['billing']['address_1'],
-                            'woocommerce_customer_billing_address_2': customer['billing']['address_2'],
-                            'woocommerce_customer_billing_city': customer['billing']['city'],
-                            'woocommerce_customer_billing_state': customer['billing']['state'],
-                            'woocommerce_customer_billing_postcode': customer['billing']['postcode'],
-                            'woocommerce_customer_billing_country': customer['billing']['country'],
-                            'woocommerce_customer_billing_email': customer['billing']['email'],
-                            'woocommerce_customer_billing_phone': customer['billing']['phone'],
-                        },
-                    )
+                # WooCommerce REST API - Customer properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-properties
+                customer_values.update(
+                    {
+                        'woocommerce_customer_id': woocommerce_customer['id'],
+                        'woocommerce_customer_date_created': woocommerce_customer['date_created'],
+                        'woocommerce_customer_date_created_gmt': woocommerce_customer['date_created_gmt'],
+                        'woocommerce_customer_date_modified': woocommerce_customer['date_modified'],
+                        'woocommerce_customer_date_modified_gmt': woocommerce_customer['date_modified_gmt'],
+                        'woocommerce_customer_email': woocommerce_customer['email'],
+                        'woocommerce_customer_first_name': woocommerce_customer['first_name'],
+                        'woocommerce_customer_last_name': woocommerce_customer['last_name'],
+                        'woocommerce_customer_role': woocommerce_customer['role'],
+                        'woocommerce_customer_username': woocommerce_customer['username'],
+                        'woocommerce_customer_is_paying_customer': woocommerce_customer['is_paying_customer'],
+                        'woocommerce_customer_avatar_url': woocommerce_customer['avatar_url'],
+                        'woocommerce_customer_meta_data': woocommerce_customer['meta_data'],
+                    },
+                )
 
-                    # WooCommerce REST API - Customer shipping properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-shipping-properties
-                    customer_values.update(
-                        {
-                            'woocommerce_customer_shipping_first_name': customer['shipping']['first_name'],
-                            'woocommerce_customer_shipping_last_name': customer['shipping']['last_name'],
-                            'woocommerce_customer_shipping_company': customer['shipping']['company'],
-                            'woocommerce_customer_shipping_address_1': customer['shipping']['address_1'],
-                            'woocommerce_customer_shipping_address_2': customer['shipping']['address_2'],
-                            'woocommerce_customer_shipping_city': customer['shipping']['city'],
-                            'woocommerce_customer_shipping_state': customer['shipping']['state'],
-                            'woocommerce_customer_shipping_postcode': customer['shipping']['postcode'],
-                            'woocommerce_customer_shipping_country': customer['shipping']['country'],
-                        },
-                    )
+                # WooCommerce REST API - Customer billing properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-billing-properties
+                customer_values.update(
+                    {
+                        'woocommerce_customer_billing_first_name': woocommerce_customer['billing']['first_name'],
+                        'woocommerce_customer_billing_last_name': woocommerce_customer['billing']['last_name'],
+                        'woocommerce_customer_billing_company': woocommerce_customer['billing']['company'],
+                        'woocommerce_customer_billing_address_1': woocommerce_customer['billing']['address_1'],
+                        'woocommerce_customer_billing_address_2': woocommerce_customer['billing']['address_2'],
+                        'woocommerce_customer_billing_city': woocommerce_customer['billing']['city'],
+                        'woocommerce_customer_billing_state': woocommerce_customer['billing']['state'],
+                        'woocommerce_customer_billing_postcode': woocommerce_customer['billing']['postcode'],
+                        'woocommerce_customer_billing_country': woocommerce_customer['billing']['country'],
+                        'woocommerce_customer_billing_email': woocommerce_customer['billing']['email'],
+                        'woocommerce_customer_billing_phone': woocommerce_customer['billing']['phone'],
+                    },
+                )
 
-                    # Localization
+                # WooCommerce REST API - Customer shipping properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-shipping-properties
+                customer_values.update(
+                    {
+                        'woocommerce_customer_shipping_first_name': woocommerce_customer['shipping']['first_name'],
+                        'woocommerce_customer_shipping_last_name': woocommerce_customer['shipping']['last_name'],
+                        'woocommerce_customer_shipping_company': woocommerce_customer['shipping']['company'],
+                        'woocommerce_customer_shipping_address_1': woocommerce_customer['shipping']['address_1'],
+                        'woocommerce_customer_shipping_address_2': woocommerce_customer['shipping']['address_2'],
+                        'woocommerce_customer_shipping_city': woocommerce_customer['shipping']['city'],
+                        'woocommerce_customer_shipping_state': woocommerce_customer['shipping']['state'],
+                        'woocommerce_customer_shipping_postcode': woocommerce_customer['shipping']['postcode'],
+                        'woocommerce_customer_shipping_country': woocommerce_customer['shipping']['country'],
+                    },
+                )
 
-                    ## Brazil (requires 'l10n_br_fiscal' add-on)
-                    if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
-                        if customer['billing']['cpf'] or customer['billing']['cnpj']:
-                            customer_values.update({'cnpj_cpf': customer['billing']['cpf'] or customer['billing']['cnpj']})
+                # Localization
 
-                    # Custom fields
-                    customer_values.update(
-                        {
-                            'woocommerce_customer_date_last_login': datetime.fromtimestamp(int(meta['value']))
-                            if (meta := next((meta for meta in customer['meta_data'] if meta.get('key') == 'wfls-last-login'), None))
-                            else None,  # Wordfence Security field
-                        },
-                    )
+                ## Brazil (requires 'l10n_br_fiscal' add-on)
+                if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
+                    if woocommerce_customer['billing']['cpf'] or woocommerce_customer['billing']['cnpj']:
+                        customer_values.update({'cnpj_cpf': woocommerce_customer['billing']['cpf'] or woocommerce_customer['billing']['cnpj']})
 
-                    # Loop through the explicitly defined date columns for conversion
-                    for column in [
-                        'woocommerce_customer_date_created',
-                        'woocommerce_customer_date_created_gmt',
-                        'woocommerce_customer_date_modified',
-                        'woocommerce_customer_date_modified_gmt',
-                    ]:
-                        if column in customer_values and customer_values[column]:
-                            customer_values[column] = self.datetime_convert(customer_values[column])
+                # Custom fields
+                customer_values.update(
+                    {
+                        'woocommerce_customer_date_last_login': datetime.fromtimestamp(int(meta['value']))
+                        if (meta := next((meta for meta in woocommerce_customer['meta_data'] if meta.get('key') == 'wfls-last-login'), None))
+                        else None,  # Wordfence Security field
+                    },
+                )
 
-                    # Customer avatar
-                    if woocommerce_sync_config.settings_woocommerce_images_sync and customer['avatar_url'] != '':
-                        odoo_avatar_url = self.image_download_file_to_base64({'src': customer['avatar_url']})
-                    else:
-                        odoo_avatar_url = None
+                # Loop through the explicitly defined date columns for conversion
+                for column in [
+                    'woocommerce_customer_date_created',
+                    'woocommerce_customer_date_created_gmt',
+                    'woocommerce_customer_date_modified',
+                    'woocommerce_customer_date_modified_gmt',
+                ]:
+                    if column in customer_values and customer_values[column]:
+                        customer_values[column] = self.datetime_convert(customer_values[column])
 
-                    # Odoo 'res.partner' model fields
-                    customer_values.update(
-                        {
-                            # General information
-                            'name': f'{customer_values["woocommerce_customer_first_name"]} {customer_values["woocommerce_customer_last_name"]}',
-                            'image_1920': odoo_avatar_url,
-                            'ref': customer_values['woocommerce_customer_id'],
-                            'create_date': customer_values['woocommerce_customer_date_created_gmt'],
-                            'company_type': 'person',
-                            'customer_rank': 1 if customer_values['woocommerce_customer_is_paying_customer'] else 0,
-                            'email': customer_values['woocommerce_customer_email'],
-                            'mobile': customer_values['woocommerce_customer_billing_phone'],
-                            'user_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
-                            # Customer status
-                            'active': True,
-                            # Address
-                            'street': customer_values['woocommerce_customer_billing_address_1'],
-                            'street2': customer_values['woocommerce_customer_billing_address_2'],
-                            'city': customer_values['woocommerce_customer_billing_city'],
-                            'zip': customer_values['woocommerce_customer_billing_postcode'],
-                            'country_id': self.env['res.country'].search([('code', '=', customer_values['woocommerce_customer_billing_country'])], limit=1).id,
-                        },
-                    )
+                # Customer avatar
+                if woocommerce_sync_config.settings_woocommerce_images_sync and woocommerce_customer['avatar_url'] != '':
+                    odoo_avatar_url = self.image_download_file_to_base64({'src': woocommerce_customer['avatar_url']})
+                else:
+                    odoo_avatar_url = None
 
-                    if odoo_customer:
-                        if customer_values['woocommerce_customer_date_modified_gmt'] > odoo_customer.write_date:
-                            odoo_customer.write(customer_values)
+                # Odoo 'res.partner' model fields
+                customer_values.update(
+                    {
+                        # General information
+                        'name': f'{customer_values["woocommerce_customer_first_name"]} {customer_values["woocommerce_customer_last_name"]}',
+                        'image_1920': odoo_avatar_url,
+                        'ref': customer_values['woocommerce_customer_id'],
+                        'create_date': customer_values['woocommerce_customer_date_created_gmt'],
+                        'company_type': 'person',
+                        'customer_rank': 1 if customer_values['woocommerce_customer_is_paying_customer'] else 0,
+                        'email': customer_values['woocommerce_customer_email'],
+                        'mobile': customer_values['woocommerce_customer_billing_phone'],
+                        'user_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
+                        # Customer status
+                        'active': True,
+                        # Address
+                        'street': customer_values['woocommerce_customer_billing_address_1'],
+                        'street2': customer_values['woocommerce_customer_billing_address_2'],
+                        'city': customer_values['woocommerce_customer_billing_city'],
+                        'zip': customer_values['woocommerce_customer_billing_postcode'],
+                        'country_id': self.env['res.country'].search([('code', '=', customer_values['woocommerce_customer_billing_country'])], limit=1).id,
+                    },
+                )
 
-                    else:
-                        odoo_customer = self.env['res.partner'].create(customer_values)
+                if odoo_customer:
+                    if customer_values['woocommerce_customer_date_modified_gmt'] > odoo_customer.write_date:
+                        odoo_customer.write(customer_values)
+                        _logger.info(f'Updated WooCommerce customer ID: {woocommerce_customer["id"]}')
 
-                    # Commit changes
-                    self.env.cr.commit()
+                else:
+                    odoo_customer = self.env['res.partner'].create(customer_values)
+                    _logger.info(f'Imported WooCommerce customer ID: {woocommerce_customer["id"]}')
 
             except Exception as error:
                 # Roll back changes
                 self.env.cr.rollback()
-                _logger.exception(f'Error syncing customer {customer["id"]}: {error}')
+                _logger.exception(f'Error syncing customer {woocommerce_customer["id"]}: {error}')
 
     def woocommerce_to_odoo_orders_sync(self, woocommerce_sync_config, woocommerce_api, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods):
         # WooCommerce REST API parameters
@@ -1557,418 +1571,430 @@ class WoocommerceConnector(models.Model):
         # WooCommerce orders
         woocommerce_orders = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='orders', search_parameters=search_parameters)
 
-        for order in woocommerce_orders:
+        # Get all Odoo sale orders with WooCommerce order ID
+        odoo_sale_orders = self.env['sale.order'].search_read(
+            [('woocommerce_order_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('woocommerce_order_id', '!=', False)],
+            fields=['id', 'woocommerce_order_id', 'write_date'],
+        )
+        odoo_sale_orders = {odoo_sale_order['woocommerce_order_id']: odoo_sale_order for odoo_sale_order in odoo_sale_orders}
+
+        for woocommerce_order in woocommerce_orders:
             try:
-                # Search for existing sale order in Odoo
-                odoo_sale_order = self.env['sale.order'].search(
-                    [('woocommerce_order_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('woocommerce_order_id', '=', order['id'])],
+                # Try to find the corresponding sale order in Odoo by its WooCommerce order ID
+                odoo_sale_order = odoo_sale_orders.get(str(woocommerce_order['id']))
+
+                if odoo_sale_order:
+                    # Skip if not modified
+                    if self.datetime_convert(woocommerce_order['date_modified_gmt']) <= odoo_sale_order['write_date']:
+                        _logger.info(f'Skipped WooCommerce order ID: {woocommerce_order["id"]}')
+                        continue
+
+                    # Sync if modified
+                    elif self.datetime_convert(woocommerce_order['date_modified_gmt']) > odoo_sale_order['write_date']:
+                        odoo_sale_order = self.env['sale.order'].browse(odoo_sale_order['id'])
+
+                # Create new sale order in Odoo if it does not yet exist or update sale order in Odoo only if WooCommerce version is newer
+
+                # WooCommerce site URL field
+                order_values = {
+                    'woocommerce_order_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
+                }
+
+                # WooCommerce REST API - Order properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-properties
+                order_values.update(
+                    {
+                        'woocommerce_order_id': woocommerce_order['id'],
+                        'woocommerce_order_parent_id': woocommerce_order['parent_id'],
+                        'woocommerce_order_number': woocommerce_order['number'],
+                        'woocommerce_order_order_key': woocommerce_order['order_key'],
+                        'woocommerce_order_created_via': woocommerce_order['created_via'],
+                        'woocommerce_order_version': woocommerce_order['version'],
+                        'woocommerce_order_status': woocommerce_order['status'],
+                        'woocommerce_order_currency': woocommerce_order['currency'],
+                        'woocommerce_order_date_created': woocommerce_order['date_created'],
+                        'woocommerce_order_date_created_gmt': woocommerce_order['date_created_gmt'],
+                        'woocommerce_order_date_modified': woocommerce_order['date_modified'],
+                        'woocommerce_order_date_modified_gmt': woocommerce_order['date_modified_gmt'],
+                        'woocommerce_order_discount_total': woocommerce_order['discount_total'],
+                        'woocommerce_order_discount_tax': woocommerce_order['discount_tax'],
+                        'woocommerce_order_shipping_total': woocommerce_order['shipping_total'],
+                        'woocommerce_order_shipping_tax': woocommerce_order['shipping_tax'],
+                        'woocommerce_order_cart_tax': woocommerce_order['cart_tax'],
+                        'woocommerce_order_total': woocommerce_order['total'],
+                        'woocommerce_order_total_tax': woocommerce_order['total_tax'],
+                        'woocommerce_order_prices_include_tax': woocommerce_order['prices_include_tax'],
+                        'woocommerce_order_customer_id': woocommerce_order['customer_id'],
+                        'woocommerce_order_customer_ip_address': woocommerce_order['customer_ip_address'],
+                        'woocommerce_order_customer_user_agent': woocommerce_order['customer_user_agent'],
+                        'woocommerce_order_customer_note': woocommerce_order['customer_note'],
+                        'woocommerce_order_payment_method': woocommerce_order['payment_method'],
+                        'woocommerce_order_payment_method_title': woocommerce_order['payment_method_title'],
+                        'woocommerce_order_transaction_id': woocommerce_order['transaction_id'],
+                        'woocommerce_order_date_paid': woocommerce_order['date_paid'],
+                        'woocommerce_order_date_paid_gmt': woocommerce_order['date_paid_gmt'],
+                        'woocommerce_order_date_completed': woocommerce_order['date_completed'],
+                        'woocommerce_order_date_completed_gmt': woocommerce_order['date_completed_gmt'],
+                        'woocommerce_order_cart_hash': woocommerce_order['cart_hash'],
+                        'woocommerce_order_meta_data': woocommerce_order['meta_data'],
+                        'woocommerce_order_line_items': woocommerce_order['line_items'],
+                        'woocommerce_order_tax_lines': woocommerce_order['tax_lines'],
+                        'woocommerce_order_shipping_lines': woocommerce_order['shipping_lines'],
+                        'woocommerce_order_fee_lines': woocommerce_order['fee_lines'],
+                        'woocommerce_order_coupon_lines': woocommerce_order['coupon_lines'],
+                        'woocommerce_order_refunds': woocommerce_order['refunds'],
+                        # 'woocommerce_order_set_paid': woocommerce_order['set_paid'],
+                    },
+                )
+
+                # WooCommerce REST API - Order billing properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-billing-properties
+                order_values.update(
+                    {
+                        'woocommerce_order_billing_first_name': woocommerce_order['billing']['first_name'],
+                        'woocommerce_order_billing_last_name': woocommerce_order['billing']['last_name'],
+                        'woocommerce_order_billing_company': woocommerce_order['billing']['company'],
+                        'woocommerce_order_billing_address_1': woocommerce_order['billing']['address_1'],
+                        'woocommerce_order_billing_address_2': woocommerce_order['billing']['address_2'],
+                        'woocommerce_order_billing_city': woocommerce_order['billing']['city'],
+                        'woocommerce_order_billing_state': woocommerce_order['billing']['state'],
+                        'woocommerce_order_billing_postcode': woocommerce_order['billing']['postcode'],
+                        'woocommerce_order_billing_country': woocommerce_order['billing']['country'],
+                        'woocommerce_order_billing_email': woocommerce_order['billing']['email'],
+                        'woocommerce_order_billing_phone': woocommerce_order['billing']['phone'],
+                    },
+                )
+
+                # WooCommerce REST API - Order shipping properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-shipping-properties
+                order_values.update(
+                    {
+                        'woocommerce_order_shipping_first_name': woocommerce_order['shipping']['first_name'],
+                        'woocommerce_order_shipping_last_name': woocommerce_order['shipping']['last_name'],
+                        'woocommerce_order_shipping_company': woocommerce_order['shipping']['company'],
+                        'woocommerce_order_shipping_address_1': woocommerce_order['shipping']['address_1'],
+                        'woocommerce_order_shipping_address_2': woocommerce_order['shipping']['address_2'],
+                        'woocommerce_order_shipping_city': woocommerce_order['shipping']['city'],
+                        'woocommerce_order_shipping_state': woocommerce_order['shipping']['state'],
+                        'woocommerce_order_shipping_postcode': woocommerce_order['shipping']['postcode'],
+                        'woocommerce_order_shipping_country': woocommerce_order['shipping']['country'],
+                    },
+                )
+
+                # Fees
+                woocommerce_order_transaction_fee = None
+
+                ## PayPal
+                woocommerce_order_transaction_fee_paypal = next((item['value'] for item in order_values['woocommerce_order_meta_data'] if item.get('key') == 'PayPal Transaction Fee'), None)
+
+                ## Stripe
+                woocommerce_order_transaction_fee_stripe = next((item['value'] for item in order_values['woocommerce_order_meta_data'] if item.get('key') == '_stripe_fee'), None)
+
+                woocommerce_order_transaction_fee = woocommerce_order_transaction_fee_paypal or woocommerce_order_transaction_fee_stripe
+
+                # Custom fields
+                if woocommerce_order_transaction_fee:
+                    order_values.update(
+                        {
+                            'woocommerce_order_transaction_fee': woocommerce_order_transaction_fee,
+                        },
+                    )
+                order_values.update(
+                    {
+                        'order_language_code': woocommerce_order.get('lang', None),  # Polylang field
+                    },
+                )
+
+                # Loop through the explicitly defined date columns for conversion
+                for column in [
+                    'woocommerce_order_date_created',
+                    'woocommerce_order_date_created_gmt',
+                    'woocommerce_order_date_modified',
+                    'woocommerce_order_date_modified_gmt',
+                    'woocommerce_order_date_paid',
+                    'woocommerce_order_date_paid_gmt',
+                    'woocommerce_order_date_completed',
+                    'woocommerce_order_date_completed_gmt',
+                ]:
+                    if column in order_values and order_values[column]:
+                        order_values[column] = self.datetime_convert(order_values[column])
+
+                # Currency
+                if order_values['woocommerce_order_currency']:
+                    odoo_order_currency = self.odoo_currency_retrieve(order_values['woocommerce_order_currency'])
+
+                # Odoo Customer ID
+                odoo_customer = self.env['res.partner'].search(
+                    [
+                        ('woocommerce_customer_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
+                        ('active', '=', True),
+                        ('woocommerce_customer_id', '=', woocommerce_order['customer_id']),
+                    ],
                     limit=1,
                 )
 
-                # Create new sale order in Odoo if it does not yet exist or update sale order in Odoo only if WooCommerce version is newer
-                if not odoo_sale_order or (odoo_sale_order and self.datetime_convert(order['date_modified_gmt']) > odoo_sale_order.write_date):
-                    # WooCommerce site URL field
-                    order_values = {
-                        'woocommerce_order_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
-                    }
-
-                    # WooCommerce REST API - Order properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-properties
-                    order_values.update(
-                        {
-                            'woocommerce_order_id': order['id'],
-                            'woocommerce_order_parent_id': order['parent_id'],
-                            'woocommerce_order_number': order['number'],
-                            'woocommerce_order_order_key': order['order_key'],
-                            'woocommerce_order_created_via': order['created_via'],
-                            'woocommerce_order_version': order['version'],
-                            'woocommerce_order_status': order['status'],
-                            'woocommerce_order_currency': order['currency'],
-                            'woocommerce_order_date_created': order['date_created'],
-                            'woocommerce_order_date_created_gmt': order['date_created_gmt'],
-                            'woocommerce_order_date_modified': order['date_modified'],
-                            'woocommerce_order_date_modified_gmt': order['date_modified_gmt'],
-                            'woocommerce_order_discount_total': order['discount_total'],
-                            'woocommerce_order_discount_tax': order['discount_tax'],
-                            'woocommerce_order_shipping_total': order['shipping_total'],
-                            'woocommerce_order_shipping_tax': order['shipping_tax'],
-                            'woocommerce_order_cart_tax': order['cart_tax'],
-                            'woocommerce_order_total': order['total'],
-                            'woocommerce_order_total_tax': order['total_tax'],
-                            'woocommerce_order_prices_include_tax': order['prices_include_tax'],
-                            'woocommerce_order_customer_id': order['customer_id'],
-                            'woocommerce_order_customer_ip_address': order['customer_ip_address'],
-                            'woocommerce_order_customer_user_agent': order['customer_user_agent'],
-                            'woocommerce_order_customer_note': order['customer_note'],
-                            'woocommerce_order_payment_method': order['payment_method'],
-                            'woocommerce_order_payment_method_title': order['payment_method_title'],
-                            'woocommerce_order_transaction_id': order['transaction_id'],
-                            'woocommerce_order_date_paid': order['date_paid'],
-                            'woocommerce_order_date_paid_gmt': order['date_paid_gmt'],
-                            'woocommerce_order_date_completed': order['date_completed'],
-                            'woocommerce_order_date_completed_gmt': order['date_completed_gmt'],
-                            'woocommerce_order_cart_hash': order['cart_hash'],
-                            'woocommerce_order_meta_data': order['meta_data'],
-                            'woocommerce_order_line_items': order['line_items'],
-                            'woocommerce_order_tax_lines': order['tax_lines'],
-                            'woocommerce_order_shipping_lines': order['shipping_lines'],
-                            'woocommerce_order_fee_lines': order['fee_lines'],
-                            'woocommerce_order_coupon_lines': order['coupon_lines'],
-                            'woocommerce_order_refunds': order['refunds'],
-                            # 'woocommerce_order_set_paid': order['set_paid'],
-                        },
-                    )
-
-                    # WooCommerce REST API - Order billing properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-billing-properties
-                    order_values.update(
-                        {
-                            'woocommerce_order_billing_first_name': order['billing']['first_name'],
-                            'woocommerce_order_billing_last_name': order['billing']['last_name'],
-                            'woocommerce_order_billing_company': order['billing']['company'],
-                            'woocommerce_order_billing_address_1': order['billing']['address_1'],
-                            'woocommerce_order_billing_address_2': order['billing']['address_2'],
-                            'woocommerce_order_billing_city': order['billing']['city'],
-                            'woocommerce_order_billing_state': order['billing']['state'],
-                            'woocommerce_order_billing_postcode': order['billing']['postcode'],
-                            'woocommerce_order_billing_country': order['billing']['country'],
-                            'woocommerce_order_billing_email': order['billing']['email'],
-                            'woocommerce_order_billing_phone': order['billing']['phone'],
-                        },
-                    )
-
-                    # WooCommerce REST API - Order shipping properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-shipping-properties
-                    order_values.update(
-                        {
-                            'woocommerce_order_shipping_first_name': order['shipping']['first_name'],
-                            'woocommerce_order_shipping_last_name': order['shipping']['last_name'],
-                            'woocommerce_order_shipping_company': order['shipping']['company'],
-                            'woocommerce_order_shipping_address_1': order['shipping']['address_1'],
-                            'woocommerce_order_shipping_address_2': order['shipping']['address_2'],
-                            'woocommerce_order_shipping_city': order['shipping']['city'],
-                            'woocommerce_order_shipping_state': order['shipping']['state'],
-                            'woocommerce_order_shipping_postcode': order['shipping']['postcode'],
-                            'woocommerce_order_shipping_country': order['shipping']['country'],
-                        },
-                    )
-
-                    # Fees
-                    woocommerce_order_transaction_fee = None
-
-                    ## PayPal
-                    woocommerce_order_transaction_fee_paypal = next((item['value'] for item in order_values['woocommerce_order_meta_data'] if item.get('key') == 'PayPal Transaction Fee'), None)
-
-                    ## Stripe
-                    woocommerce_order_transaction_fee_stripe = next((item['value'] for item in order_values['woocommerce_order_meta_data'] if item.get('key') == '_stripe_fee'), None)
-
-                    woocommerce_order_transaction_fee = woocommerce_order_transaction_fee_paypal or woocommerce_order_transaction_fee_stripe
-
-                    # Custom fields
-                    if woocommerce_order_transaction_fee:
-                        order_values.update(
-                            {
-                                'woocommerce_order_transaction_fee': woocommerce_order_transaction_fee,
-                            },
-                        )
-                    order_values.update(
-                        {
-                            'order_language_code': order.get('lang', None),  # Polylang field
-                        },
-                    )
-
-                    # Loop through the explicitly defined date columns for conversion
-                    for column in [
-                        'woocommerce_order_date_created',
-                        'woocommerce_order_date_created_gmt',
-                        'woocommerce_order_date_modified',
-                        'woocommerce_order_date_modified_gmt',
-                        'woocommerce_order_date_paid',
-                        'woocommerce_order_date_paid_gmt',
-                        'woocommerce_order_date_completed',
-                        'woocommerce_order_date_completed_gmt',
-                    ]:
-                        if column in order_values and order_values[column]:
-                            order_values[column] = self.datetime_convert(order_values[column])
-
-                    # Currency
-                    if order_values['woocommerce_order_currency']:
-                        odoo_order_currency = self.odoo_currency_retrieve(order_values['woocommerce_order_currency'])
-
-                    # Odoo Customer ID
-                    odoo_customer = self.env['res.partner'].search(
-                        [
-                            ('woocommerce_customer_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
-                            ('active', '=', True),
-                            ('woocommerce_customer_id', '=', order['customer_id']),
-                        ],
-                        limit=1,
-                    )
-
-                    if not odoo_customer:
-                        if woocommerce_sync_config.settings_woocommerce_orders_customers_map:
-                            customer_values = {
-                                'woocommerce_customer_id': order['customer_id'],
-                            }
-
-                            # WooCommerce REST API - Customer billing properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-billing-properties
-                            customer_values.update(
-                                {
-                                    'woocommerce_customer_billing_first_name': order['billing']['first_name'],
-                                    'woocommerce_customer_billing_last_name': order['billing']['last_name'],
-                                    'woocommerce_customer_billing_company': order['billing']['company'],
-                                    'woocommerce_customer_billing_address_1': order['billing']['address_1'],
-                                    'woocommerce_customer_billing_address_2': order['billing']['address_2'],
-                                    'woocommerce_customer_billing_city': order['billing']['city'],
-                                    'woocommerce_customer_billing_state': order['billing']['state'],
-                                    'woocommerce_customer_billing_postcode': order['billing']['postcode'],
-                                    'woocommerce_customer_billing_country': order['billing']['country'],
-                                    'woocommerce_customer_billing_email': order['billing']['email'],
-                                    'woocommerce_customer_billing_phone': order['billing']['phone'],
-                                },
-                            )
-
-                            # WooCommerce REST API - Customer shipping properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-shipping-properties
-                            customer_values.update(
-                                {
-                                    'woocommerce_customer_shipping_first_name': order['shipping']['first_name'],
-                                    'woocommerce_customer_shipping_last_name': order['shipping']['last_name'],
-                                    'woocommerce_customer_shipping_company': order['shipping']['company'],
-                                    'woocommerce_customer_shipping_address_1': order['shipping']['address_1'],
-                                    'woocommerce_customer_shipping_address_2': order['shipping']['address_2'],
-                                    'woocommerce_customer_shipping_city': order['shipping']['city'],
-                                    'woocommerce_customer_shipping_state': order['shipping']['state'],
-                                    'woocommerce_customer_shipping_postcode': order['shipping']['postcode'],
-                                    'woocommerce_customer_shipping_country': order['shipping']['country'],
-                                },
-                            )
-
-                            # Localization
-
-                            ## Brazil (requires 'l10n_br_fiscal' add-on)
-                            if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
-                                if order['billing']['cpf'] or order['billing']['cnpj']:
-                                    customer_values.update({'cnpj_cpf': order['billing']['cpf'] or order['billing']['cnpj']})
-
-                            # Odoo 'res.partner' model fields
-                            customer_values.update(
-                                {
-                                    # General information
-                                    'name': f'{customer_values["woocommerce_customer_billing_first_name"]} {customer_values["woocommerce_customer_billing_last_name"]}',
-                                    'ref': customer_values['woocommerce_customer_id'],
-                                    'company_type': 'person',
-                                    'email': customer_values['woocommerce_customer_billing_email'],
-                                    'mobile': customer_values['woocommerce_customer_billing_phone'],
-                                    'user_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
-                                    # Customer status
-                                    'active': True,
-                                    # Address
-                                    'street': customer_values['woocommerce_customer_billing_address_1'],
-                                    'street2': customer_values['woocommerce_customer_billing_address_2'],
-                                    'city': customer_values['woocommerce_customer_billing_city'],
-                                    'zip': customer_values['woocommerce_customer_billing_postcode'],
-                                    'country_id': self.env['res.country'].search([('code', '=', customer_values['woocommerce_customer_billing_country'])], limit=1).id,
-                                },
-                            )
-
-                            # Check for duplicate email
-                            if customer_values['email']:
-                                odoo_customer = self.env['res.partner'].search(
-                                    [('woocommerce_customer_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('email', '=', customer_values['email'])],
-                                    limit=1,
-                                )
-
-                                if not odoo_customer:
-                                    odoo_customer = self.env['res.partner'].create(customer_values)
-
-                        else:
-                            # Create/retrieve customer placeholder
-                            odoo_customer = self.odoo_customer_placeholder_create_or_retrieve()
-
-                    # Localization
-
-                    ## Brazil (requires 'l10n_br_fiscal' add-on)
-                    if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
-                        if order['billing']['cpf'] or order['billing']['cnpj']:
-                            order_values.update({'cnpj_cpf': order['billing']['cpf'] or order['billing']['cnpj']})
-
-                    # Odoo 'sale.order' model fields
-                    order_values.update(
-                        {
-                            # General information
-                            'name': f'#{order_values["woocommerce_order_number"]} {order_values["woocommerce_order_billing_first_name"]} {order_values["woocommerce_order_billing_last_name"]}',
-                            'country_code': order_values['woocommerce_order_billing_country'],
-                            'client_order_ref': order_values['woocommerce_order_number'],
-                            'origin': order_values['woocommerce_order_created_via'],
-                            'type_name': 'Sales Order',
-                            'date_order': order_values['woocommerce_order_date_created_gmt'],
-                            'note': order_values['woocommerce_order_customer_note'],
-                            'user_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
-                            # Customer
-                            'partner_id': odoo_customer.id,
-                            'partner_invoice_id': odoo_customer.id,
-                            'partner_shipping_id': odoo_customer.id,
-                            # Shipping and stock
-                            'picking_policy': 'direct',
-                            # 'warehouse_id': woocommerce_sync_config.settings_woocommerce_products_warehouse_location.id,
-                            # Payment
-                            # 'currency_id': odoo_order_currency.id,
-                            # 'tax_country_id': self.env['res.country'].search([('code', '=', order_values['woocommerce_customer_billing_country'])], limit=1).id,
-                            # 'amount_tax': order_values['woocommerce_order_total_tax'],
-                            # 'amount_total': order_values['woocommerce_order_total'],
-                        },
-                    )
-
-                    if odoo_sale_order:
-                        odoo_sale_order.write(order_values)
-
-                    else:
-                        odoo_sale_order = self.env['sale.order'].create(order_values)
-
-                    # Confirm order if WooCommerce status is 'processing', 'on-hold' or 'completed' (move order 'state' to 'sale')
-                    if order_values['woocommerce_order_status'] in ('processing', 'on-hold', 'completed') and odoo_sale_order.state in ('draft', 'sent'):
-                        odoo_sale_order.action_confirm()
-
-                    # Cancel order if WooCommerce status is 'cancelled', 'refunded', 'failed' or 'trash' (move order 'state' to 'cancel')
-                    elif order_values['woocommerce_order_status'] in ('cancelled', 'refunded', 'failed', 'trash') and odoo_sale_order.state not in ('cancel', 'done'):
-                        odoo_sale_order.action_cancel()
-
-                    # Order line items
-                    order_line_items_total = sum(float(line_item['total']) for line_item in order['line_items'])
-
-                    for line_item in order['line_items']:
-                        # WooCommerce site URL field
-                        order_line_values = {
-                            'woocommerce_order_line_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
+                if not odoo_customer:
+                    if woocommerce_sync_config.settings_woocommerce_orders_customers_map:
+                        customer_values = {
+                            'woocommerce_customer_id': woocommerce_order['customer_id'],
                         }
 
-                        # WooCommerce REST API - Order line items properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-line-items-properties
-                        order_line_values.update(
+                        # WooCommerce REST API - Customer billing properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-billing-properties
+                        customer_values.update(
                             {
-                                'woocommerce_order_line_item_id': line_item['id'],
-                                'woocommerce_order_line_item_name': line_item['name'],
-                                'woocommerce_order_line_item_product_id': line_item['product_id'],
-                                'woocommerce_order_line_item_variation_id': line_item['variation_id'],
-                                'woocommerce_order_line_item_quantity': line_item['quantity'],
-                                'woocommerce_order_line_item_tax_class': woocommerce_tax_rates.get(line_item['tax_class'] if line_item['tax_class'] else 'standard'),
-                                'woocommerce_order_line_item_subtotal': line_item['subtotal'],
-                                'woocommerce_order_line_item_subtotal_tax': line_item['subtotal_tax'],
-                                'woocommerce_order_line_item_total': line_item['total'],
-                                'woocommerce_order_line_item_total_tax': line_item['total_tax'],
-                                'woocommerce_order_line_item_taxes': line_item['taxes'],
-                                'woocommerce_order_line_item_meta_data': line_item['meta_data'],
-                                'woocommerce_order_line_item_sku': line_item['sku'],
-                                'woocommerce_order_line_item_price': line_item['price'],
+                                'woocommerce_customer_billing_first_name': woocommerce_order['billing']['first_name'],
+                                'woocommerce_customer_billing_last_name': woocommerce_order['billing']['last_name'],
+                                'woocommerce_customer_billing_company': woocommerce_order['billing']['company'],
+                                'woocommerce_customer_billing_address_1': woocommerce_order['billing']['address_1'],
+                                'woocommerce_customer_billing_address_2': woocommerce_order['billing']['address_2'],
+                                'woocommerce_customer_billing_city': woocommerce_order['billing']['city'],
+                                'woocommerce_customer_billing_state': woocommerce_order['billing']['state'],
+                                'woocommerce_customer_billing_postcode': woocommerce_order['billing']['postcode'],
+                                'woocommerce_customer_billing_country': woocommerce_order['billing']['country'],
+                                'woocommerce_customer_billing_email': woocommerce_order['billing']['email'],
+                                'woocommerce_customer_billing_phone': woocommerce_order['billing']['phone'],
                             },
                         )
 
-                        # Additional fields
-                        order_line_values.update(
+                        # WooCommerce REST API - Customer shipping properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-shipping-properties
+                        customer_values.update(
                             {
-                                'woocommerce_order_line_item_weight_unit': woocommerce_weight_unit if woocommerce_weight_unit else None,
+                                'woocommerce_customer_shipping_first_name': woocommerce_order['shipping']['first_name'],
+                                'woocommerce_customer_shipping_last_name': woocommerce_order['shipping']['last_name'],
+                                'woocommerce_customer_shipping_company': woocommerce_order['shipping']['company'],
+                                'woocommerce_customer_shipping_address_1': woocommerce_order['shipping']['address_1'],
+                                'woocommerce_customer_shipping_address_2': woocommerce_order['shipping']['address_2'],
+                                'woocommerce_customer_shipping_city': woocommerce_order['shipping']['city'],
+                                'woocommerce_customer_shipping_state': woocommerce_order['shipping']['state'],
+                                'woocommerce_customer_shipping_postcode': woocommerce_order['shipping']['postcode'],
+                                'woocommerce_customer_shipping_country': woocommerce_order['shipping']['country'],
                             },
                         )
-
-                        # Odoo Product ID
-                        odoo_product_mapped = None
-
-                        if woocommerce_sync_config.settings_woocommerce_order_line_items_product_map:
-                            # Product
-                            if line_item['variation_id'] == 0:
-                                odoo_product_mapped = self.env['product.template'].search(
-                                    [
-                                        ('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
-                                        ('active', '=', True),
-                                        ('woocommerce_product_id', '=', order_line_values['woocommerce_order_line_item_product_id']),
-                                    ],
-                                    limit=1,
-                                )
-
-                            # Product variation
-                            else:
-                                odoo_product_mapped = self.env['product.product'].search(
-                                    [
-                                        ('woocommerce_product_variation_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
-                                        ('active', '=', True),
-                                        ('woocommerce_product_variation_id', '=', order_line_values['woocommerce_order_line_item_variation_id']),
-                                    ],
-                                    limit=1,
-                                )
-
-                        if not odoo_product_mapped:
-                            # Create/retrieve product placeholder
-                            odoo_product = self.odoo_product_placeholder_create_or_retrieve()
-
-                        # Tax
-                        odoo_order_line_item_tax_id = []
-                        if order_line_values['woocommerce_order_line_item_tax_class']:
-                            odoo_order_line_item_tax = self.odoo_tax_create_or_retrieve(order_line_values['woocommerce_order_line_item_tax_class'], order_values['woocommerce_order_prices_include_tax'])
-                            if odoo_order_line_item_tax:
-                                odoo_order_line_item_tax_id = [(6, 0, [odoo_order_line_item_tax.id])]
-
-                        # Unit of measure
-                        if order_line_values['woocommerce_order_line_item_weight_unit']:
-                            odoo_order_line_item_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(order_line_values['woocommerce_order_line_item_weight_unit'])
 
                         # Localization
 
                         ## Brazil (requires 'l10n_br_fiscal' add-on)
                         if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
-                            if order['shipping_total']:
-                                order_line_values.update({'freight_value': float(order['shipping_total']) * (float(line_item['total']) / order_line_items_total)})
+                            if woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']:
+                                customer_values.update({'cnpj_cpf': woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']})
 
-                        # Odoo 'sale.order.line' model fields
-                        order_line_values.update(
+                        # Odoo 'res.partner' model fields
+                        customer_values.update(
                             {
                                 # General information
-                                'order_id': odoo_sale_order.id,
-                                'name': order_line_values['woocommerce_order_line_item_name'],
-                                'product_id': odoo_product_mapped.id if woocommerce_sync_config.settings_woocommerce_order_line_items_product_map else odoo_product.product_variant_ids[:1].id,
-                                # Shipping and stock
-                                'warehouse_id': woocommerce_sync_config.settings_woocommerce_products_warehouse_location.id,
-                                # Dimensions
-                                'product_uom': odoo_order_line_item_unit_of_measure.id if odoo_order_line_item_unit_of_measure else False,
-                                # Payment
-                                'currency_id': odoo_order_currency.id,
-                                'tax_id': odoo_order_line_item_tax_id,
-                                'product_uom_qty': order_line_values['woocommerce_order_line_item_quantity'],
-                                'price_unit': (
-                                    order_line_values['woocommerce_order_line_item_price']
-                                    + (float(order_line_values['woocommerce_order_line_item_subtotal_tax']) / order_line_values['woocommerce_order_line_item_quantity'])
-                                    if order_values['woocommerce_order_prices_include_tax']
-                                    else order_line_values['woocommerce_order_line_item_price']
-                                ),
-                                # 'discount'
+                                'name': f'{customer_values["woocommerce_customer_billing_first_name"]} {customer_values["woocommerce_customer_billing_last_name"]}',
+                                'ref': customer_values['woocommerce_customer_id'],
+                                'company_type': 'person',
+                                'email': customer_values['woocommerce_customer_billing_email'],
+                                'mobile': customer_values['woocommerce_customer_billing_phone'],
+                                'user_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
+                                # Customer status
+                                'active': True,
+                                # Address
+                                'street': customer_values['woocommerce_customer_billing_address_1'],
+                                'street2': customer_values['woocommerce_customer_billing_address_2'],
+                                'city': customer_values['woocommerce_customer_billing_city'],
+                                'zip': customer_values['woocommerce_customer_billing_postcode'],
+                                'country_id': self.env['res.country'].search([('code', '=', customer_values['woocommerce_customer_billing_country'])], limit=1).id,
                             },
                         )
 
-                        odoo_sale_order_line = self.env['sale.order.line'].search(
-                            [
-                                ('woocommerce_order_line_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
-                                ('order_id', '=', odoo_sale_order.id),
-                                ('woocommerce_order_line_item_id', '=', order_line_values['woocommerce_order_line_item_id']),
-                            ],
-                            limit=1,
-                        )
+                        # Check for duplicate email
+                        if customer_values['email']:
+                            odoo_customer = self.env['res.partner'].search(
+                                [('woocommerce_customer_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('email', '=', customer_values['email'])],
+                                limit=1,
+                            )
 
-                        # Update the sale order line
-                        if odoo_sale_order_line:
-                            odoo_sale_order_line.write(order_line_values)
+                            if not odoo_customer:
+                                odoo_customer = self.env['res.partner'].create(customer_values)
 
+                    else:
+                        # Create/retrieve customer placeholder
+                        odoo_customer = self.odoo_customer_placeholder_create_or_retrieve()
+
+                # Localization
+
+                ## Brazil (requires 'l10n_br_fiscal' add-on)
+                if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
+                    if woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']:
+                        order_values.update({'cnpj_cpf': woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']})
+
+                # Odoo 'sale.order' model fields
+                order_values.update(
+                    {
+                        # General information
+                        'name': f'#{order_values["woocommerce_order_number"]} {order_values["woocommerce_order_billing_first_name"]} {order_values["woocommerce_order_billing_last_name"]}',
+                        'country_code': order_values['woocommerce_order_billing_country'],
+                        'client_order_ref': order_values['woocommerce_order_number'],
+                        'origin': order_values['woocommerce_order_created_via'],
+                        'type_name': 'Sales Order',
+                        'date_order': order_values['woocommerce_order_date_created_gmt'],
+                        'note': order_values['woocommerce_order_customer_note'],
+                        'user_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
+                        # Customer
+                        'partner_id': odoo_customer.id,
+                        'partner_invoice_id': odoo_customer.id,
+                        'partner_shipping_id': odoo_customer.id,
+                        # Shipping and stock
+                        'picking_policy': 'direct',
+                        # 'warehouse_id': woocommerce_sync_config.settings_woocommerce_products_warehouse_location.id,
+                        # Payment
+                        # 'currency_id': odoo_order_currency.id,
+                        # 'tax_country_id': self.env['res.country'].search([('code', '=', order_values['woocommerce_customer_billing_country'])], limit=1).id,
+                        # 'amount_tax': order_values['woocommerce_order_total_tax'],
+                        # 'amount_total': order_values['woocommerce_order_total'],
+                    },
+                )
+
+                if odoo_sale_order:
+                    odoo_sale_order.write(order_values)
+                    _logger.info(f'Updated WooCommerce order ID: {woocommerce_order["id"]}')
+
+                else:
+                    odoo_sale_order = self.env['sale.order'].create(order_values)
+                    _logger.info(f'Imported WooCommerce order ID: {woocommerce_order["id"]}')
+
+                # Confirm order if WooCommerce status is 'processing', 'on-hold' or 'completed' (move order 'state' to 'sale')
+                if order_values['woocommerce_order_status'] in ('processing', 'on-hold', 'completed') and odoo_sale_order.state in ('draft', 'sent'):
+                    odoo_sale_order.action_confirm()
+
+                # Cancel order if WooCommerce status is 'cancelled', 'refunded', 'failed' or 'trash' (move order 'state' to 'cancel')
+                elif order_values['woocommerce_order_status'] in ('cancelled', 'refunded', 'failed', 'trash') and odoo_sale_order.state not in ('cancel', 'done'):
+                    odoo_sale_order.action_cancel()
+
+                # Order line items
+                order_line_items_total = sum(float(line_item['total']) for line_item in woocommerce_order['line_items'])
+
+                for line_item in woocommerce_order['line_items']:
+                    # WooCommerce site URL field
+                    order_line_values = {
+                        'woocommerce_order_line_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
+                    }
+
+                    # WooCommerce REST API - Order line items properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-line-items-properties
+                    order_line_values.update(
+                        {
+                            'woocommerce_order_line_item_id': line_item['id'],
+                            'woocommerce_order_line_item_name': line_item['name'],
+                            'woocommerce_order_line_item_product_id': line_item['product_id'],
+                            'woocommerce_order_line_item_variation_id': line_item['variation_id'],
+                            'woocommerce_order_line_item_quantity': line_item['quantity'],
+                            'woocommerce_order_line_item_tax_class': woocommerce_tax_rates.get(line_item['tax_class'] if line_item['tax_class'] else 'standard'),
+                            'woocommerce_order_line_item_subtotal': line_item['subtotal'],
+                            'woocommerce_order_line_item_subtotal_tax': line_item['subtotal_tax'],
+                            'woocommerce_order_line_item_total': line_item['total'],
+                            'woocommerce_order_line_item_total_tax': line_item['total_tax'],
+                            'woocommerce_order_line_item_taxes': line_item['taxes'],
+                            'woocommerce_order_line_item_meta_data': line_item['meta_data'],
+                            'woocommerce_order_line_item_sku': line_item['sku'],
+                            'woocommerce_order_line_item_price': line_item['price'],
+                        },
+                    )
+
+                    # Additional fields
+                    order_line_values.update(
+                        {
+                            'woocommerce_order_line_item_weight_unit': woocommerce_weight_unit if woocommerce_weight_unit else None,
+                        },
+                    )
+
+                    # Odoo Product ID
+                    odoo_product_mapped = None
+
+                    if woocommerce_sync_config.settings_woocommerce_order_line_items_product_map:
+                        # Product
+                        if line_item['variation_id'] == 0:
+                            odoo_product_mapped = self.env['product.template'].search(
+                                [
+                                    ('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
+                                    ('active', '=', True),
+                                    ('woocommerce_product_id', '=', order_line_values['woocommerce_order_line_item_product_id']),
+                                ],
+                                limit=1,
+                            )
+
+                        # Product variation
                         else:
-                            self.env['sale.order.line'].create(order_line_values)
+                            odoo_product_mapped = self.env['product.product'].search(
+                                [
+                                    ('woocommerce_product_variation_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
+                                    ('active', '=', True),
+                                    ('woocommerce_product_variation_id', '=', order_line_values['woocommerce_order_line_item_variation_id']),
+                                ],
+                                limit=1,
+                            )
 
-                    # Delivery carrier
-                    if order['shipping_lines']:
-                        odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_sync_config, woocommerce_shipping_methods, order['shipping_lines'][0])
+                    if not odoo_product_mapped:
+                        # Create/retrieve product placeholder
+                        odoo_product = self.odoo_product_placeholder_create_or_retrieve()
 
-                        if odoo_delivery_carrier:
-                            odoo_sale_order.set_delivery_line(odoo_delivery_carrier, order['shipping_lines'][0]['total'])
+                    # Tax
+                    odoo_order_line_item_tax_id = []
+                    if order_line_values['woocommerce_order_line_item_tax_class']:
+                        odoo_order_line_item_tax = self.odoo_tax_create_or_retrieve(order_line_values['woocommerce_order_line_item_tax_class'], order_values['woocommerce_order_prices_include_tax'])
+                        if odoo_order_line_item_tax:
+                            odoo_order_line_item_tax_id = [(6, 0, [odoo_order_line_item_tax.id])]
 
-                    # Commit changes
-                    self.env.cr.commit()
+                    # Unit of measure
+                    if order_line_values['woocommerce_order_line_item_weight_unit']:
+                        odoo_order_line_item_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(order_line_values['woocommerce_order_line_item_weight_unit'])
+
+                    # Localization
+
+                    ## Brazil (requires 'l10n_br_fiscal' add-on)
+                    if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
+                        if woocommerce_order['shipping_total']:
+                            order_line_values.update({'freight_value': float(woocommerce_order['shipping_total']) * (float(line_item['total']) / order_line_items_total)})
+
+                    # Odoo 'sale.order.line' model fields
+                    order_line_values.update(
+                        {
+                            # General information
+                            'order_id': odoo_sale_order.id,
+                            'name': order_line_values['woocommerce_order_line_item_name'],
+                            'product_id': odoo_product_mapped.id if woocommerce_sync_config.settings_woocommerce_order_line_items_product_map else odoo_product.product_variant_ids[:1].id,
+                            # Shipping and stock
+                            'warehouse_id': woocommerce_sync_config.settings_woocommerce_products_warehouse_location.id,
+                            # Dimensions
+                            'product_uom': odoo_order_line_item_unit_of_measure.id if odoo_order_line_item_unit_of_measure else False,
+                            # Payment
+                            'currency_id': odoo_order_currency.id,
+                            'tax_id': odoo_order_line_item_tax_id,
+                            'product_uom_qty': order_line_values['woocommerce_order_line_item_quantity'],
+                            'price_unit': (
+                                order_line_values['woocommerce_order_line_item_price'] + (float(order_line_values['woocommerce_order_line_item_subtotal_tax']) / order_line_values['woocommerce_order_line_item_quantity'])
+                                if order_values['woocommerce_order_prices_include_tax']
+                                else order_line_values['woocommerce_order_line_item_price']
+                            ),
+                            # 'discount'
+                        },
+                    )
+
+                    odoo_sale_order_line = self.env['sale.order.line'].search(
+                        [
+                            ('woocommerce_order_line_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
+                            ('order_id', '=', odoo_sale_order.id),
+                            ('woocommerce_order_line_item_id', '=', order_line_values['woocommerce_order_line_item_id']),
+                        ],
+                        limit=1,
+                    )
+
+                    # Update the sale order line
+                    if odoo_sale_order_line:
+                        odoo_sale_order_line.write(order_line_values)
+
+                    else:
+                        self.env['sale.order.line'].create(order_line_values)
+
+                # Delivery carrier
+                if woocommerce_order['shipping_lines']:
+                    odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_sync_config, woocommerce_shipping_methods, woocommerce_order['shipping_lines'][0])
+
+                    if odoo_delivery_carrier:
+                        odoo_sale_order.set_delivery_line(odoo_delivery_carrier, woocommerce_order['shipping_lines'][0]['total'])
 
             except Exception as error:
                 # Roll back changes
                 self.env.cr.rollback()
-                _logger.exception(f'Error syncing order {order["id"]}: {error}')
+                _logger.exception(f'Error syncing order {woocommerce_order["id"]}: {error}')
 
     def woocommerce_attribute_create_or_retrieve(self, woocommerce_api, attribute_type, attribute_name, language_code=None):
         """Create or retrieve a WooCommerce attribute, brand, category or tag."""
