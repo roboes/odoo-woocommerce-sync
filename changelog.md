@@ -1,5 +1,11 @@
 # Changelog
 
+## 2025-07-21
+
+### Fix
+
+- Optimizations focused on reducing database and API calls.
+
 ## 2025-07-20
 
 ### Fix
