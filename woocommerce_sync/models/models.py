@@ -553,7 +553,7 @@ class WoocommerceConnector(models.Model):
         odoo_unit_of_measure = self.env['uom.uom'].search([('active', '=', True), ('name', '=', unit_of_measure_name)], limit=1)
 
         if not odoo_unit_of_measure:
-            odoo_unit_of_measure = self.env['uom.uom'].create({'name': unit_of_measure_name, 'category_id': self.env.ref('uom.uom_categ_unit').id, 'factor_inv': 1, 'uom_type': 'reference'})
+            odoo_unit_of_measure = self.env['uom.uom'].create({'name': unit_of_measure_name, 'category_id': self.env.ref('uom.uom_categ_unit').id, 'factor': 1, 'uom_type': 'reference'})
 
         return odoo_unit_of_measure
 
@@ -645,6 +645,7 @@ class WoocommerceConnector(models.Model):
                 # Create the product if it doesn't exist
                 delivery_product = self.env['product.product'].create(
                     {
+                        'woocommerce_product_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
                         'name': 'Shipping Product for ' + shipping_line['method_title'],
                         'type': 'service',
                         'sale_ok': True,
@@ -674,7 +675,7 @@ class WoocommerceConnector(models.Model):
 
         elif version_info[0] == 18:
             odoo_products = self.env['product.product'].search(
-                [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '!=', False), ('type', '=', 'product')],
+                [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '!=', False), ('is_storable', '=', True)],
             )
 
         for product in odoo_products:
@@ -1000,7 +1001,6 @@ class WoocommerceConnector(models.Model):
                         'image_1920': odoo_product_image_featured,
                         'default_code': product_values['woocommerce_product_sku'],
                         'create_date': product_values['woocommerce_product_date_created_gmt'],
-                        # 'type': 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu',
                         'description': 'Imported via Odoo-WooCommerce Sync',
                         'description_sale': product_values['woocommerce_product_description'],
                         'responsible_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
@@ -1037,7 +1037,8 @@ class WoocommerceConnector(models.Model):
                     product_values['detailed_type'] = 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu'
 
                 elif version_info[0] == 18:
-                    product_values['type'] = 'service' if product_values['woocommerce_product_service'] else 'product' if product_values['woocommerce_product_manage_stock'] else 'consu'
+                    product_values['type'] = 'service' if product_values['woocommerce_product_service'] else 'consu'
+                    product_values['is_storable'] = True if product_values['woocommerce_product_manage_stock'] else False
 
                 if odoo_product:
                     odoo_product.write(product_values)
@@ -1315,7 +1316,6 @@ class WoocommerceConnector(models.Model):
                                 'image_1920': odoo_product_variation_image_featured,
                                 'default_code': product_variation_values['woocommerce_product_variation_sku'],
                                 'create_date': product_variation_values['woocommerce_product_variation_date_created_gmt'],
-                                # 'type': ('service' if product_variation_values['woocommerce_product_variation_service'] else 'product' if product_variation_values['woocommerce_product_variation_manage_stock'] else 'consu'),
                                 'description': 'Imported via Odoo-WooCommerce Sync',
                                 'description_sale': product_variation_values['woocommerce_product_variation_description'],
                                 # Product status
@@ -1353,9 +1353,8 @@ class WoocommerceConnector(models.Model):
                             )
 
                         elif version_info[0] == 18:
-                            product_variation_values['type'] = (
-                                'service' if product_variation_values['woocommerce_product_variation_service'] else 'product' if product_variation_values['woocommerce_product_variation_manage_stock'] else 'consu'
-                            )
+                            product_variation_values['type'] = 'service' if product_variation_values['woocommerce_product_variation_service'] else 'consu'
+                            product_variation_values['is_storable'] = True if product_variation_values['woocommerce_product_variation_manage_stock'] else False
 
                         # Update the product template so that all attribute lines are considered and variants are created
                         odoo_product._create_variant_ids()
@@ -2070,7 +2069,7 @@ class WoocommerceConnector(models.Model):
                         product_values['manage_stock'] = True if product.detailed_type == 'product' else False
 
                     elif version_info[0] == 18:
-                        product_values['manage_stock'] = True if product.type == 'product' else False
+                        product_values['manage_stock'] = True if product.is_storable else False
 
                     # Check if product has multiple variants
                     if len(product.product_variant_ids) > 1:
@@ -2198,7 +2197,7 @@ class WoocommerceConnector(models.Model):
                                 variation_data['manage_stock'] = True if product.detailed_type == 'product' else False
 
                             elif version_info[0] == 18:
-                                variation_data['manage_stock'] = True if product.type == 'product' else False
+                                variation_data['manage_stock'] = True if product.is_storable else False
 
                             # Check if a variation with this SKU already exists
                             variation_existing = variations_by_sku.get(odoo_product_variant.default_code)
