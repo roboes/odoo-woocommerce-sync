@@ -1,5 +1,15 @@
 # Changelog
 
+## 2025-07-24
+
+### Features
+- Add external_dependencies to manifest to prevent installation if woocommerce Python library is missing
+
+### Fix
+- Fix UOM creation using wrong field (factor_inv) should be factor
+- Fix Delivery Methods product.product creation causing duplicates due to woocommerce_product_site_url not setting
+- Fix V18 specific product changes: product no longer a [type] but a combination of [type] = consu and [is_storable] = True
+
 ## 2025-07-21
 
 ### Fix
