@@ -1,5 +1,11 @@
 # Changelog
 
+## 2025-07-27
+
+### Features
+
+- Code improvements.
+
 ## 2025-07-24
 
 ### Features

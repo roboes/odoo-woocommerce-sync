@@ -11,7 +11,7 @@
           <field name="settings_woocommerce_connection_url"/>
           <field name="settings_woocommerce_consumer_key"/>
           <field name="settings_woocommerce_consumer_secret" password="True"/>
-          <field name="settings_woocommerce_timeout"/>
+          <!-- <field name="settings_woocommerce_timeout"/> -->
           <field name="woocommerce_last_synced"/>
           <button type="object" name="woocommerce_sync_action" string="Sync Now" icon="fa-refresh"/>
         </tree>

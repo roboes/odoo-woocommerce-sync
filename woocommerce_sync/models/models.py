@@ -35,7 +35,7 @@ class WoocommerceConnector(models.Model):
     settings_woocommerce_connection_url = fields.Char(string='Store URL')
     settings_woocommerce_consumer_key = fields.Char(string='Consumer Key')
     settings_woocommerce_consumer_secret = fields.Char(string='Consumer Secret')
-    settings_woocommerce_timeout = fields.Integer(string='Timeout', default=30)
+    settings_woocommerce_timeout = fields.Integer(string='Timeout (in seconds)', default=30)
 
     # Sync items settings
     settings_woocommerce_to_odoo_products_sync = fields.Boolean(default=True)
@@ -130,9 +130,9 @@ class WoocommerceConnector(models.Model):
     woocommerce_last_synced = fields.Datetime(string='Last Synced', compute='woocommerce_last_synced_retrieve', store=False, readonly=True)
 
     def woocommerce_last_synced_retrieve(self):
+        self.ensure_one()
         sync_log = self.env['woocommerce.sync.log'].search([], limit=1)
-        for record in self:
-            record.woocommerce_last_synced = sync_log.woocommerce_last_synced if sync_log else False
+        self.woocommerce_last_synced = sync_log.woocommerce_last_synced if sync_log else False
 
     @api.model_create_multi
     def create(self, values_list):
@@ -153,14 +153,20 @@ class WoocommerceConnector(models.Model):
         if self.env.context.get('ir_cron'):
             return super().write(values)
 
-        res = super().write(values)
-        for rec in self:
-            rec.cron_job_update()
-        return res
+        success = super().write(values)
+        for record in self:
+            record.cron_job_update()
+        return success
+
+    def unlink(self):
+        """Deletes associated cron jobs when a configuration record is deleted."""
+        for record in self:
+            if record.ir_cron_id:
+                record.ir_cron_id.unlink()
+        return super().unlink()
 
     def cron_job_update(self):
-        # Odoo-WooCommerce settings
-        woocommerce_sync_config = self.env['woocommerce.configuration'].search([], limit=1)
+        self.ensure_one()
 
         if version_info[0] == 16:
             cron_values = {
@@ -172,9 +178,10 @@ class WoocommerceConnector(models.Model):
                     else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
                 ),
                 'active': self.settings_woocommerce_sync_scheduled,
-                'interval_number': woocommerce_sync_config.settings_woocommerce_sync_scheduled_interval_minutes,
+                'interval_number': self.settings_woocommerce_sync_scheduled_interval_minutes,
                 'interval_type': 'minutes',
                 'numbercall': -1,
+                'doall': True,
             }
 
         elif version_info[0] == 18:
@@ -187,7 +194,7 @@ class WoocommerceConnector(models.Model):
                     else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
                 ),
                 'active': self.settings_woocommerce_sync_scheduled,
-                'interval_number': woocommerce_sync_config.settings_woocommerce_sync_scheduled_interval_minutes,
+                'interval_number': self.settings_woocommerce_sync_scheduled_interval_minutes,
                 'interval_type': 'minutes',
             }
 
@@ -231,15 +238,10 @@ class WoocommerceConnector(models.Model):
             }
 
     def woocommerce_sync(self):
-        if not self:
-            _logger.warning('No WooCommerce configuration records found for sync.')
-            return
-
-        # Odoo-WooCommerce settings
-        woocommerce_sync_config = self.env['woocommerce.configuration'].search([], limit=1)
+        self.ensure_one()
 
         # WooCommerce REST API
-        woocommerce_api = self.woocommerce_api_get(woocommerce_sync_config)
+        woocommerce_api = self.woocommerce_api_get()
 
         # Check if WooCommerce REST API connection is successful
         if not woocommerce_api:
@@ -265,9 +267,8 @@ class WoocommerceConnector(models.Model):
         woocommerce_shipping_methods = woocommerce_api.get(endpoint='shipping_methods').json()
 
         ## Products
-        if woocommerce_sync_config.settings_woocommerce_to_odoo_products_sync:
+        if self.settings_woocommerce_to_odoo_products_sync:
             self.woocommerce_to_odoo_products_sync(
-                woocommerce_sync_config,
                 woocommerce_api,
                 woocommerce_currency,
                 woocommerce_tax_rates,
@@ -277,9 +278,8 @@ class WoocommerceConnector(models.Model):
             )
 
         ## Product variations
-        if woocommerce_sync_config.settings_woocommerce_to_odoo_products_sync and woocommerce_sync_config.settings_woocommerce_to_odoo_product_variations_sync:
+        if self.settings_woocommerce_to_odoo_products_sync and self.settings_woocommerce_to_odoo_product_variations_sync:
             self.woocommerce_to_odoo_products_variations_sync(
-                woocommerce_sync_config,
                 woocommerce_api,
                 woocommerce_currency,
                 woocommerce_tax_rates,
@@ -289,23 +289,22 @@ class WoocommerceConnector(models.Model):
             )
 
         ## Products related ids map
-        if woocommerce_sync_config.settings_woocommerce_products_related_ids_map:
-            self.woocommerce_to_odoo_product_related_ids(woocommerce_sync_config)
+        if self.settings_woocommerce_products_related_ids_map:
+            self.woocommerce_to_odoo_product_related_ids()
 
         ## Customers
-        if woocommerce_sync_config.settings_woocommerce_to_odoo_customers_sync:
-            self.woocommerce_to_odoo_customers_sync(woocommerce_sync_config, woocommerce_api)
+        if self.settings_woocommerce_to_odoo_customers_sync:
+            self.woocommerce_to_odoo_customers_sync(woocommerce_api)
 
         ## Orders
-        if woocommerce_sync_config.settings_woocommerce_to_odoo_orders_sync:
-            self.woocommerce_to_odoo_orders_sync(woocommerce_sync_config, woocommerce_api, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods)
+        if self.settings_woocommerce_to_odoo_orders_sync:
+            self.woocommerce_to_odoo_orders_sync(woocommerce_api, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods)
 
         # Odoo to WooCommerce
 
         ## Products
-        if woocommerce_sync_config.settings_odoo_to_woocommerce_products_sync:
+        if self.settings_odoo_to_woocommerce_products_sync:
             self.odoo_to_woocommerce_products_sync(
-                woocommerce_sync_config,
                 woocommerce_api,
                 woocommerce_currency,
                 woocommerce_tax_rates,
@@ -315,8 +314,8 @@ class WoocommerceConnector(models.Model):
             )
 
         # Stock
-        if woocommerce_sync_config.settings_woocommerce_products_stock_management:
-            self.product_stock_quantity_create_or_update(woocommerce_sync_config, woocommerce_api)
+        if self.settings_woocommerce_products_stock_management:
+            self.product_stock_quantity_create_or_update(woocommerce_api)
 
         # Store 'woocommerce_last_synced'
         woocommerce_sync_log = self.env['woocommerce.sync.log'].search([], limit=1)
@@ -327,42 +326,43 @@ class WoocommerceConnector(models.Model):
         else:
             self.env['woocommerce.sync.log'].create({'woocommerce_last_synced': fields.Datetime.now()})
 
-    @api.depends('settings_woocommerce_connection_url', 'settings_woocommerce_consumer_key', 'settings_woocommerce_consumer_secret', 'settings_woocommerce_timeout')
-    def woocommerce_api_get(self, woocommerce_sync_config):
+    def woocommerce_api_get(self):
         """Retrieves WooCommerce REST API instance."""
 
-        woocommerce_api = API(
-            url=woocommerce_sync_config.settings_woocommerce_connection_url,
-            consumer_key=woocommerce_sync_config.settings_woocommerce_consumer_key,
-            consumer_secret=woocommerce_sync_config.settings_woocommerce_consumer_secret,
-            version='wc/v3',
-            timeout=woocommerce_sync_config.settings_woocommerce_timeout,
-            # query_string_auth=False,
-            user_agent='Odoo-Woocommerce Sync',
-        )
+        self.ensure_one()
 
-        # Test WooCommerce REST API Connection
+        if not self.settings_woocommerce_connection_url or not self.settings_woocommerce_consumer_key or not self.settings_woocommerce_consumer_secret or not self.settings_woocommerce_timeout:
+            _logger.error('Missing WooCommerce REST API configuration details (url, consumer key, consumer secret or timeout). Cannot retrieve API instance.')
+            return False
+
         try:
+            woocommerce_api = API(
+                url=self.settings_woocommerce_connection_url,
+                consumer_key=self.settings_woocommerce_consumer_key,
+                consumer_secret=self.settings_woocommerce_consumer_secret,
+                version='wc/v3',
+                timeout=self.settings_woocommerce_timeout,
+                # query_string_auth=False,
+                user_agent='Odoo-Woocommerce Sync',
+            )
+
             response = woocommerce_api.get(endpoint='system_status')
-            if response.status_code == 200:
-                _logger.info('WooCommerce REST API connection successful.')
-                return woocommerce_api
-            else:
-                _logger.error(f'WooCommerce REST API returned status {response.status_code}: {response.text}')
-                return False
-        except requests.exceptions.RequestException as error:
+            response.raise_for_status()
+
+        except requests.RequestException as error:
             _logger.error(f'WooCommerce REST API connection failed: {error}')
             return False
 
-    def woocommerce_api_get_all_items(self, woocommerce_api, endpoint, search_parameters={}):
-        # Odoo-WooCommerce settings
-        woocommerce_sync_config = self.env['woocommerce.configuration'].search([], limit=1)
+        _logger.info('WooCommerce REST API connection successful.')
 
+        return woocommerce_api
+
+    def woocommerce_api_get_all_items(self, woocommerce_api, endpoint, search_parameters={}):
         # Set default records per page if not already provided
         search_parameters.setdefault('per_page', 100)
 
         # If "settings_woocommerce_test_mode" is enabled, limit to 10 items
-        if woocommerce_sync_config.settings_woocommerce_test_mode:
+        if self.settings_woocommerce_test_mode:
             search_parameters['per_page'] = 10
 
         records_all = []
@@ -375,7 +375,7 @@ class WoocommerceConnector(models.Model):
             records_all.extend(records)
 
             # If no records are returned, or "settings_woocommerce_test_mode" is enabled (fetch only first page), break the loop
-            if not records or woocommerce_sync_config.settings_woocommerce_test_mode:
+            if not records or self.settings_woocommerce_test_mode:
                 break
 
             page += 1
@@ -616,7 +616,7 @@ class WoocommerceConnector(models.Model):
 
         return odoo_product_placeholder
 
-    def odoo_delivery_carrier_create_or_retrieve(self, woocommerce_sync_config, woocommerce_shipping_methods, shipping_line):
+    def odoo_delivery_carrier_create_or_retrieve(self, woocommerce_shipping_methods, shipping_line):
         """Create or retrieve an Odoo delivery carrier."""
 
         if not shipping_line:
@@ -626,10 +626,10 @@ class WoocommerceConnector(models.Model):
 
         if odoo_delivery_carrier:
             # If current view setting is "active" and delivery carrier setting is "archive", activate it
-            if not woocommerce_sync_config.settings_woocommerce_order_delivery_methods_archive and not odoo_delivery_carrier.active:
+            if not self.settings_woocommerce_order_delivery_methods_archive and not odoo_delivery_carrier.active:
                 odoo_delivery_carrier.active = True
             # If current view setting is "archive" and delivery carrier setting "active", archive it
-            elif woocommerce_sync_config.settings_woocommerce_order_delivery_methods_archive and odoo_delivery_carrier.active:
+            elif self.settings_woocommerce_order_delivery_methods_archive and odoo_delivery_carrier.active:
                 odoo_delivery_carrier.active = False
 
         else:
@@ -637,7 +637,7 @@ class WoocommerceConnector(models.Model):
 
             # Create a new delivery product (if it doesn't exist)
             delivery_product = self.env['product.product'].search(
-                [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('name', '=', 'Shipping Product for ' + shipping_line['method_title'])],
+                [('woocommerce_product_site_url', '=', self.settings_woocommerce_connection_url), ('name', '=', 'Shipping Product for ' + shipping_line['method_title'])],
                 limit=1,
             )
 
@@ -645,7 +645,7 @@ class WoocommerceConnector(models.Model):
                 # Create the product if it doesn't exist
                 delivery_product = self.env['product.product'].create(
                     {
-                        'woocommerce_product_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
+                        'woocommerce_product_site_url': self.settings_woocommerce_connection_url,
                         'name': 'Shipping Product for ' + shipping_line['method_title'],
                         'type': 'service',
                         'sale_ok': True,
@@ -656,12 +656,12 @@ class WoocommerceConnector(models.Model):
 
             # Create the delivery carrier with the associated product_id
             odoo_delivery_carrier = self.env['delivery.carrier'].create(
-                {'name': shipping_line['method_title'], 'product_id': delivery_product.id, 'delivery_type': 'fixed', 'active': not (woocommerce_sync_config.settings_woocommerce_order_delivery_methods_archive)},
+                {'name': shipping_line['method_title'], 'product_id': delivery_product.id, 'delivery_type': 'fixed', 'active': not (self.settings_woocommerce_order_delivery_methods_archive)},
             )
 
         return odoo_delivery_carrier
 
-    def product_stock_quantity_create_or_update(self, woocommerce_sync_config, woocommerce_api):
+    def product_stock_quantity_create_or_update(self, woocommerce_api):
         """Synchronize stock quantity levels between WooCommerce and Odoo using 'product.product records'. In WooCommerce, if a stock quantity level changes due to a purchase, the 'date_modified_gmt' field is updated accordingly."""
         # Retrieve WooCommerce products with stock management enabled
         woocommerce_products = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', search_parameters={'status': 'publish', 'manage_stock': 'true'})
@@ -670,19 +670,19 @@ class WoocommerceConnector(models.Model):
         # Fetch all Odoo 'product.product' records linked to WooCommerce
         if version_info[0] == 16:
             odoo_products = self.env['product.product'].search(
-                [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '!=', False), ('detailed_type', '=', 'product')],
+                [('woocommerce_product_site_url', '=', self.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '!=', False), ('detailed_type', '=', 'product')],
             )
 
         elif version_info[0] == 18:
             odoo_products = self.env['product.product'].search(
-                [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '!=', False), ('is_storable', '=', True)],
+                [('woocommerce_product_site_url', '=', self.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '!=', False), ('is_storable', '=', True)],
             )
 
         for product in odoo_products:
             # Determine the corresponding WooCommerce stock info
             if product.woocommerce_product_variation_id:
                 # For variations, retrieve the specific variation stock
-                woocommerce_stock_info = self.product_variations_stock_retrieve(woocommerce_sync_config, woocommerce_api, product)
+                woocommerce_stock_info = self.product_variations_stock_retrieve(woocommerce_api, product)
             else:
                 # For simple products, get the stock from the parent product
                 woocommerce_stock_info = woocommerce_products_stock_map.get(int(product.woocommerce_product_id))
@@ -697,9 +697,9 @@ class WoocommerceConnector(models.Model):
             if not product.product_stock_date_updated or (woocommerce_product_date_modified_gmt >= product.product_stock_date_updated and woocommerce_product_stock_quantity != product.qty_available):
                 odoo_product_stock_quantity = self.env['stock.quant'].search(
                     [
-                        ('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
+                        ('woocommerce_product_site_url', '=', self.settings_woocommerce_connection_url),
                         ('product_id', '=', product.id),
-                        ('location_id', '=', woocommerce_sync_config.settings_woocommerce_products_warehouse_location.id),
+                        ('location_id', '=', self.settings_woocommerce_products_warehouse_location.id),
                     ],
                     limit=1,
                 )
@@ -710,10 +710,10 @@ class WoocommerceConnector(models.Model):
                 else:
                     self.env['stock.quant'].create(
                         {
-                            'woocommerce_product_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
+                            'woocommerce_product_site_url': self.settings_woocommerce_connection_url,
                             'product_id': product.id,
                             'quantity': woocommerce_product_stock_quantity,
-                            'location_id': woocommerce_sync_config.settings_woocommerce_products_warehouse_location.id,
+                            'location_id': self.settings_woocommerce_products_warehouse_location.id,
                         },
                     )
 
@@ -733,7 +733,7 @@ class WoocommerceConnector(models.Model):
                 # Update the stock date updated
                 product.write({'product_stock_date_updated': self.datetime_convert(woocommerce_product['date_modified_gmt'])})
 
-    def product_variations_stock_retrieve(self, woocommerce_sync_config, woocommerce_api, product):
+    def product_variations_stock_retrieve(self, woocommerce_api, product):
         """Retrieve WooCommerce stock info for a product variation."""
         try:
             variations = self.woocommerce_api_get_all_items(
@@ -748,10 +748,10 @@ class WoocommerceConnector(models.Model):
             _logger.error(f'Error retrieving variation stock for product {product.id}: {error}')
         return None
 
-    def woocommerce_product_fields(self, woocommerce_sync_config, woocommerce_product, woocommerce_currency=None, woocommerce_weight_unit=None, woocommerce_dimension_unit=None, woocommerce_tax_rates=None):
+    def woocommerce_product_fields(self, woocommerce_product, woocommerce_currency=None, woocommerce_weight_unit=None, woocommerce_dimension_unit=None, woocommerce_tax_rates=None):
         # WooCommerce site URL field
         product_values = {
-            'woocommerce_product_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
+            'woocommerce_product_site_url': self.settings_woocommerce_connection_url,
         }
 
         # WooCommerce REST API - Common fields for Products and Product Variants
@@ -872,7 +872,6 @@ class WoocommerceConnector(models.Model):
 
     def woocommerce_to_odoo_products_sync(
         self,
-        woocommerce_sync_config,
         woocommerce_api,
         woocommerce_currency,
         woocommerce_tax_rates,
@@ -883,13 +882,13 @@ class WoocommerceConnector(models.Model):
         # WooCommerce REST API parameters
         search_parameters = {'status': 'publish'}
 
-        if woocommerce_sync_config.settings_woocommerce_modified_records_import:
+        if self.settings_woocommerce_modified_records_import:
             woocommerce_last_execution_datetime = self.woocommerce_last_execution_datetime()
             if woocommerce_last_execution_datetime:
                 search_parameters['modified_after'] = woocommerce_last_execution_datetime.strftime('%Y-%m-%dT%H:%M:%S')  # ISO 8601 date format
 
-        if woocommerce_sync_config.settings_woocommerce_to_odoo_products_language_code:
-            search_parameters['lang'] = woocommerce_sync_config.settings_woocommerce_to_odoo_products_language_code
+        if self.settings_woocommerce_to_odoo_products_language_code:
+            search_parameters['lang'] = self.settings_woocommerce_to_odoo_products_language_code
 
         # WooCommerce woocommerce_products
         woocommerce_products = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', search_parameters=search_parameters)
@@ -899,7 +898,7 @@ class WoocommerceConnector(models.Model):
 
         # Get all Odoo products with WooCommerce product ID
         odoo_products = self.env['product.template'].search_read(
-            [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '!=', False)],
+            [('woocommerce_product_site_url', '=', self.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '!=', False)],
             fields=['id', 'woocommerce_product_id', 'write_date', 'woocommerce_product_manage_stock', 'active'],
         )
         odoo_products = {odoo_product['woocommerce_product_id']: odoo_product for odoo_product in odoo_products}
@@ -925,7 +924,7 @@ class WoocommerceConnector(models.Model):
                             odoo_product = None
 
                 # Create new product in Odoo if it does not yet exist or update product in Odoo only if WooCommerce version is newer
-                product_values = self.woocommerce_product_fields(woocommerce_sync_config, woocommerce_product, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates)
+                product_values = self.woocommerce_product_fields(woocommerce_product, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates)
 
                 # Currency
                 if product_values['woocommerce_product_currency']:
@@ -987,7 +986,7 @@ class WoocommerceConnector(models.Model):
                     )
 
                 # Image featured
-                if woocommerce_sync_config.settings_woocommerce_images_sync and len(woocommerce_product['images']) > 0:
+                if self.settings_woocommerce_images_sync and len(woocommerce_product['images']) > 0:
                     odoo_product_image_featured = self.image_download_file_to_base64(woocommerce_product['images'][0])
 
                 else:
@@ -1003,7 +1002,7 @@ class WoocommerceConnector(models.Model):
                         'create_date': product_values['woocommerce_product_date_created_gmt'],
                         'description': 'Imported via Odoo-WooCommerce Sync',
                         'description_sale': product_values['woocommerce_product_description'],
-                        'responsible_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
+                        'responsible_id': self.settings_woocommerce_user_responsible.id,
                         # Product status
                         'active': True if product_values['woocommerce_product_status'] == 'publish' else False,
                         'sale_ok': product_values['woocommerce_product_purchasable'],
@@ -1049,7 +1048,7 @@ class WoocommerceConnector(models.Model):
                     _logger.info(f'Imported WooCommerce product ID: {woocommerce_product["id"]}')
 
                 # Product gallery
-                if odoo_product and woocommerce_sync_config.settings_woocommerce_images_sync and len(woocommerce_product['images']) > 0:
+                if odoo_product and self.settings_woocommerce_images_sync and len(woocommerce_product['images']) > 0:
                     attachment_ids = self.image_process_attachments(woocommerce_product['images'], odoo_product, create_attachments=True)
                     if attachment_ids:
                         odoo_product.write({'product_image_ids': [(6, 0, attachment_ids)]})
@@ -1065,16 +1064,16 @@ class WoocommerceConnector(models.Model):
                 self.env.cr.rollback()
                 _logger.exception(f'Error syncing product {woocommerce_product["id"]}: {error}')
 
-    def woocommerce_to_odoo_product_related_ids(self, woocommerce_sync_config):
+    def woocommerce_to_odoo_product_related_ids(self):
         # Retrieve all Odoo products
-        odoo_products = self.env['product.template'].search([('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True)])
+        odoo_products = self.env['product.template'].search([('woocommerce_product_site_url', '=', self.settings_woocommerce_connection_url), ('active', '=', True)])
 
         for odoo_product in odoo_products:
             if len(odoo_product['woocommerce_product_related_ids'] or []) > 0:
                 odoo_products_related_ids = []
                 for product_related_id in odoo_product['woocommerce_product_related_ids']:
                     odoo_product_related = self.env['product.template'].search(
-                        [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '=', product_related_id)],
+                        [('woocommerce_product_site_url', '=', self.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '=', product_related_id)],
                         limit=1,
                     )
 
@@ -1087,7 +1086,6 @@ class WoocommerceConnector(models.Model):
 
     def woocommerce_product_variation_fields(
         self,
-        woocommerce_sync_config,
         woocommerce_product_variation,
         woocommerce_currency=None,
         woocommerce_weight_unit=None,
@@ -1096,7 +1094,7 @@ class WoocommerceConnector(models.Model):
     ):
         # WooCommerce site URL field
         product_variation_values = {
-            'woocommerce_product_variation_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
+            'woocommerce_product_variation_site_url': self.settings_woocommerce_connection_url,
         }
 
         # WooCommerce REST API - Common fields for Products and Product Variants
@@ -1196,7 +1194,6 @@ class WoocommerceConnector(models.Model):
 
     def woocommerce_to_odoo_products_variations_sync(
         self,
-        woocommerce_sync_config,
         woocommerce_api,
         woocommerce_currency,
         woocommerce_tax_rates,
@@ -1207,13 +1204,13 @@ class WoocommerceConnector(models.Model):
         # WooCommerce REST API parameters
         search_parameters = {'status': 'publish', 'fields': 'id,variations', 'type': 'variable'}
 
-        if woocommerce_sync_config.settings_woocommerce_modified_records_import:
+        if self.settings_woocommerce_modified_records_import:
             woocommerce_last_execution_datetime = self.woocommerce_last_execution_datetime()
             if woocommerce_last_execution_datetime:
                 search_parameters['modified_after'] = woocommerce_last_execution_datetime.strftime('%Y-%m-%dT%H:%M:%S')  # ISO 8601 date format
 
-        if woocommerce_sync_config.settings_woocommerce_to_odoo_products_language_code:
-            search_parameters['lang'] = woocommerce_sync_config.settings_woocommerce_to_odoo_products_language_code
+        if self.settings_woocommerce_to_odoo_products_language_code:
+            search_parameters['lang'] = self.settings_woocommerce_to_odoo_products_language_code
 
         # WooCommerce products
         woocommerce_products = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', search_parameters=search_parameters)
@@ -1225,7 +1222,7 @@ class WoocommerceConnector(models.Model):
             try:
                 # Search for existing product in Odoo
                 odoo_product = self.env['product.template'].search(
-                    [('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '=', woocommerce_product['id'])],
+                    [('woocommerce_product_site_url', '=', self.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_product_id', '=', woocommerce_product['id'])],
                     limit=1,
                 )
                 if not odoo_product:
@@ -1239,7 +1236,7 @@ class WoocommerceConnector(models.Model):
                     # WooCommerce REST API parameters
                     search_parameters = {'status': 'publish'}
 
-                    if woocommerce_sync_config.settings_woocommerce_modified_records_import:
+                    if self.settings_woocommerce_modified_records_import:
                         if woocommerce_last_execution_datetime:
                             search_parameters['modified_after'] = woocommerce_last_execution_datetime.strftime('%Y-%m-%dT%H:%M:%S')  # ISO 8601 date format
 
@@ -1248,7 +1245,6 @@ class WoocommerceConnector(models.Model):
 
                     for product_variation in woocommerce_product_variations:
                         product_variation_values = self.woocommerce_product_variation_fields(
-                            woocommerce_sync_config,
                             product_variation,
                             woocommerce_currency,
                             woocommerce_weight_unit,
@@ -1272,7 +1268,7 @@ class WoocommerceConnector(models.Model):
                             odoo_product_variation_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(product_variation_values['woocommerce_product_variation_weight_unit'])
 
                         # Image featured
-                        if woocommerce_sync_config.settings_woocommerce_images_sync and product_variation['image'] is not None:
+                        if self.settings_woocommerce_images_sync and product_variation['image'] is not None:
                             odoo_product_variation_image_featured = self.image_download_file_to_base64(product_variation['image'])
                         else:
                             odoo_product_variation_image_featured = None
@@ -1396,11 +1392,11 @@ class WoocommerceConnector(models.Model):
                 self.env.cr.rollback()
                 _logger.exception(f'Error syncing product {woocommerce_product["id"]}: {error}')
 
-    def woocommerce_to_odoo_customers_sync(self, woocommerce_sync_config, woocommerce_api):
+    def woocommerce_to_odoo_customers_sync(self, woocommerce_api):
         # WooCommerce REST API parameters
         search_parameters = {}
 
-        if woocommerce_sync_config.settings_woocommerce_modified_records_import:
+        if self.settings_woocommerce_modified_records_import:
             woocommerce_last_execution_datetime = self.woocommerce_last_execution_datetime()
             if woocommerce_last_execution_datetime:
                 search_parameters['modified_after'] = woocommerce_last_execution_datetime.strftime('%Y-%m-%dT%H:%M:%S')  # ISO 8601 date format
@@ -1410,7 +1406,7 @@ class WoocommerceConnector(models.Model):
 
         # Get all Odoo partners with WooCommerce customer ID
         odoo_customers = self.env['res.partner'].search_read(
-            [('woocommerce_customer_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_customer_id', '!=', False)],
+            [('woocommerce_customer_site_url', '=', self.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_customer_id', '!=', False)],
             fields=['id', 'woocommerce_customer_id', 'write_date', 'active'],
         )
         odoo_customers = {odoo_customer['woocommerce_customer_id']: odoo_customer for odoo_customer in odoo_customers}
@@ -1434,7 +1430,7 @@ class WoocommerceConnector(models.Model):
 
                 # WooCommerce site URL field
                 customer_values = {
-                    'woocommerce_customer_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
+                    'woocommerce_customer_site_url': self.settings_woocommerce_connection_url,
                 }
 
                 # WooCommerce REST API - Customer properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-properties
@@ -1515,7 +1511,7 @@ class WoocommerceConnector(models.Model):
                         customer_values[column] = self.datetime_convert(customer_values[column])
 
                 # Customer avatar
-                if woocommerce_sync_config.settings_woocommerce_images_sync and woocommerce_customer['avatar_url'] != '':
+                if self.settings_woocommerce_images_sync and woocommerce_customer['avatar_url'] != '':
                     odoo_avatar_url = self.image_download_file_to_base64({'src': woocommerce_customer['avatar_url']})
                 else:
                     odoo_avatar_url = None
@@ -1532,7 +1528,7 @@ class WoocommerceConnector(models.Model):
                         'customer_rank': 1 if customer_values['woocommerce_customer_is_paying_customer'] else 0,
                         'email': customer_values['woocommerce_customer_email'],
                         'mobile': customer_values['woocommerce_customer_billing_phone'],
-                        'user_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
+                        'user_id': self.settings_woocommerce_user_responsible.id,
                         # Customer status
                         'active': True,
                         # Address
@@ -1558,11 +1554,11 @@ class WoocommerceConnector(models.Model):
                 self.env.cr.rollback()
                 _logger.exception(f'Error syncing customer {woocommerce_customer["id"]}: {error}')
 
-    def woocommerce_to_odoo_orders_sync(self, woocommerce_sync_config, woocommerce_api, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods):
+    def woocommerce_to_odoo_orders_sync(self, woocommerce_api, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods):
         # WooCommerce REST API parameters
-        search_parameters = {'status': ','.join(woocommerce_sync_config.settings_woocommerce_order_status.mapped('status')) or 'any'}
+        search_parameters = {'status': ','.join(self.settings_woocommerce_order_status.mapped('status')) or 'any'}
 
-        if woocommerce_sync_config.settings_woocommerce_modified_records_import:
+        if self.settings_woocommerce_modified_records_import:
             woocommerce_last_execution_datetime = self.woocommerce_last_execution_datetime()
             if woocommerce_last_execution_datetime:
                 search_parameters['modified_after'] = woocommerce_last_execution_datetime.strftime('%Y-%m-%dT%H:%M:%S')  # ISO 8601 date format
@@ -1572,7 +1568,7 @@ class WoocommerceConnector(models.Model):
 
         # Get all Odoo sale orders with WooCommerce order ID
         odoo_sale_orders = self.env['sale.order'].search_read(
-            [('woocommerce_order_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('woocommerce_order_id', '!=', False)],
+            [('woocommerce_order_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_order_id', '!=', False)],
             fields=['id', 'woocommerce_order_id', 'write_date'],
         )
         odoo_sale_orders = {odoo_sale_order['woocommerce_order_id']: odoo_sale_order for odoo_sale_order in odoo_sale_orders}
@@ -1596,7 +1592,7 @@ class WoocommerceConnector(models.Model):
 
                 # WooCommerce site URL field
                 order_values = {
-                    'woocommerce_order_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
+                    'woocommerce_order_site_url': self.settings_woocommerce_connection_url,
                 }
 
                 # WooCommerce REST API - Order properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-properties
@@ -1722,7 +1718,7 @@ class WoocommerceConnector(models.Model):
                 # Odoo Customer ID
                 odoo_customer = self.env['res.partner'].search(
                     [
-                        ('woocommerce_customer_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
+                        ('woocommerce_customer_site_url', '=', self.settings_woocommerce_connection_url),
                         ('active', '=', True),
                         ('woocommerce_customer_id', '=', woocommerce_order['customer_id']),
                     ],
@@ -1730,7 +1726,7 @@ class WoocommerceConnector(models.Model):
                 )
 
                 if not odoo_customer:
-                    if woocommerce_sync_config.settings_woocommerce_orders_customers_map:
+                    if self.settings_woocommerce_orders_customers_map:
                         customer_values = {
                             'woocommerce_customer_id': woocommerce_order['customer_id'],
                         }
@@ -1783,7 +1779,7 @@ class WoocommerceConnector(models.Model):
                                 'company_type': 'person',
                                 'email': customer_values['woocommerce_customer_billing_email'],
                                 'mobile': customer_values['woocommerce_customer_billing_phone'],
-                                'user_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
+                                'user_id': self.settings_woocommerce_user_responsible.id,
                                 # Customer status
                                 'active': True,
                                 # Address
@@ -1798,7 +1794,7 @@ class WoocommerceConnector(models.Model):
                         # Check for duplicate email
                         if customer_values['email']:
                             odoo_customer = self.env['res.partner'].search(
-                                [('woocommerce_customer_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url), ('active', '=', True), ('email', '=', customer_values['email'])],
+                                [('woocommerce_customer_site_url', '=', self.settings_woocommerce_connection_url), ('active', '=', True), ('email', '=', customer_values['email'])],
                                 limit=1,
                             )
 
@@ -1827,14 +1823,14 @@ class WoocommerceConnector(models.Model):
                         'type_name': 'Sales Order',
                         'date_order': order_values['woocommerce_order_date_created_gmt'],
                         'note': order_values['woocommerce_order_customer_note'],
-                        'user_id': woocommerce_sync_config.settings_woocommerce_user_responsible.id,
+                        'user_id': self.settings_woocommerce_user_responsible.id,
                         # Customer
                         'partner_id': odoo_customer.id,
                         'partner_invoice_id': odoo_customer.id,
                         'partner_shipping_id': odoo_customer.id,
                         # Shipping and stock
                         'picking_policy': 'direct',
-                        # 'warehouse_id': woocommerce_sync_config.settings_woocommerce_products_warehouse_location.id,
+                        # 'warehouse_id': self.settings_woocommerce_products_warehouse_location.id,
                         # Payment
                         # 'currency_id': odoo_order_currency.id,
                         # 'tax_country_id': self.env['res.country'].search([('code', '=', order_values['woocommerce_customer_billing_country'])], limit=1).id,
@@ -1865,7 +1861,7 @@ class WoocommerceConnector(models.Model):
                 for line_item in woocommerce_order['line_items']:
                     # WooCommerce site URL field
                     order_line_values = {
-                        'woocommerce_order_line_site_url': woocommerce_sync_config.settings_woocommerce_connection_url,
+                        'woocommerce_order_line_site_url': self.settings_woocommerce_connection_url,
                     }
 
                     # WooCommerce REST API - Order line items properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-line-items-properties
@@ -1898,12 +1894,12 @@ class WoocommerceConnector(models.Model):
                     # Odoo Product ID
                     odoo_product_mapped = None
 
-                    if woocommerce_sync_config.settings_woocommerce_order_line_items_product_map:
+                    if self.settings_woocommerce_order_line_items_product_map:
                         # Product
                         if line_item['variation_id'] == 0:
                             odoo_product_mapped = self.env['product.template'].search(
                                 [
-                                    ('woocommerce_product_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
+                                    ('woocommerce_product_site_url', '=', self.settings_woocommerce_connection_url),
                                     ('active', '=', True),
                                     ('woocommerce_product_id', '=', order_line_values['woocommerce_order_line_item_product_id']),
                                 ],
@@ -1914,7 +1910,7 @@ class WoocommerceConnector(models.Model):
                         else:
                             odoo_product_mapped = self.env['product.product'].search(
                                 [
-                                    ('woocommerce_product_variation_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
+                                    ('woocommerce_product_variation_site_url', '=', self.settings_woocommerce_connection_url),
                                     ('active', '=', True),
                                     ('woocommerce_product_variation_id', '=', order_line_values['woocommerce_order_line_item_variation_id']),
                                 ],
@@ -1949,9 +1945,9 @@ class WoocommerceConnector(models.Model):
                             # General information
                             'order_id': odoo_sale_order.id,
                             'name': order_line_values['woocommerce_order_line_item_name'],
-                            'product_id': odoo_product_mapped.id if woocommerce_sync_config.settings_woocommerce_order_line_items_product_map else odoo_product.product_variant_ids[:1].id,
+                            'product_id': odoo_product_mapped.id if self.settings_woocommerce_order_line_items_product_map else odoo_product.product_variant_ids[:1].id,
                             # Shipping and stock
-                            'warehouse_id': woocommerce_sync_config.settings_woocommerce_products_warehouse_location.id,
+                            'warehouse_id': self.settings_woocommerce_products_warehouse_location.id,
                             # Dimensions
                             'product_uom': odoo_order_line_item_unit_of_measure.id if odoo_order_line_item_unit_of_measure else False,
                             # Payment
@@ -1969,7 +1965,7 @@ class WoocommerceConnector(models.Model):
 
                     odoo_sale_order_line = self.env['sale.order.line'].search(
                         [
-                            ('woocommerce_order_line_site_url', '=', woocommerce_sync_config.settings_woocommerce_connection_url),
+                            ('woocommerce_order_line_site_url', '=', self.settings_woocommerce_connection_url),
                             ('order_id', '=', odoo_sale_order.id),
                             ('woocommerce_order_line_item_id', '=', order_line_values['woocommerce_order_line_item_id']),
                         ],
@@ -1985,7 +1981,7 @@ class WoocommerceConnector(models.Model):
 
                 # Delivery carrier
                 if woocommerce_order['shipping_lines']:
-                    odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_sync_config, woocommerce_shipping_methods, woocommerce_order['shipping_lines'][0])
+                    odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_shipping_methods, woocommerce_order['shipping_lines'][0])
 
                     if odoo_delivery_carrier:
                         odoo_sale_order.set_delivery_line(odoo_delivery_carrier, woocommerce_order['shipping_lines'][0]['total'])
@@ -2016,7 +2012,6 @@ class WoocommerceConnector(models.Model):
 
     def odoo_to_woocommerce_products_sync(
         self,
-        woocommerce_sync_config,
         woocommerce_api,
         woocommerce_currency,
         woocommerce_tax_rates,
@@ -2027,8 +2022,8 @@ class WoocommerceConnector(models.Model):
         # Odoo search conditions
         search_conditions = [('active', '=', True), ('product_sync_to_woocommerce', '=', True), ('default_code', '!=', False)]
 
-        if woocommerce_sync_config.settings_woocommerce_odoo_to_woocommerce_products_language_code:
-            search_conditions.append(('product_language_code', '=', woocommerce_sync_config.settings_woocommerce_odoo_to_woocommerce_products_language_code))
+        if self.settings_woocommerce_odoo_to_woocommerce_products_language_code:
+            search_conditions.append(('product_language_code', '=', self.settings_woocommerce_odoo_to_woocommerce_products_language_code))
 
         # Odoo products
         odoo_products = self.env['product.template'].search(search_conditions) | self.env['product.product'].search(search_conditions + [('product_tmpl_id.default_code', '!=', False)]).mapped('product_tmpl_id')
@@ -2038,8 +2033,8 @@ class WoocommerceConnector(models.Model):
                 # Search for existing product in WooCommerce
                 search_parameters = {'status': 'publish', 'sku': product.default_code}
 
-                if woocommerce_sync_config.settings_woocommerce_to_odoo_products_language_code:
-                    search_parameters['lang'] = woocommerce_sync_config.settings_woocommerce_to_odoo_products_language_code
+                if self.settings_woocommerce_to_odoo_products_language_code:
+                    search_parameters['lang'] = self.settings_woocommerce_to_odoo_products_language_code
 
                 woocommerce_products = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', search_parameters=search_parameters)
                 woocommerce_product = woocommerce_products[0] if woocommerce_products else None
@@ -2163,7 +2158,7 @@ class WoocommerceConnector(models.Model):
                         woocommerce_product = woocommerce_api.post('products', data=product_values).json()
 
                         if woocommerce_product['id']:
-                            product.write(self.woocommerce_product_fields(woocommerce_sync_config, woocommerce_product, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates))
+                            product.write(self.woocommerce_product_fields(woocommerce_product, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates))
 
                     if woocommerce_product:
                         _logger.info(f'WooCommerce response: {woocommerce_product}')
@@ -2216,7 +2211,6 @@ class WoocommerceConnector(models.Model):
                                 if woocommerce_product_variant['id']:
                                     odoo_product_variant.write(
                                         self.woocommerce_product_variation_fields(
-                                            woocommerce_sync_config,
                                             woocommerce_product_variant,
                                             woocommerce_currency,
                                             woocommerce_weight_unit,
