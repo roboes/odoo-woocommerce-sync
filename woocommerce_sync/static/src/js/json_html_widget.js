@@ -54,52 +54,52 @@ export class JsonHtmlField extends Field {
         <table style="${tableStyle}">
             <thead>
                 <tr>${headers.map(h => `<th style="${thStyle}">${h}</th>`).join('')}</tr>
-            </thead>
-            <tbody>
-                ${rows.map(cells => `
+        </thead>
+        <tbody>
+        ${rows.map(cells => `
                     <tr>${cells.map(cell => `<td style="${tdStyle}">${this.formatJsonToTable(cell)}</td>`).join('')}</tr>
-                `).join('')}
+            `).join('')}
             </tbody>
         </table>
         `;
 
-        if (Array.isArray(data)) {
-            if (data.length === 0) return "[]";
+            if (Array.isArray(data)) {
+                if (data.length === 0) return "[]";
 
-            const objectKeys = Array.from(new Set(
-                data.flatMap(item => (item && typeof item === 'object') ? Object.keys(item) : [])
-            ));
+                const objectKeys = Array.from(new Set(
+                    data.flatMap(item => (item && typeof item === 'object') ? Object.keys(item) : [])
+                ));
 
-            if (objectKeys.length > 0) {
-                const rows = data.map(item =>
-                    objectKeys.map(key => item?.[key] ?? "")
-                );
-                return renderTable(objectKeys, rows);
-            } else {
-                const rows = data.map((value, index) => [index, value]);
-                return renderTable(["Index", "Value"], rows);
+                if (objectKeys.length > 0) {
+                    const rows = data.map(item =>
+                        objectKeys.map(key => item?.[key] ?? "")
+                    );
+                    return renderTable(objectKeys, rows);
+                } else {
+                    const rows = data.map((value, index) => [index, value]);
+                    return renderTable(["Index", "Value"], rows);
+                }
             }
+
+            if (data && typeof data === "object") {
+                const entries = Object.entries(data);
+                if (entries.length === 0) return "{}";
+                const headers = ["Key", "Value"];
+                const rows = entries.map(([k, v]) => [k, v]);
+                return renderTable(headers, rows);
+            }
+
+            if (data === null) return "null";
+            if (typeof data === "boolean") return data ? "true" : "false";
+            return String(data);
+        }
         }
 
-        if (data && typeof data === "object") {
-            const entries = Object.entries(data);
-            if (entries.length === 0) return "{}";
-            const headers = ["Key", "Value"];
-            const rows = entries.map(([k, v]) => [k, v]);
-            return renderTable(headers, rows);
-        }
 
-        if (data === null) return "null";
-        if (typeof data === "boolean") return data ? "true" : "false";
-        return String(data);
-    }
-}
-
-
-if (!!registry.category("fields").get("char")?.component) {
+        if (!!registry.category("fields").get("char")?.component) {
     // Odoo 17+
-    registry.category("fields").add("json_html", { component: JsonHtmlField });
-} else {
+            registry.category("fields").add("json_html", { component: JsonHtmlField });
+        } else {
     // Odoo 16 and below
-    registry.category("fields").add("json_html", JsonHtmlField);
-}
+            registry.category("fields").add("json_html", JsonHtmlField);
+        }

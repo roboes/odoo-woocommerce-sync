@@ -44,6 +44,7 @@
         <page string="WooCommerce" invisible="not woocommerce_product_id">
           <group string="General Information">
             <field name="woocommerce_product_site_url"/>
+            <field name="woocommerce_product_woocommerce_to_odoo_last_sync"/>
             <field name="woocommerce_product_name"/>
             <field name="woocommerce_product_id"/>
             <field name="woocommerce_product_type"/>

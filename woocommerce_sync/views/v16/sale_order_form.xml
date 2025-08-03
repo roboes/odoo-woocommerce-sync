@@ -16,6 +16,7 @@
           <group>
             <group string="General Information">
               <field name="woocommerce_order_site_url"/>
+              <field name="woocommerce_order_woocommerce_to_odoo_last_sync"/>
               <field name="woocommerce_order_id"/>
               <!-- <field name="woocommerce_order_parent_id"/> -->
               <field name="woocommerce_order_number"/>
