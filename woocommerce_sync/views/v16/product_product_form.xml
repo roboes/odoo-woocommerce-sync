@@ -11,6 +11,7 @@
         </group>
         <group string="General Information" attrs="{'invisible': ['|', ('woocommerce_product_variation_id', '=', False), ('woocommerce_product_variation_id', '=', '')]}">
           <field name="woocommerce_product_variation_site_url"/>
+          <field name="woocommerce_product_variation_woocommerce_to_odoo_last_sync"/>
           <field name="woocommerce_product_variation_name"/>
           <field name="woocommerce_product_variation_id"/>
           <field name="woocommerce_product_type"/>

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2025-08-03
+
+### Features
+
+- Introduced individual "last sync" tracking fields: `woocommerce_product_woocommerce_to_odoo_last_sync
+`woocommerce_product_variation_woocommerce_to_odoo_last_sync`,`woocommerce_customer_woocommerce_to_odoo_last_sync`,`woocommerce_order_woocommerce_to_odoo_last_sync` and `woocommerce_order_line_woocommerce_to_odoo_last_sync`.
+
+### Improvements
+
+- Added type hints for improved code clarity and static analysis.
+- General code optimizations for improved performance.
+
 ## 2025-07-27
 
 ### Features

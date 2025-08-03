@@ -93,7 +93,7 @@ class ProductTemplate(models.Model):
     )
 
     # WooCommerce REST API - Product properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#product-properties
-    woocommerce_product_id = fields.Char(string='WooCommerce ID', readonly=True, index=True)
+    woocommerce_product_id = fields.Char(string='WooCommerce Product ID', readonly=True, index=True)
     woocommerce_product_name = fields.Char(string='Name', readonly=True)
     woocommerce_product_slug = fields.Char(string='Slug', readonly=True)
     woocommerce_product_permalink = fields.Char(string='Permalink', readonly=True)
@@ -211,10 +211,11 @@ class ProductTemplate(models.Model):
 
     # Custom fields
     product_sync_to_woocommerce = fields.Boolean(string='Sync to WooCommerce', default=False)
+    woocommerce_product_woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Product Last Sync', readonly=True)
     if not hasattr(models.BaseModel, '_fields') or 'product_source' not in ProductTemplate._fields:
         product_source = fields.Char(string='Source', readonly=True)
     if not hasattr(models.BaseModel, '_fields') or 'product_language_code' not in ProductTemplate._fields:
-        product_language_code = fields.Char(string='Language', help='Polylang 2-digit ISO 639-1 language code.')  # Polylang
+        product_language_code = fields.Char(string='Language', help='2-digit ISO 639-1 language code.')
     if not hasattr(models.BaseModel, '_fields') or 'product_stock_date_updated' not in ProductTemplate._fields:
         product_stock_date_updated = fields.Datetime(string='Stock Date Updated', readonly=True)
     if not hasattr(models.BaseModel, '_fields') or 'product_image_ids' not in ProductTemplate._fields:
@@ -235,20 +236,20 @@ class ProductTemplate(models.Model):
 class ProductProduct(models.Model):
     _inherit = 'product.product'
 
-    def action_update_quantity_on_hand(self):
+    def action_update_quantity_on_hand(self: models.Model) -> bool:
         # Update stock first
-        res = super().action_update_quantity_on_hand()
+        success = super().action_update_quantity_on_hand()
 
         # Update the 'product_stock_date_updated' on the 'product.product' level
         self.write({'product_stock_date_updated': fields.Datetime.now()})
 
-        return res
+        return success
 
     # WooCommerce site URL field
     woocommerce_product_variation_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
 
     # WooCommerce REST API - Product variation properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#product-variation-properties
-    woocommerce_product_variation_id = fields.Char(string='WooCommerce ID', readonly=True, index=True)
+    woocommerce_product_variation_id = fields.Char(string='WooCommerce Product Variation ID', readonly=True, index=True)
     woocommerce_product_variation_name = fields.Char(string='Name', readonly=True)
     woocommerce_product_variation_permalink = fields.Char(string='Permalink', readonly=True)
     woocommerce_product_variation_date_created = fields.Datetime(string='Date Created', readonly=True)
@@ -332,6 +333,7 @@ class ProductProduct(models.Model):
     woocommerce_product_variation_tax_rate = fields.Integer(string='Tax Rate', readonly=True)
 
     # Custom fields
+    woocommerce_product_variation_woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Product Variation Last Sync', readonly=True)
     if not hasattr(models.BaseModel, '_fields') or 'product_stock_date_updated' not in ProductTemplate._fields:
         product_stock_date_updated = fields.Datetime(string='Stock Date Updated', readonly=True)
     woocommerce_product_variation_service = fields.Boolean(string='Is service?')
@@ -345,7 +347,7 @@ class ResPartner(models.Model):
     woocommerce_customer_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
 
     # WooCommerce REST API - Customer properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-properties
-    woocommerce_customer_id = fields.Char(string='WooCommerce ID', readonly=True, index=True)
+    woocommerce_customer_id = fields.Char(string='WooCommerce Customer ID', readonly=True, index=True)
     woocommerce_customer_date_created = fields.Datetime(string='Created Date', readonly=True)
     woocommerce_customer_date_created_gmt = fields.Datetime(string='Created Date', readonly=True)
     woocommerce_customer_date_modified = fields.Datetime(string='Modified Date', readonly=True)
@@ -384,6 +386,7 @@ class ResPartner(models.Model):
     woocommerce_customer_shipping_country = fields.Char(string='Shipping Country', readonly=True)
 
     # Custom fields
+    woocommerce_customer_woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Customer Last Sync', readonly=True)
     woocommerce_customer_date_last_login = fields.Datetime(string='Last Login Date', readonly=True)  # Wordfence fields
 
 
@@ -392,7 +395,7 @@ class SaleOrder(models.Model):
     _inherit = 'sale.order'
 
     @api.depends('woocommerce_order_total', 'woocommerce_order_transaction_fee')
-    def payout_compute(self):
+    def payout_compute(self: models.Model) -> None:
         for order in self:
             order.woocommerce_order_payout = order.woocommerce_order_total - order.woocommerce_order_transaction_fee
 
@@ -400,7 +403,7 @@ class SaleOrder(models.Model):
     woocommerce_order_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
 
     # WooCommerce REST API - Order properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-properties
-    woocommerce_order_id = fields.Char(string='WooCommerce ID', readonly=True, index=True)
+    woocommerce_order_id = fields.Char(string='WooCommerce Order ID', readonly=True, index=True)
     woocommerce_order_parent_id = fields.Char(string='Parent ID', readonly=True)
     woocommerce_order_number = fields.Char(string='Number', readonly=True)
     woocommerce_order_order_key = fields.Char(string='Key', readonly=True)
@@ -470,19 +473,20 @@ class SaleOrder(models.Model):
     woocommerce_order_shipping_country = fields.Char(string='Shipping Country', readonly=True)
 
     # Custom fields
+    woocommerce_order_woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Order Last Sync', readonly=True)
     woocommerce_order_transaction_fee = fields.Float(string='Transaction Fee', help='Transaction fees incurred from PayPal or Stripe.', readonly=True, default=0.0)
     if not hasattr(models.BaseModel, '_fields') or 'order_language_code' not in ProductTemplate._fields:
-        order_language_code = fields.Char(string='Language', help='Polylang 2-digit ISO 639-1 language code.', readonly=True)  # Polylang
+        order_language_code = fields.Char(string='Language', help='2-digit ISO 639-1 language code.', readonly=True)
 
     # Computed fields
     woocommerce_order_payout = fields.Float(string='Payout', help='Total - Order Transaction Fee.', compute='payout_compute', store=True, readonly=True)
 
     @api.ondelete(at_uninstall=False)
-    def _unlink_except_draft_or_cancel(self):
+    def _unlink_except_draft_or_cancel(self: models.Model) -> None:
         """Remove Odoo's restriction on deletion (allow deleting any order)."""
         return
 
-    def unlink(self):
+    def unlink(self: models.Model) -> bool:
         """Auto-cancel orders before deletion to maintain consistency."""
         for order in self:
             if order.state not in ('draft', 'cancel'):
@@ -498,7 +502,7 @@ class SaleOrderLine(models.Model):
     woocommerce_order_line_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
 
     # WooCommerce REST API - Order line items properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-line-items-properties
-    woocommerce_order_line_item_id = fields.Char(string='WooCommerce ID', readonly=True, index=True)
+    woocommerce_order_line_item_id = fields.Char(string='WooCommerce Order Line Item ID', readonly=True, index=True)
     woocommerce_order_line_item_name = fields.Char(string='Product Name', readonly=True)
     woocommerce_order_line_item_product_id = fields.Char(string='Product ID', readonly=True)
     woocommerce_order_line_item_variation_id = fields.Char(string='Variation ID', readonly=True)
@@ -515,6 +519,9 @@ class SaleOrderLine(models.Model):
 
     # Additional fields
     woocommerce_order_line_item_weight_unit = fields.Char(string='Weight Unit', readonly=True)
+
+    # Custom fields
+    woocommerce_order_line_woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Order Line Last Sync', readonly=True)
 
 
 # Order status

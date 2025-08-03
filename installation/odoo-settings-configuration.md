@@ -59,7 +59,7 @@ else:
 odoo_user = env['res.users'].search([('login', '=', settings_username)], limit=1)
 
 if odoo_user:
-    def assign_group(xml_id):
+    def assign_group(xml_id: str) -> None:
         group = env.ref(xml_id)
         if group not in odoo_user.groups_id:
             odoo_user.write({'groups_id': [(4, group.id)]})

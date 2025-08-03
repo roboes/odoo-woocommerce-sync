@@ -137,6 +137,12 @@ For orders import, two optional mapping logics can be activated. By default, a p
 - **Guest Customers Mapping:** When enabled, orders placed by guest (unregistered) customers are matched to existing Odoo customers using their email addresses. If no matching customer exists, a new record is created automatically. When disabled, a customer placeholder (`ref = WooCommerce_Customer_Placeholder`) is assigned to the order.
 - **Line Items Product Mapping:** When enabled, each line item is mapped to an existing Odoo product using the `woocommerce_product_id`. If no match is found, a product placeholder is used. When disabled, all order line items are assigned to a placeholder product (`default_code = WooCommerce_Product_Placeholder`) while still displaying the WooCommerce product name. This option is not recommended since product details in WooCommerce may change over time, complicating accurate mapping.
 
+## Disclaimer
+
+This module is an independent third-party integration. It is not affiliated with, endorsed by, or sponsored by Odoo S.A. or Automattic Inc.
+
+All copyrights and trademarks are the property of their respective owners.
+
 ## Reference
 
 - [WooCommerce REST API Documentation](https://woocommerce.github.io/woocommerce-rest-api-docs/)
