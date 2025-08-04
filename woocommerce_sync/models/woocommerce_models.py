@@ -80,16 +80,7 @@ class ProductTemplate(models.Model):
 
     # WooCommerce REST API - Common fields for Products and Product Variants
     woocommerce_product_type = fields.Selection(
-        [
-            ('simple', 'Simple'),
-            ('grouped', 'Grouped'),
-            ('external', 'External'),
-            ('variable', 'Variable'),
-            ('variation', 'Variation'),
-        ],
-        string='Type',
-        default='simple',
-        readonly=True,
+        selection=[('simple', 'Simple'), ('grouped', 'Grouped'), ('external', 'External'), ('variable', 'Variable'), ('variation', 'Variation')], string='Type', default='simple', readonly=True
     )
 
     # WooCommerce REST API - Product properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#product-properties
@@ -101,27 +92,9 @@ class ProductTemplate(models.Model):
     woocommerce_product_date_created_gmt = fields.Datetime(string='Date Created', readonly=True)
     woocommerce_product_date_modified = fields.Datetime(string='Date Modified', readonly=True)
     woocommerce_product_date_modified_gmt = fields.Datetime(string='Date Modified', readonly=True)
-    woocommerce_product_status = fields.Selection(
-        [
-            ('draft', 'Draft'),
-            ('pending', 'Pending'),
-            ('private', 'Private'),
-            ('publish', 'Published'),
-        ],
-        string='Status',
-        readonly=True,
-    )
+    woocommerce_product_status = fields.Selection(selection=[('draft', 'Draft'), ('pending', 'Pending'), ('private', 'Private'), ('publish', 'Published')], string='Status', readonly=True)
     woocommerce_product_featured = fields.Boolean(string='Featured', readonly=True)
-    woocommerce_product_catalog_visibility = fields.Selection(
-        [
-            ('visible', 'Visible'),
-            ('catalog', 'Catalog'),
-            ('search', 'Search'),
-            ('hidden', 'Hidden'),
-        ],
-        string='Catalog Visibility',
-        readonly=True,
-    )
+    woocommerce_product_catalog_visibility = fields.Selection(selection=[('visible', 'Visible'), ('catalog', 'Catalog'), ('search', 'Search'), ('hidden', 'Hidden')], string='Catalog Visibility', readonly=True)
     woocommerce_product_description = fields.Html(string='Description', readonly=True)
     woocommerce_product_short_description = fields.Html(string='Short Description', readonly=True)
     woocommerce_product_sku = fields.Char(string='SKU', readonly=True)
@@ -143,36 +116,12 @@ class ProductTemplate(models.Model):
     woocommerce_product_download_expiry = fields.Integer(string='Download Expiry', readonly=True)
     woocommerce_product_external_url = fields.Char(string='External URL', readonly=True)
     woocommerce_product_button_text = fields.Char(string='Button Text', readonly=True)
-    woocommerce_product_tax_status = fields.Selection(
-        [
-            ('taxable', 'Taxable'),
-            ('shipping', 'Shipping'),
-            ('none', 'None'),
-        ],
-        string='Tax Status',
-        readonly=True,
-    )
+    woocommerce_product_tax_status = fields.Selection(selection=[('taxable', 'Taxable'), ('shipping', 'Shipping'), ('none', 'None')], string='Tax Status', readonly=True)
     woocommerce_product_tax_class = fields.Char(string='Tax Class', readonly=True)
     woocommerce_product_manage_stock = fields.Boolean(string='Manage Stock', readonly=True)
     woocommerce_product_stock_quantity = fields.Integer(string='Stock Quantity', readonly=True)
-    woocommerce_product_stock_status = fields.Selection(
-        [
-            ('instock', 'In Stock'),
-            ('outofstock', 'Out of Stock'),
-            ('onbackorder', 'On Backorder'),
-        ],
-        string='Stock Status',
-        readonly=True,
-    )
-    woocommerce_product_backorders = fields.Selection(
-        [
-            ('no', 'No'),
-            ('notify', 'Notify'),
-            ('yes', 'Yes'),
-        ],
-        string='Backorders',
-        readonly=True,
-    )
+    woocommerce_product_stock_status = fields.Selection(selection=[('instock', 'In Stock'), ('outofstock', 'Out of Stock'), ('onbackorder', 'On Backorder')], string='Stock Status', readonly=True)
+    woocommerce_product_backorders = fields.Selection(selection=[('no', 'No'), ('notify', 'Notify'), ('yes', 'Yes')], string='Backorders', readonly=True)
     woocommerce_product_backorders_allowed = fields.Boolean(string='Backorders Allowed', readonly=True)
     woocommerce_product_backordered = fields.Boolean(string='Backordered', readonly=True)
     woocommerce_product_sold_individually = fields.Boolean(string='Sold Individually', readonly=True)
@@ -256,16 +205,7 @@ class ProductProduct(models.Model):
     woocommerce_product_variation_date_created_gmt = fields.Datetime(string='Date Created', readonly=True)
     woocommerce_product_variation_date_modified = fields.Datetime(string='Date Modified', readonly=True)
     woocommerce_product_variation_date_modified_gmt = fields.Datetime(string='Date Modified', readonly=True)
-    woocommerce_product_variation_status = fields.Selection(
-        [
-            ('draft', 'Draft'),
-            ('pending', 'Pending'),
-            ('private', 'Private'),
-            ('publish', 'Published'),
-        ],
-        string='Status',
-        readonly=True,
-    )
+    woocommerce_product_variation_status = fields.Selection(selection=[('draft', 'Draft'), ('pending', 'Pending'), ('private', 'Private'), ('publish', 'Published')], string='Status', readonly=True)
     woocommerce_product_variation_description = fields.Html(string='Description', readonly=True)
     woocommerce_product_variation_sku = fields.Char(string='SKU', readonly=True)
     woocommerce_product_variation_price = fields.Char(string='Price', readonly=True)
@@ -282,36 +222,12 @@ class ProductProduct(models.Model):
     woocommerce_product_variation_downloads = fields.Json(string='Downloads', readonly=True)
     woocommerce_product_variation_download_limit = fields.Integer(string='Download Limit', readonly=True)
     woocommerce_product_variation_download_expiry = fields.Integer(string='Download Expiry', readonly=True)
-    woocommerce_product_variation_tax_status = fields.Selection(
-        [
-            ('taxable', 'Taxable'),
-            ('shipping', 'Shipping'),
-            ('none', 'None'),
-        ],
-        string='Tax Status',
-        readonly=True,
-    )
+    woocommerce_product_variation_tax_status = fields.Selection(selection=[('taxable', 'Taxable'), ('shipping', 'Shipping'), ('none', 'None')], string='Tax Status', readonly=True)
     woocommerce_product_variation_tax_class = fields.Char(string='Tax Class', readonly=True)
     woocommerce_product_variation_manage_stock = fields.Boolean(string='Manage Stock', readonly=True)
     woocommerce_product_variation_stock_quantity = fields.Integer(string='Stock Quantity', readonly=True)
-    woocommerce_product_variation_stock_status = fields.Selection(
-        [
-            ('instock', 'In Stock'),
-            ('outofstock', 'Out of Stock'),
-            ('onbackorder', 'On Backorder'),
-        ],
-        string='Stock Status',
-        readonly=True,
-    )
-    woocommerce_product_variation_backorders = fields.Selection(
-        [
-            ('no', 'No'),
-            ('notify', 'Notify'),
-            ('yes', 'Yes'),
-        ],
-        string='Backorders',
-        readonly=True,
-    )
+    woocommerce_product_variation_stock_status = fields.Selection(selection=[('instock', 'In Stock'), ('outofstock', 'Out of Stock'), ('onbackorder', 'On Backorder')], string='Stock Status', readonly=True)
+    woocommerce_product_variation_backorders = fields.Selection(selection=[('no', 'No'), ('notify', 'Notify'), ('yes', 'Yes')], string='Backorders', readonly=True)
     woocommerce_product_variation_backorders_allowed = fields.Boolean(string='Backorders Allowed', readonly=True)
     woocommerce_product_variation_backordered = fields.Boolean(string='Backordered', readonly=True)
     woocommerce_product_variation_weight = fields.Char(string='Weight', readonly=True)
@@ -410,7 +326,16 @@ class SaleOrder(models.Model):
     woocommerce_order_created_via = fields.Char(string='Created Via', readonly=True)
     woocommerce_order_version = fields.Char(string='WooCommerce Version', readonly=True)
     woocommerce_order_status = fields.Selection(
-        [('pending', 'Pending'), ('processing', 'Processing'), ('on-hold', 'On Hold'), ('completed', 'Completed'), ('cancelled', 'Cancelled'), ('refunded', 'Refunded'), ('failed', 'Failed'), ('trash', 'Trash')],
+        selection=[
+            ('pending', 'Pending'),
+            ('processing', 'Processing'),
+            ('on-hold', 'On Hold'),
+            ('completed', 'Completed'),
+            ('cancelled', 'Cancelled'),
+            ('refunded', 'Refunded'),
+            ('failed', 'Failed'),
+            ('trash', 'Trash'),
+        ],
         string='Status',
         readonly=True,
     )

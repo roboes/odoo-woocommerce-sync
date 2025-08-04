@@ -68,7 +68,9 @@ python -m pip install woocommerce
     - `Home Menu` > `Settings` > `Sales` > `Product Catalog` > Enable `Variants`.
 - **Inventory** (`stock`)
   - Enable Delivery Methods:
-    `Home Menu` > `Settings` > `Inventory` > `Shipping` > Enable `Delivery Methods`.
+    - `Home Menu` > `Settings` > `Inventory` > `Shipping` > Enable `Delivery Methods`.
+  - (Optional) Enable [Product Packagings](https://www.odoo.com/documentation/18.0/applications/inventory_and_mrp/inventory/product_management/configure/packaging.html):
+    - `Home Menu` > `Settings` > `Inventory` > `Products` > Enable `Product Packagings`.
   - Enable Units of Measure:
     - `Home Menu` > `Settings` > `Inventory` > `Products` > Enable `Units of Measure`.
   - (Optional) Set up a dedicated warehouse for WooCommerce sales:
@@ -143,6 +145,10 @@ This module is an independent third-party integration. It is not affiliated with
 
 All copyrights and trademarks are the property of their respective owners.
 
-## Reference
+## References
 
 - [WooCommerce REST API Documentation](https://woocommerce.github.io/woocommerce-rest-api-docs/)
+
+## See also
+
+- [Odoo-Shore POS Sync](https://github.com/roboes/odoo-shorepos-sync): Connector add-on for Odoo that synchronizes data between Shore POS and Odoo.
