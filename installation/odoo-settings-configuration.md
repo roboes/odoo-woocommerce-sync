@@ -1,7 +1,7 @@
 # Odoo-WooCommerce Sync Odoo Settings Configuration
 
 > [!NOTE]
-> Last update: 2025-06-21
+> Last update: 2025-08-04
 
 ## Settings
 
@@ -69,7 +69,8 @@ if odoo_user:
     assign_group('account.group_account_manager')  # Billing Administrator
     assign_group('account.group_account_user')  # Full Accounting Features
     env['res.config.settings'].create({'group_product_variant': True}).execute()  # Product Variants
-    # assign_group('delivery.group_delivery_invoice') # Delivery Methods
+    env['res.config.settings'].create({'group_delivery_invoice_policy': True}).execute() # Delivery Methods
+    env['res.config.settings'].create({'group_stock_packaging': True}).execute() # Product Packagings
     env['res.config.settings'].create({'group_uom': True}).execute()  # Units of Measure
     env.cr.commit()  # Commit changes to database
     assign_group('stock.group_stock_multi_locations')  # Storage Locations
