@@ -6,15 +6,15 @@
     <field name="inherit_id" ref="product.product_template_tree_view"/>
     <field name="arch" type="xml">
       <xpath expr="//tree" position="inside">
-        <field name="woocommerce_product_site_url" optional="show"/>
-        <field name="woocommerce_product_id" optional="show"/>
-        <field name="woocommerce_product_type" optional="show"/>
-        <field name="woocommerce_product_status" optional="show"/>
-        <field name="woocommerce_product_featured" optional="hide"/>
-        <field name="woocommerce_product_purchasable" optional="show"/>
-        <field name="product_sync_to_woocommerce" optional="show"/>
-        <field name="product_source" optional="show"/>
-        <field name="product_language_code" optional="show"/>
+        <field name="woocommerce_site_url" optional="show"/>
+        <field name="woocommerce_id" optional="show"/>
+        <field name="woocommerce_type" optional="show"/>
+        <field name="woocommerce_status" optional="show"/>
+        <field name="woocommerce_featured" optional="hide"/>
+        <field name="woocommerce_purchasable" optional="show"/>
+        <field name="sync_to_woocommerce" optional="show"/>
+        <field name="source" optional="show"/>
+        <field name="language_code" optional="show"/>
       </xpath>
     </field>
   </record>
