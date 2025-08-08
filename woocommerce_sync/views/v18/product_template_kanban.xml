@@ -7,10 +7,10 @@
     <field name="arch" type="xml">
       <xpath expr="//t[@t-name='card']/main/div[hasclass('mb-1')]" position="after">
         <div class="float-end">
-          <field name="product_source" widget="badge" invisible="not product_source"/>
+          <field name="source" widget="badge" invisible="not source"/>
         </div>
         <div class="float-end">
-          <field name="product_language_code" widget="badge" invisible="not product_language_code"/>
+          <field name="language_code" widget="badge" invisible="not language_code"/>
         </div>
       </xpath>
     </field>
