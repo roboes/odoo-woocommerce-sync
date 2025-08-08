@@ -7,12 +7,12 @@
     <field name="arch" type="xml">
       <xpath expr="//div[@name='options']" position="inside">
         <span class="d-inline-block">
-          <field name="product_sync_to_woocommerce"/>
-          <label for="product_sync_to_woocommerce"/>
+          <field name="sync_to_woocommerce"/>
+          <label for="sync_to_woocommerce"/>
         </span>
       </xpath>
       <xpath expr="//page[@name='general_information']//group[@name='group_general']" position="inside">
-        <field name="product_language_code" attrs="{'invisible': ['|', ('product_language_code', '=', False), ('product_language_code', '=', '')]}"/>
+        <field name="language_code" attrs="{'invisible': ['|', ('language_code', '=', False), ('language_code', '=', '')]}"/>
         <field name="product_stock_date_updated" attrs="{'invisible': [('product_stock_date_updated', '=', False)]}"/>
       </xpath>
       <xpath expr="//page[@name='general_information']//field[@name='categ_id']" position="after">
@@ -41,66 +41,66 @@
         </group>
       </xpath>
       <xpath expr="//notebook" position="inside">
-        <page string="WooCommerce" attrs="{'invisible': ['|', ('woocommerce_product_id', '=', False), ('woocommerce_product_id', '=', '')]}">
+        <page string="WooCommerce" attrs="{'invisible': ['|', ('woocommerce_id', '=', False), ('woocommerce_id', '=', '')]}">
           <group string="General Information">
-            <field name="woocommerce_product_site_url"/>
-            <field name="woocommerce_product_woocommerce_to_odoo_last_sync"/>
-            <field name="woocommerce_product_name"/>
-            <field name="woocommerce_product_id"/>
-            <field name="woocommerce_product_type"/>
-            <field name="woocommerce_product_sku"/>
-            <field name="product_language_code" attrs="{'invisible': ['|', ('product_language_code', '=', False), ('product_language_code', '=', '')]}"/>
-            <field name="woocommerce_product_slug"/>
-            <field name="woocommerce_product_permalink"/>
-            <field name="woocommerce_product_date_created_gmt"/>
-            <field name="woocommerce_product_date_modified_gmt"/>
-            <field name="woocommerce_product_description"/>
-            <field name="woocommerce_product_short_description"/>
-            <field name="woocommerce_product_purchase_note"/>
+            <field name="woocommerce_site_url"/>
+            <field name="woocommerce_to_odoo_last_sync"/>
+            <field name="woocommerce_name"/>
+            <field name="woocommerce_id"/>
+            <field name="woocommerce_type"/>
+            <field name="woocommerce_sku"/>
+            <field name="language_code" attrs="{'invisible': ['|', ('language_code', '=', False), ('language_code', '=', '')]}"/>
+            <field name="woocommerce_slug"/>
+            <field name="woocommerce_permalink"/>
+            <field name="woocommerce_date_created_gmt"/>
+            <field name="woocommerce_date_modified_gmt"/>
+            <field name="woocommerce_description"/>
+            <field name="woocommerce_short_description"/>
+            <field name="woocommerce_purchase_note"/>
           </group>
           <group string="Product Status">
-            <field name="woocommerce_product_status"/>
-            <field name="woocommerce_product_featured"/>
-            <field name="woocommerce_product_purchasable"/>
-            <field name="woocommerce_product_total_sales"/>
+            <field name="woocommerce_status"/>
+            <field name="woocommerce_featured"/>
+            <field name="woocommerce_purchasable"/>
+            <field name="woocommerce_total_sales"/>
           </group>
           <group string="Pricing">
-            <field name="woocommerce_product_regular_price" options="{'currency_field': 'currency_id'}"/>
-            <field name="woocommerce_product_sale_price" options="{'currency_field': 'currency_id'}"/>
-            <field name="woocommerce_product_date_on_sale_from_gmt"/>
-            <field name="woocommerce_product_date_on_sale_to_gmt"/>
-            <field name="woocommerce_product_price" options="{'currency_field': 'currency_id'}"/>
-            <field name="woocommerce_product_on_sale"/>
+            <field name="woocommerce_regular_price" options="{'currency_field': 'currency_id'}"/>
+            <field name="woocommerce_sale_price" options="{'currency_field': 'currency_id'}"/>
+            <field name="woocommerce_date_on_sale_from_gmt"/>
+            <field name="woocommerce_date_on_sale_to_gmt"/>
+            <field name="woocommerce_price" options="{'currency_field': 'currency_id'}"/>
+            <field name="woocommerce_on_sale"/>
           </group>
           <group string="Brands, Categories and Tags">
-            <field name="woocommerce_product_categories" widget="json_html"/>
-            <field name="woocommerce_product_tags" widget="json_html"/>
-            <field name="woocommerce_product_brands" widget="json_html"/>
+            <field name="woocommerce_categories" widget="json_html"/>
+            <field name="woocommerce_tags" widget="json_html"/>
+            <field name="woocommerce_brands" widget="json_html"/>
           </group>
           <group string="Variations and Attributes">
-            <field name="woocommerce_product_variations" widget="json_html"/>
-            <field name="woocommerce_product_attributes" widget="json_html"/>
-            <field name="woocommerce_product_default_attributes" widget="html"/>
+            <field name="woocommerce_variations" widget="json_html"/>
+            <field name="woocommerce_attributes" widget="json_html"/>
+            <field name="woocommerce_default_attributes" widget="html"/>
           </group>
           <group string="Stock and Inventory">
-            <field name="woocommerce_product_manage_stock"/>
-            <field name="woocommerce_product_stock_quantity"/>
-            <field name="woocommerce_product_stock_status"/>
-            <field name="woocommerce_product_sold_individually"/>
-            <field name="woocommerce_product_backorders"/>
-            <field name="woocommerce_product_backorders_allowed"/>
+            <field name="woocommerce_manage_stock"/>
+            <field name="woocommerce_stock_quantity"/>
+            <field name="woocommerce_stock_status"/>
+            <field name="woocommerce_sold_individually"/>
+            <field name="woocommerce_backorders"/>
+            <field name="woocommerce_backorders_allowed"/>
           </group>
           <group string="Shipping and Dimensions">
-            <field name="woocommerce_product_weight"/>
-            <field name="woocommerce_product_dimensions"/>
-            <field name="woocommerce_product_shipping_required"/>
-            <field name="woocommerce_product_shipping_taxable"/>
-            <field name="woocommerce_product_shipping_class"/>
+            <field name="woocommerce_weight"/>
+            <field name="woocommerce_dimensions"/>
+            <field name="woocommerce_shipping_required"/>
+            <field name="woocommerce_shipping_taxable"/>
+            <field name="woocommerce_shipping_class"/>
           </group>
           <group string="Meta Data" style="width: 100%; display: block;">
             <details>
               <summary>Meta Data</summary>
-              <field name="woocommerce_product_meta_data" widget="json_html"/>
+              <field name="woocommerce_meta_data" widget="json_html"/>
             </details>
           </group>
         </page>

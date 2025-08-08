@@ -1,6 +1,21 @@
 # Changelog
 
-## 2025-08-03
+## v16.0.2.0 / v18.0.2.0 - 2025-08-08
+
+### Features
+
+- Implemented a new feature to automatically delete products in Odoo if they are no longer found in WooCommerce, which is enabled by default in the configuration setting.
+
+### Improvements
+
+- Improved performance for large WooCommerce stores by implementing a sequential workflow of queue jobs for the synchronization of each individual product, product variation, customer, and order. This prevents `CPU time limit exceeded` errors by ensuring tasks are processed one at a time.
+- Renamed WooCommerce-related fields across multiple models to follow a consistent woocommerce_\* naming convention, improving clarity and alignment with the WooCommerce REST API.
+
+### Fixes
+
+- Fixed logic that caused Odoo to create a variant for every possible attribute combination. The synchronization process now directly creates or updates only the variants that exist in WooCommerce.
+
+## v16.0.1.5 / 18.0.1.5 - 2025-08-03
 
 ### Features
 
@@ -12,13 +27,13 @@
 - Added type hints for improved code clarity and static analysis.
 - General code optimizations for improved performance.
 
-## 2025-07-27
+## v16.0.1.4 / v18.0.1.4 - 2025-07-27
 
 ### Features
 
 - Code improvements.
 
-## 2025-07-24
+## v16.0.1.3 / v18.0.1.3 - 2025-07-24
 
 ### Features
 
@@ -30,7 +45,7 @@
 - Fixed duplicate delivery methods creation by properly setting `woocommerce_product_site_url` during carrier creation.
 - Updated product type handling for Odoo 18: product classification now uses a combination of `type = 'consu'` and `is_storable = True` instead of a single `type = 'product'` value.
 
-## 2025-07-21
+## v16.0.1.2 / v18.0.1.2 - 2025-07-21
 
 ### Fixes
 
@@ -121,6 +136,6 @@
 
 - Fixed minor bugs.
 
-## 2025-03-03
+## v16.0.1.0 - 2025-03-03
 
 - Initial release.

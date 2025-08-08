@@ -6,52 +6,52 @@
     <field name="inherit_id" ref="base.view_partner_form"/>
     <field name="arch" type="xml">
       <xpath expr="//notebook" position="inside">
-        <page string="WooCommerce" invisible="not woocommerce_customer_id">
+        <page string="WooCommerce" invisible="not woocommerce_id">
           <group string="General Information">
-            <field name="woocommerce_customer_site_url"/>
-            <field name="woocommerce_customer_woocommerce_to_odoo_last_sync"/>
-            <field name="woocommerce_customer_id"/>
-            <field name="woocommerce_customer_date_created_gmt"/>
-            <field name="woocommerce_customer_date_modified_gmt"/>
-            <field name="woocommerce_customer_email"/>
-            <field name="woocommerce_customer_first_name"/>
-            <field name="woocommerce_customer_last_name"/>
-            <field name="woocommerce_customer_username"/>
-            <field name="woocommerce_customer_role"/>
-            <field name="woocommerce_customer_date_last_login"/>
+            <field name="woocommerce_site_url"/>
+            <field name="woocommerce_to_odoo_last_sync"/>
+            <field name="woocommerce_id"/>
+            <field name="woocommerce_date_created_gmt"/>
+            <field name="woocommerce_date_modified_gmt"/>
+            <field name="woocommerce_email"/>
+            <field name="woocommerce_first_name"/>
+            <field name="woocommerce_last_name"/>
+            <field name="woocommerce_username"/>
+            <field name="woocommerce_role"/>
+            <field name="woocommerce_last_login_date"/>
           </group>
           <group string="Billing Information">
-            <field name="woocommerce_customer_billing_first_name"/>
-            <field name="woocommerce_customer_billing_last_name"/>
-            <field name="woocommerce_customer_billing_company"/>
-            <field name="woocommerce_customer_billing_address_1"/>
-            <field name="woocommerce_customer_billing_address_2"/>
-            <field name="woocommerce_customer_billing_city"/>
-            <field name="woocommerce_customer_billing_state"/>
-            <field name="woocommerce_customer_billing_postcode"/>
-            <field name="woocommerce_customer_billing_country"/>
-            <field name="woocommerce_customer_billing_email"/>
-            <field name="woocommerce_customer_billing_phone"/>
+            <field name="woocommerce_billing_first_name"/>
+            <field name="woocommerce_billing_last_name"/>
+            <field name="woocommerce_billing_company"/>
+            <field name="woocommerce_billing_address_1"/>
+            <field name="woocommerce_billing_address_2"/>
+            <field name="woocommerce_billing_city"/>
+            <field name="woocommerce_billing_state"/>
+            <field name="woocommerce_billing_postcode"/>
+            <field name="woocommerce_billing_country"/>
+            <field name="woocommerce_billing_email"/>
+            <field name="woocommerce_billing_phone"/>
           </group>
           <group string="Shipping Information">
-            <field name="woocommerce_customer_shipping_first_name"/>
-            <field name="woocommerce_customer_shipping_last_name"/>
-            <field name="woocommerce_customer_shipping_company"/>
-            <field name="woocommerce_customer_shipping_address_1"/>
-            <field name="woocommerce_customer_shipping_address_2"/>
-            <field name="woocommerce_customer_shipping_city"/>
-            <field name="woocommerce_customer_shipping_state"/>
-            <field name="woocommerce_customer_shipping_postcode"/>
-            <field name="woocommerce_customer_shipping_country"/>
+            <field name="woocommerce_shipping_first_name"/>
+            <field name="woocommerce_shipping_last_name"/>
+            <field name="woocommerce_shipping_company"/>
+            <field name="woocommerce_shipping_address_1"/>
+            <field name="woocommerce_shipping_address_2"/>
+            <field name="woocommerce_shipping_city"/>
+            <field name="woocommerce_shipping_state"/>
+            <field name="woocommerce_shipping_postcode"/>
+            <field name="woocommerce_shipping_country"/>
           </group>
           <group string="Other Details">
-            <field name="woocommerce_customer_is_paying_customer"/>
-            <field name="woocommerce_customer_avatar_url"/>
+            <field name="woocommerce_is_paying_customer"/>
+            <field name="woocommerce_avatar_url"/>
           </group>
           <group string="Meta Data" style="width: 100%; display: block;">
             <details>
               <summary>Meta Data</summary>
-              <field name="woocommerce_customer_meta_data" widget="json_html"/>
+              <field name="woocommerce_meta_data" widget="json_html"/>
             </details>
           </group>
         </page>

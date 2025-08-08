@@ -42,7 +42,7 @@ Some features require additional setup, as detailed in the [Requirements](#requi
 Install the necessary Python packages by running:
 
 ```sh
-python -m pip install woocommerce
+python -m pip install phonenumbers woocommerce
 ```
 
 #### Odoo Add-ons (Required)

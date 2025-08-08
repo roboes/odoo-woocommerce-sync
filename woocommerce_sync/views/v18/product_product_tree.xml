@@ -6,11 +6,11 @@
     <field name="inherit_id" ref="product.product_product_tree_view"/>
     <field name="arch" type="xml">
       <xpath expr="//list" position="inside">
-        <field name="woocommerce_product_variation_site_url" optional="show"/>
-        <field name="woocommerce_product_variation_id" optional="show"/>
-        <field name="woocommerce_product_type" optional="hide"/>
-        <field name="woocommerce_product_variation_status" optional="show"/>
-        <field name="woocommerce_product_variation_purchasable" optional="show"/>
+        <field name="woocommerce_site_url" optional="show"/>
+        <field name="woocommerce_id" optional="show"/>
+        <field name="woocommerce_type" optional="hide"/>
+        <field name="woocommerce_status" optional="show"/>
+        <field name="woocommerce_purchasable" optional="show"/>
       </xpath>
     </field>
   </record>

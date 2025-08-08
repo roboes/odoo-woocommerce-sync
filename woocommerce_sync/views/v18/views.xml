@@ -12,7 +12,7 @@
           <field name="settings_woocommerce_consumer_key"/>
           <field name="settings_woocommerce_consumer_secret" password="True"/>
           <!-- <field name="settings_woocommerce_timeout"/> -->
-          <field name="woocommerce_last_synced"/>
+          <field name="odoo_woocommerce_last_sync"/>
           <button type="object" name="woocommerce_sync_action" string="Sync Now" icon="fa-refresh"/>
         </list>
       </field>
@@ -70,10 +70,10 @@
                           <div class="oe_label">Product Variations</div>
                         </td>
                         <td style="padding: 8px; text-align: center; vertical-align: top;">
-                          <field name="settings_woocommerce_to_odoo_product_variations_sync" class="oe_inline" invisible="not settings_woocommerce_to_odoo_products_sync"/>
+                          <field name="settings_woocommerce_to_odoo_products_variations_sync" class="oe_inline" invisible="not settings_woocommerce_to_odoo_products_sync"/>
                         </td>
                         <td style="padding: 8px; text-align: center; vertical-align: top;">
-                          <field name="settings_odoo_to_woocommerce_product_variations_sync" class="oe_inline" invisible="not settings_odoo_to_woocommerce_products_sync"/>
+                          <field name="settings_odoo_to_woocommerce_variations_sync" class="oe_inline" invisible="not settings_odoo_to_woocommerce_products_sync"/>
                         </td>
                       </tr>
                       <tr>
@@ -102,12 +102,13 @@
                   <field name="settings_woocommerce_products_warehouse_location" invisible="not settings_woocommerce_products_stock_management"/>
                   <field name="settings_woocommerce_products_related_ids_map"/>
                   <field name="settings_woocommerce_to_odoo_products_language_code"/>
+                  <field name="settings_woocommerce_to_odoo_products_delete" invisible="not settings_woocommerce_to_odoo_products_sync"/>
                 </group>
                 <group string="WooCommerce to Odoo Orders Import Settings">
-                  <field name="settings_woocommerce_order_status" widget="many2many_checkboxes"/>
-                  <field name="settings_woocommerce_order_delivery_methods_archive"/>
+                  <field name="settings_woocommerce_status" widget="many2many_checkboxes"/>
+                  <field name="settings_woocommerce_delivery_methods_archive"/>
                   <field name="settings_woocommerce_orders_customers_map"/>
-                  <field name="settings_woocommerce_order_line_items_product_map"/>
+                  <field name="settings_woocommerce_line_items_product_map"/>
                 </group>
                 <group string="Odoo to WooCommerce Products Import Settings">
                   <field name="settings_woocommerce_odoo_to_woocommerce_products_language_code"/>
