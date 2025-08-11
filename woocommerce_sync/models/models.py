@@ -2242,7 +2242,8 @@ class WoocommerceConnector(models.Model):
 
     def odoo_to_woocommerce_products_sync(
         self: models.Model,
-        woocommerce_api: API,
+        # Causes error due to argument mismatch. Issue here: https://github.com/roboes/odoo-woocommerce-sync/issues/5
+        # woocommerce_api: API, 
         woocommerce_currency: str,
         woocommerce_tax_rates: dict[str, float],
         woocommerce_prices_include_tax: bool,
