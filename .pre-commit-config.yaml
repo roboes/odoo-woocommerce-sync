@@ -1,11 +1,11 @@
 ## Pre-commit configuration
-# Last update: 2025-08-03
+# Last update: 2025-08-09
 
 # Save this file to '/.pre-commit-config.yaml'
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: check-added-large-files
         args: ["--maxkb=500"]
@@ -28,8 +28,6 @@ repos:
       - id: detect-private-key
       - id: file-contents-sorter
       - id: fix-byte-order-marker
-      - id: fix-encoding-pragma
-        args: ["--remove"]
       - id: forbid-new-submodules
       # - id: forbid-submodules
       #   args: ["--fix=lf"]
@@ -109,7 +107,7 @@ repos:
     rev: v3.20.0
     hooks:
       - id: pyupgrade
-        args: ["--py312-plus"]
+        args: ["--py313-plus"]
 
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.1
