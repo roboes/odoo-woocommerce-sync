@@ -2241,13 +2241,7 @@ class WoocommerceConnector(models.Model):
             return woocommerce_api.post(f'products/{attribute_type}', data=data).json()
 
     def odoo_to_woocommerce_products_sync(
-        self: models.Model,
-        woocommerce_api: API,
-        woocommerce_currency: str,
-        woocommerce_tax_rates: dict[str, float],
-        woocommerce_prices_include_tax: bool,
-        woocommerce_weight_unit: str,
-        woocommerce_dimension_unit: str,
+        self: models.Model, woocommerce_currency: str, woocommerce_tax_rates: dict[str, float], woocommerce_prices_include_tax: bool, woocommerce_weight_unit: str, woocommerce_dimension_unit: str
     ) -> None:
         # WooCommerce REST API
         woocommerce_api = self.woocommerce_api_get()

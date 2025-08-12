@@ -1,5 +1,5 @@
 ## Odoo-WooCommerce Sync Tests
-# Last update: 2025-06-24
+# Last update: 2025-08-12
 
 
 # Logs:
@@ -18,6 +18,11 @@ odoo_addon_name="woocommerce_sync"
 # First Odoo run after fresh install
 # $website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin --config=$odoo_conf --database $database_name --load=base,web --without-demo=all --update=all
 
+
+# Delete queue jobs
+# sudo -u postgres psql $database_name <<EOF
+# DELETE FROM queue_job;
+# EOF
 
 
 # Stop Odoo Process
