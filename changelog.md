@@ -1,5 +1,11 @@
 # Changelog
 
+## v16.0.2.1 / v18.0.2.1 - 2025-08-12
+
+### Fixes
+
+- Removed unused `woocommerce_api` argument from `odoo_to_woocommerce_products_sync()` after migrating to internal API retrieval in sequential queue job workflow.
+
 ## v16.0.2.0 / v18.0.2.0 - 2025-08-08
 
 ### Features
