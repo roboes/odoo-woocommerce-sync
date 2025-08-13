@@ -1,5 +1,5 @@
 ## Odoo-WooCommerce Sync Tests
-# Last update: 2025-08-12
+# Last update: 2025-08-13
 
 
 # Logs:
@@ -19,10 +19,10 @@ odoo_addon_name="woocommerce_sync"
 # $website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin --config=$odoo_conf --database $database_name --load=base,web --without-demo=all --update=all
 
 
-# Delete queue jobs
-# sudo -u postgres psql $database_name <<EOF
-# DELETE FROM queue_job;
-# EOF
+# Delete all queue jobs
+sudo -u postgres psql $database_name <<EOF
+DELETE FROM queue_job;
+EOF
 
 
 # Stop Odoo Process
@@ -41,6 +41,7 @@ ps aux | grep odoo | grep -v grep | awk '{print $2}' | xargs -r kill -9
 # Retrieve all field information for product templates
 # fields = self.env['product.template'].fields_get()
 # print(fields)
+# print(fields.keys())
 
 # Retrieve default values for product template fields
 # print(self.env['product.template'].default_get(self.env['product.template']._fields.keys()))

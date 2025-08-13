@@ -1,5 +1,15 @@
 # Changelog
 
+## v16.0.2.2 / v18.0.2.2 - 2025-08-13
+
+### Features
+
+- Revamped the stock sync logic.
+
+### Improvements
+
+- Renamed variable from `product_stock_date_updated` to `woocommerce_stock_last_sync`.
+
 ## v16.0.2.1 / v18.0.2.1 - 2025-08-12
 
 ### Fixes
