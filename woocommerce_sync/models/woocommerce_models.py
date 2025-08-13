@@ -159,12 +159,11 @@ class ProductTemplate(models.Model):
     sync_to_woocommerce = fields.Boolean(string='Sync to WooCommerce', default=False)
     woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Last Sync', readonly=True)
     odoo_to_woocommerce_last_sync = fields.Datetime(string='Odoo to WooCommerce Last Sync', readonly=True)
+    woocommerce_stock_last_sync = fields.Datetime(string='Stock Date Updated', readonly=True)
     if not hasattr(models.BaseModel, '_fields') or 'source' not in ProductTemplate._fields:
         source = fields.Char(string='Source', readonly=True)
     if not hasattr(models.BaseModel, '_fields') or 'language_code' not in ProductTemplate._fields:
         language_code = fields.Char(string='Language', help='2-digit ISO 639-1 language code.')
-    if not hasattr(models.BaseModel, '_fields') or 'product_stock_date_updated' not in ProductTemplate._fields:
-        product_stock_date_updated = fields.Datetime(string='Stock Date Updated', readonly=True)
     if not hasattr(models.BaseModel, '_fields') or 'product_image_ids' not in ProductTemplate._fields:
         product_image_ids = fields.Many2many(
             comodel_name='ir.attachment',
@@ -190,8 +189,8 @@ class ProductProduct(models.Model):
         # Update stock first
         success = super().action_update_quantity_on_hand()
 
-        # Update the 'product_stock_date_updated' on the 'product.product' level
-        self.write({'product_stock_date_updated': fields.Datetime.now()})
+        # Update the 'woocommerce_stock_last_sync' on the 'product.product' level
+        self.write({'woocommerce_stock_last_sync': fields.Datetime.now()})
 
         return success
 
@@ -250,8 +249,7 @@ class ProductProduct(models.Model):
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
     woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Last Sync', readonly=True)
     odoo_to_woocommerce_last_sync = fields.Datetime(string='Odoo to WooCommerce Last Sync', readonly=True)
-    if not hasattr(models.BaseModel, '_fields') or 'product_stock_date_updated' not in ProductTemplate._fields:
-        product_stock_date_updated = fields.Datetime(string='Stock Date Updated', readonly=True)
+    woocommerce_stock_last_sync = fields.Datetime(string='Stock Date Updated', readonly=True)
     woocommerce_service = fields.Boolean(string='Is service?')
 
 
@@ -488,5 +486,12 @@ class WoocommerceOrderStatus(models.Model):
 class WoocommerceSyncLog(models.Model):
     _name = 'woocommerce.sync.log'
     _description = 'WooCommerce Sync Log'
+
+    odoo_woocommerce_last_sync = fields.Datetime(string='Sync Date', readonly=True)
+
+
+class WoocommerceStockSyncLog(models.Model):
+    _name = 'woocommerce.stock.sync.log'
+    _description = 'WooCommerce Stock Sync Log'
 
     odoo_woocommerce_last_sync = fields.Datetime(string='Sync Date', readonly=True)

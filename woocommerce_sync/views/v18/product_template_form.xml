@@ -13,7 +13,7 @@
       </xpath>
       <xpath expr="//page[@name='general_information']//group[@name='group_general']" position="inside">
         <field name="language_code" invisible="not language_code"/>
-        <field name="product_stock_date_updated" invisible="not product_stock_date_updated"/>
+        <field name="woocommerce_stock_last_sync" invisible="not woocommerce_stock_last_sync"/>
       </xpath>
       <xpath expr="//page[@name='general_information']//field[@name='categ_id']" position="after">
         <field name="default_code" invisible="product_variant_count == 1"/>
