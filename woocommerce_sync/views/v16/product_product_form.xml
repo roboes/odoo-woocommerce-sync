@@ -6,8 +6,8 @@
     <field name="inherit_id" ref="product.product_variant_easy_edit_view"/>
     <field name="arch" type="xml">
       <xpath expr="//group[@name='tags']" position="after">
-        <group string="Sync Details" attrs="{'invisible': [('product_stock_date_updated', '=', False)]}">
-          <field name="product_stock_date_updated"/>
+        <group string="Sync Details" attrs="{'invisible': [('woocommerce_stock_last_sync', '=', False)]}">
+          <field name="woocommerce_stock_last_sync"/>
         </group>
         <group string="General Information" attrs="{'invisible': ['|', ('woocommerce_id', '=', False), ('woocommerce_id', '=', '')]}">
           <field name="woocommerce_site_url"/>

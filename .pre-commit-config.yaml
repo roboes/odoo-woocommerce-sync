@@ -45,7 +45,7 @@ repos:
       - id: taplo-lint
 
   - repo: https://github.com/rtts/djhtml
-    rev: 3.0.8 # Without leading 'v'
+    rev: 3.0.9 # Without leading 'v'
     hooks:
       # - id: djhtml
       - id: djcss

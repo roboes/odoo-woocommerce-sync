@@ -1,3 +1,5 @@
+from typing import Any
+
 from odoo import api, fields, models
 from odoo.release import version_info
 
@@ -31,6 +33,15 @@ class StockQuant(models.Model):
     product_id = fields.Many2one(comodel_name='product.product', string='Product', domain=lambda self: self._domain_product_id(), required=True, index=True, check_company=True, ondelete='cascade')
 
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
+
+    stock_quantity_last_update = fields.Datetime(string='Stock Quantity Last Update', readonly=True, copy=False)
+
+    def write(self, values: dict[str, Any]) -> bool:
+        """Overrides the standard write method to update a timestamp only when the stock quantity is changed manually by a user."""
+        if 'quantity' in values and not self.env.context.get('from_stock_move') and not self.env.context.get('from_external_sync'):
+            values['stock_quantity_last_update'] = fields.Datetime.now()
+
+        return super().write(values)
 
 
 class StockMove(models.Model):
@@ -159,12 +170,11 @@ class ProductTemplate(models.Model):
     sync_to_woocommerce = fields.Boolean(string='Sync to WooCommerce', default=False)
     woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Last Sync', readonly=True)
     odoo_to_woocommerce_last_sync = fields.Datetime(string='Odoo to WooCommerce Last Sync', readonly=True)
+    woocommerce_stock_last_sync = fields.Datetime(string='Stock Date Updated', readonly=True)
     if not hasattr(models.BaseModel, '_fields') or 'source' not in ProductTemplate._fields:
         source = fields.Char(string='Source', readonly=True)
     if not hasattr(models.BaseModel, '_fields') or 'language_code' not in ProductTemplate._fields:
         language_code = fields.Char(string='Language', help='2-digit ISO 639-1 language code.')
-    if not hasattr(models.BaseModel, '_fields') or 'product_stock_date_updated' not in ProductTemplate._fields:
-        product_stock_date_updated = fields.Datetime(string='Stock Date Updated', readonly=True)
     if not hasattr(models.BaseModel, '_fields') or 'product_image_ids' not in ProductTemplate._fields:
         product_image_ids = fields.Many2many(
             comodel_name='ir.attachment',
@@ -185,15 +195,6 @@ class ProductTemplate(models.Model):
 # Product variations
 class ProductProduct(models.Model):
     _inherit = 'product.product'
-
-    def action_update_quantity_on_hand(self: models.Model) -> bool:
-        # Update stock first
-        success = super().action_update_quantity_on_hand()
-
-        # Update the 'product_stock_date_updated' on the 'product.product' level
-        self.write({'product_stock_date_updated': fields.Datetime.now()})
-
-        return success
 
     # WooCommerce REST API - Product variation properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#product-variation-properties
     woocommerce_id = fields.Char(string='WooCommerce Product Variation ID', readonly=True, index=True)
@@ -250,8 +251,7 @@ class ProductProduct(models.Model):
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
     woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Last Sync', readonly=True)
     odoo_to_woocommerce_last_sync = fields.Datetime(string='Odoo to WooCommerce Last Sync', readonly=True)
-    if not hasattr(models.BaseModel, '_fields') or 'product_stock_date_updated' not in ProductTemplate._fields:
-        product_stock_date_updated = fields.Datetime(string='Stock Date Updated', readonly=True)
+    woocommerce_stock_last_sync = fields.Datetime(string='Stock Date Updated', readonly=True)
     woocommerce_service = fields.Boolean(string='Is service?')
 
 
@@ -488,5 +488,12 @@ class WoocommerceOrderStatus(models.Model):
 class WoocommerceSyncLog(models.Model):
     _name = 'woocommerce.sync.log'
     _description = 'WooCommerce Sync Log'
+
+    odoo_woocommerce_last_sync = fields.Datetime(string='Sync Date', readonly=True)
+
+
+class WoocommerceStockSyncLog(models.Model):
+    _name = 'woocommerce.stock.sync.log'
+    _description = 'WooCommerce Stock Sync Log'
 
     odoo_woocommerce_last_sync = fields.Datetime(string='Sync Date', readonly=True)

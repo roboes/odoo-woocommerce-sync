@@ -102,10 +102,11 @@
                   <field name="settings_woocommerce_products_warehouse_location" attrs="{'invisible': [('settings_woocommerce_products_stock_management', '=', False)]}"/>
                   <field name="settings_woocommerce_products_related_ids_map"/>
                   <field name="settings_woocommerce_to_odoo_products_language_code"/>
+                  <field name="settings_woocommerce_products_package_size_unit_default"/>
                   <field name="settings_woocommerce_to_odoo_products_delete" attrs="{'invisible': [('settings_woocommerce_to_odoo_products_sync', '=', False)]}"/>
                 </group>
                 <group string="WooCommerce to Odoo Orders Import Settings">
-                  <field name="settings_woocommerce_status" widget="many2many_checkboxes"/>
+                  <field name="settings_woocommerce_order_status" widget="many2many_checkboxes"/>
                   <field name="settings_woocommerce_delivery_methods_archive"/>
                   <field name="settings_woocommerce_orders_customers_map"/>
                   <field name="settings_woocommerce_line_items_product_map"/>
