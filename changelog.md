@@ -1,10 +1,20 @@
 # Changelog
 
+## v16.0.2.3 / v18.0.2.3 - 2025-08-14
+
+### Improvements
+
+- Improved logic of product stock quantity sync.
+
+### Fixes
+
+- Fixed a bug caused by mixing dictionary and attribute access to retrieve variables from Odoo records during WooCommerce to Odoo customer and order synchronization (<https://github.com/roboes/odoo-woocommerce-sync/issues/7>).
+
 ## v16.0.2.2 / v18.0.2.2 - 2025-08-13
 
 ### Features
 
-- Revamped the stock sync logic.
+- Revamped the stock quantity sync logic.
 
 ### Improvements
 

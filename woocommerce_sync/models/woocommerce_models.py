@@ -1,3 +1,5 @@
+from typing import Any
+
 from odoo import api, fields, models
 from odoo.release import version_info
 
@@ -31,6 +33,15 @@ class StockQuant(models.Model):
     product_id = fields.Many2one(comodel_name='product.product', string='Product', domain=lambda self: self._domain_product_id(), required=True, index=True, check_company=True, ondelete='cascade')
 
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
+
+    stock_quantity_last_update = fields.Datetime(string='Stock Quantity Last Update', readonly=True, copy=False)
+
+    def write(self, values: dict[str, Any]) -> bool:
+        """Overrides the standard write method to update a timestamp only when the stock quantity is changed manually by a user."""
+        if 'quantity' in values and not self.env.context.get('from_stock_move') and not self.env.context.get('from_external_sync'):
+            values['stock_quantity_last_update'] = fields.Datetime.now()
+
+        return super().write(values)
 
 
 class StockMove(models.Model):
@@ -184,15 +195,6 @@ class ProductTemplate(models.Model):
 # Product variations
 class ProductProduct(models.Model):
     _inherit = 'product.product'
-
-    def action_update_quantity_on_hand(self: models.Model) -> bool:
-        # Update stock first
-        success = super().action_update_quantity_on_hand()
-
-        # Update the 'woocommerce_stock_last_sync' on the 'product.product' level
-        self.write({'woocommerce_stock_last_sync': fields.Datetime.now()})
-
-        return success
 
     # WooCommerce REST API - Product variation properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#product-variation-properties
     woocommerce_id = fields.Char(string='WooCommerce Product Variation ID', readonly=True, index=True)
