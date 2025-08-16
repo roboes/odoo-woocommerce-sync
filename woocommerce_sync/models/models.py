@@ -1,23 +1,45 @@
-from base64 import b64encode
-from datetime import datetime
-from io import BytesIO
-import logging
-from PIL import Image
-import pytz
-import requests
+# Core
 from typing import Any
+from base64 import b64encode, b64decode
+import requests
+import os
+# Data
+from io import BytesIO
 from collections.abc import Generator
-
+import json
+# Image manipulation
+from PIL import Image
+# Logging & Time
+from datetime import datetime
+import logging
+import pytz
+# Odoo
 from odoo import _, api, fields, models
 from odoo.addons.queue_job.delay import chain
 from odoo.exceptions import UserError, ValidationError
 from odoo.release import version_info
-
+# WooCommerce
 from woocommerce import API
+
+"""
+# For image optimization using WebP format, need to install libwebp-dev package
+# on Debian/Ubuntu (apt install libwebp-dev); on RPM based dist (yum install libwebp). For other OS install compatible package.
+# After installing libwebp-dev package, need to restart odoo service. (systemctl restart odoo OR, service odoo restart)
+"""
 
 # Settings
 _logger = logging.getLogger(__name__)
 
+# Maps only the 6 first bits of the base64 data, accurate enough
+# for our purpose and faster than decoding the full blob first
+FILETYPE_BASE64_MAGICWORD = {
+    b'/': 'jpg',
+    b'R': 'gif',
+    b'i': 'png',
+    b'P': 'svg+xml',
+    b'U': 'webp',
+}
+# End Settings
 
 class WoocommerceConnector(models.Model):
     _name = 'woocommerce.configuration'
@@ -28,9 +50,21 @@ class WoocommerceConnector(models.Model):
 
     # WooCommerce REST API settings
     settings_woocommerce_connection_name = fields.Char(string='Instance Name')
-    settings_woocommerce_connection_url = fields.Char(string='Store URL')
+    settings_woocommerce_connection_url = fields.Char(
+        string='Store URL',
+        help='Enter WordPress URL. Example: https://www.airplux.com',
+    )
     settings_woocommerce_consumer_key = fields.Char(string='Consumer Key')
     settings_woocommerce_consumer_secret = fields.Char(string='Consumer Secret')
+    settings_wordpress_username = fields.Char(string='WordPress Username')
+    settings_wordpress_user_app_password = fields.Char(
+        string='WordPress User App Password',
+        help='You can generate App password from WordPress Admin > Users > All Users > Your username > Application Passwords. Remove spaces from App password if any.',
+    )
+    settings_odoo_temp_image_path = fields.Char(
+        string='Temporary Image Storage Path',
+        help='This is the temporary product image storage directory during Sync until product is published/updated in WooCommerce. All images in this directory will be automatically removed after product Sync. We use "/var/lib/odoo/product-img/" directory as Odoo creates "/var/lib/odoo/" by default as data directory and Read/Write permission is allowed by "odoo" user. You can use any other desired directory which must be owned by user "odoo". Otherwise you will get permission error. If you do not mention any directory, default is set "/var/lib/odoo/product-img/". It is not necessary to change normally and works fine universally on any OS.',
+    )
     settings_woocommerce_timeout = fields.Integer(string='Timeout (in seconds)', default=30)
 
     # Sync items settings
@@ -2428,6 +2462,93 @@ class WoocommerceConnector(models.Model):
 
                 # Create new product in WooCommerce if it does not yet exist or update product in WooCommerce only if Odoo version is newer
                 else:
+                    # Odoo to WooCommerce product image upload feature
+                    # Unique string generation based on time
+                    unique_time_str = datetime.now().strftime('%Y%m%d')
+                    # Set image temporary output directory until published in WooCommerce
+                    # After product is created in WooCommerce with image supplied, the image
+                    # from 'img_output_directory' will be removed automatically as it is not necessary anymore.
+                    # The output directory must be pre-created manually inside /var/lib/odoo/
+                    # You can use any other desired directory which must be owned by user 'odoo'. Otherwise you'll get permission error.
+                    # We chose /var/lib/odoo/ directory as Odoo creates it by default. So, no hassle.
+                    img_output_directory = '/var/lib/odoo/product-img/'
+                    # Fix trailing backslash or forward slash based on OS i.e. unix, nt
+                    if self.settings_odoo_temp_image_path != '':
+                        if not self.settings_odoo_temp_image_path[-1].isalnum():
+                            self.settings_odoo_temp_image_path = self.settings_odoo_temp_image_path[:-1] + os.path.sep
+                            img_output_directory = self.settings_odoo_temp_image_path
+                    
+                    # Create the directory if it doesn't exist (Requires 'os' module)
+                    os.makedirs(img_output_directory, exist_ok=True)
+                    # Sanitize product name
+                    output_product_name = ''.join([char for char in odoo_product.name if char.isalnum()])
+                    # _logger.info(f"Sanitized product name: {output_product_name}")
+                    # Construct unique output filename.
+                    img_output_filename = output_product_name+'-'+str(odoo_product.id)+'-'+unique_time_str
+                    # Get raw image and MIME type
+                    raw_img_stream = BytesIO(b64decode(odoo_product.image_1920))
+                    img_mime_type = FILETYPE_BASE64_MAGICWORD.get(odoo_product.image_1920[:1], 'png').lower()
+                    # _logger.info(f"Mime type: {img_mime_type}")
+                    # Set output image file extension
+                    img_ext = '.png'
+                    # Set output image path
+                    if img_mime_type == 'png':
+                        img_ext = '.png'
+                    elif img_mime_type == 'webp':
+                        img_ext = '.webp'
+                    elif img_mime_type == 'jpg':
+                        img_ext = '.jpg'
+                    else:
+                        img_ext = '.png'
+
+                    # Construct full output path
+                    full_image_output_path = img_output_directory+img_output_filename+img_ext
+                    # Write to temporary output path '/var/lib/odoo/product-img/' or other
+                    try:
+                        with open(full_image_output_path,'wb') as imgfile:
+                            imgfile.write(raw_img_stream.getvalue())
+                    except Exception as ef:
+                        _logger.info(f"Error writing image of product id {odoo_product.id}: {ef}")
+
+                    # WordPress Rest API media upload
+                    # API URL
+                    wp_url = self.settings_woocommerce_connection_url.rstrip('/')+'/wp-json/wp/v2'
+                    wp_media_url = wp_url + '/media'
+                    # Get WordPress username from saved module configuration via GUI
+                    wp_user_id = self.settings_wordpress_username
+                    # You can generate App password from
+                    # WordPress Admin > Users > All Users > Your username > Application Passwords
+                    # Remove spaces from App password if any.
+                    wp_user_app_password = self.settings_wordpress_user_app_password
+                    # Create Base64 token hash for Basic HTTP Auth
+                    wp_api_credentials = wp_user_id + ':' + wp_user_app_password
+                    wp_user_token = b64encode(wp_api_credentials.encode())
+                    # Set HTTP Headers
+                    wp_api_header = {'Authorization': 'Basic ' + wp_user_token.decode('utf-8')}
+                    # Upload the image to WordPress as media attachment using Rest API
+                    try:
+                        wp_media_prepared = {'file': open(full_image_output_path,'rb'),'caption': odoo_product.name}
+                        wp_response = requests.post(wp_media_url, headers = wp_api_header, files = wp_media_prepared)
+                    except Exception as eg:
+                        _logger.info(f"Error opening image (wp_media_prepared): {eg}")
+                        wp_response = ''
+
+                    # Get uploaded WordPress media attachment id to supply to WooCommerce during product creation or update
+                    wp_media_attachment_id = wp_response.json().get('id') if wp_response != '' else 0
+                    # _logger.info(f"Media ID: {wp_media_attachment_id}")
+
+                    # Code to resize image to specific size with aspect ratio.
+                    # Code complete but not used. Given if necessary.
+                    """
+                    to_resize_img = Image.open(full_image_output_path)
+                    new_width = 1024
+                    aspect_ratio = img.height / img.width
+                    new_height = int(new_width * aspect_ratio)
+                    resized_img = to_resize_img.resize((new_width, new_height), Image.Resampling.LANCZOS) # Use a high-quality filter for resizing
+                    resized_img.save(full_image_output_path)
+                    """
+
+                    # Product parameters for creation on WooCommerce
                     product_values = {
                         'name': odoo_product.name,
                         'sku': odoo_product.default_code or '',
@@ -2444,6 +2565,11 @@ class WoocommerceConnector(models.Model):
                             'width': odoo_product.product_width if odoo_product.product_width != 0.0 else '',
                             'height': odoo_product.product_height if odoo_product.product_height != 0.0 else '',
                         },
+                        'images': [
+                            {
+                                'id': wp_media_attachment_id
+                            },
+                        ]
                     }
 
                     # Product meta data "odoo_id"
