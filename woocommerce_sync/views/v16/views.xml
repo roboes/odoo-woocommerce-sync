@@ -11,6 +11,9 @@
           <field name="settings_woocommerce_connection_url"/>
           <field name="settings_woocommerce_consumer_key"/>
           <field name="settings_woocommerce_consumer_secret" password="True"/>
+          <field name="settings_wordpress_username"/>
+          <field name="settings_wordpress_user_app_password" password="True"/>
+          <field name="settings_odoo_temp_image_path" placeholder="/var/lib/odoo/product-img/"/>
           <!-- <field name="settings_woocommerce_timeout"/> -->
           <field name="odoo_woocommerce_last_sync"/>
           <button type="object" name="woocommerce_sync_action" string="Sync Now" icon="fa-refresh"/>
@@ -35,6 +38,9 @@
                   <field name="settings_woocommerce_connection_url"/>
                   <field name="settings_woocommerce_consumer_key"/>
                   <field name="settings_woocommerce_consumer_secret" password="True"/>
+                  <field name="settings_wordpress_username"/>
+                  <field name="settings_wordpress_user_app_password" password="True"/>
+                  <field name="settings_odoo_temp_image_path" placeholder="/var/lib/odoo/product-img/"/>
                   <field name="settings_woocommerce_timeout"/>
                 </group>
               </page>
@@ -133,7 +139,7 @@
     </record>
     <!-- Actions opening views on models -->
     <record model="ir.actions.act_window" id="action_woocommerce_configuration">
-      <field name="name">WooCommerce Configuration</field>
+      <field name="name">WooCommerce &amp; WordPress Configuration</field>
       <field name="res_model">woocommerce.configuration</field>
       <field name="view_mode">tree,form</field>
     </record>
