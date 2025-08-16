@@ -43,6 +43,23 @@ Install the necessary Python packages by running:
 ```sh
 python -m pip install phonenumbers woocommerce
 ```
+### System packages for WebP Image Optimization (Not mandatory, but recommended)
+For image optimization using WebP format, a loseless high performance tiny sized image format for web, need to install libwebp-dev package on Debian/Ubuntu:
+```
+apt install libwebp-dev
+```
+For RPM based distros like RHEL, CentOS, Rocky:
+```
+yum install libwebp
+```
+For other OS install compatible package from online. After installing libwebp-dev or libwebp or compatible package, need to restart odoo service:
+```
+systemctl restart odoo
+```
+OR,
+```
+service odoo restart
+```
 
 #### Odoo Add-ons (Required)
 
@@ -128,9 +145,6 @@ Follow these steps to install the Odoo-WooCommerce Sync add-on:
 5. **Activate Debug Mode:** Log in to Odoo and enable [Debug Mode](https://www.odoo.com/documentation/18.0/applications/general/developer_mode.html).
 6. **Update the Apps List:** Navigate to `Home Menu` > `Apps` and click **Update Apps List**.
 7. **Activate the Add-on:** Use the filter to search for `woocommerce_sync` and activate the add-on.
-
-## Image Optimization (Not mandatory, but recommended)
-For image optimization using WebP format, a loseless high performance tiny sized image format for web, need to install libwebp-dev package on Debian/Ubuntu (apt install libwebp-dev); on RPM based dist (yum install libwebp). For other OS install compatible package. After installing libwebp-dev or libwebp or compatible package, need to restart odoo service. (systemctl restart odoo OR, service odoo restart)
 
 ## Configuration
 
