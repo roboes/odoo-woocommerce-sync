@@ -1,12 +1,16 @@
-from base64 import b64encode
+from base64 import b64decode, b64encode
+from collections.abc import Generator
 from datetime import datetime
 from io import BytesIO
 import logging
 from PIL import Image
 import pytz
 import requests
+from requests.auth import HTTPBasicAuth
 from typing import Any
-from collections.abc import Generator
+from werkzeug.utils import secure_filename
+
+import filetype
 
 from odoo import _, api, fields, models
 from odoo.addons.queue_job.delay import chain
@@ -28,10 +32,14 @@ class WoocommerceConnector(models.Model):
 
     # WooCommerce REST API settings
     settings_woocommerce_connection_name = fields.Char(string='Instance Name')
-    settings_woocommerce_connection_url = fields.Char(string='Store URL')
+    settings_woocommerce_connection_url = fields.Char(string='Store URL', help='WordPress URL. Example: https://www.mystore.com')
     settings_woocommerce_consumer_key = fields.Char(string='Consumer Key')
     settings_woocommerce_consumer_secret = fields.Char(string='Consumer Secret')
     settings_woocommerce_timeout = fields.Integer(string='Timeout (in seconds)', default=30)
+
+    # WordPress REST API settings
+    settings_wordpress_username = fields.Char(string='WordPress Username')
+    settings_wordpress_user_application_password = fields.Char(string='WordPress User App Password', help='Can be generated from WordPress Admin > Users > Profile > Application Passwords.')
 
     # Sync items settings
     settings_woocommerce_to_odoo_products_sync = fields.Boolean(default=True)
@@ -56,7 +64,7 @@ class WoocommerceConnector(models.Model):
     )
     settings_woocommerce_images_sync = fields.Boolean(string='Sync images?', default=True)
 
-    # WooCommerce to Odoo products import settings
+    # Stock management
     settings_woocommerce_products_stock_management = fields.Boolean(string='Sync stock quantity?', default=True)
     settings_woocommerce_products_warehouse_location = fields.Many2one(
         comodel_name='stock.warehouse',
@@ -65,8 +73,10 @@ class WoocommerceConnector(models.Model):
         default=lambda self: self.env.ref('stock.warehouse0'),
         ondelete='set null',
     )
+
+    # WooCommerce to Odoo products import settings
     settings_woocommerce_products_related_ids_map = fields.Boolean(string='Map related products?', help="Automatically map WooCommerce 'related_ids' products to their Odoo equivalents.", default=False)
-    settings_woocommerce_to_odoo_products_language_code = fields.Char(string='Filter WooCommerce products by language (requires Polylang)', help="2-digit language code (ISO 639-1) (e.g. 'en').")
+    settings_woocommerce_to_odoo_products_language_code = fields.Char(string='Filter WooCommerce products by language (requires Polylang WordPress plugin)', help="2-digit language code (ISO 639-1) (e.g. 'en').")
     settings_woocommerce_products_package_size_unit_default = fields.Boolean(
         string="Default WooCommerce package size to 'Unit'", help="If enabled, newly synced WooCommerce products to Odoo will have their package size unit of measure set to 'Unit(s)'.", default=True
     )
@@ -116,7 +126,7 @@ class WoocommerceConnector(models.Model):
 
     # Odoo to WooCommerce products import settings
     settings_woocommerce_odoo_to_woocommerce_products_language_code = fields.Char(
-        string="Filter Odoo products by language defined in the 'language_code' field (requires Polylang)",
+        string="Filter Odoo products by language defined in the 'language_code' field (requires Polylang WordPress plugin)",
         help="2-digit language code (ISO 639-1) (e.g. 'en').",
     )
 
@@ -211,7 +221,7 @@ class WoocommerceConnector(models.Model):
         self.ensure_one()
         _logger.info("Manual 'Sync Now' button pressed, triggering background sync.")
 
-        # Run woocommerce_sync in the background (requires 'queue_job' add-on)
+        # Run woocommerce_sync in the background (requires 'queue_job' Odoo add-on)
         if self.env['ir.module.module'].search([('name', '=', 'queue_job'), ('state', '=', 'installed')], limit=1):
             self.with_delay().woocommerce_sync()
 
@@ -316,7 +326,7 @@ class WoocommerceConnector(models.Model):
                 )
             )
 
-        # Stock
+        # Stock quantity
         if self.settings_woocommerce_products_stock_management:
             queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=None).odoo_woocommerce_products_stock_quantity_sync_batch())
             queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=None).update_sync_last_log(model_name='woocommerce.stock.sync.log', field_name='odoo_woocommerce_last_sync'))
@@ -767,24 +777,7 @@ class WoocommerceConnector(models.Model):
 
         return odoo_delivery_carrier
 
-    def woocommerce_product_variations_stock_retrieve(self: models.Model, woocommerce_api: API, product: models.Model) -> dict[str, Any] | None:
-        """Retrieve WooCommerce stock info for a product variation."""
-        try:
-            # WooCommerce REST API parameters
-            params = {'status': 'publish', 'manage_stock': 'true', '_fields': 'id,date_modified_gmt,stock_quantity'}
-
-            variations = self.woocommerce_api_get_all_items(woocommerce_api, endpoint=f'products/{product.woocommerce_parent_id}/variations', params=params)
-
-            for variation in variations:
-                if variation['id'] == int(product.woocommerce_id):
-                    return {'stock_quantity': variation['stock_quantity'], 'date_modified_gmt': variation['date_modified_gmt']}
-
-        except Exception as error:
-            _logger.error(f'Error retrieving variation stock for WooCommerce product {product.name} (Odoo product ID: {product.id}): {error}')
-
-        return None
-
-    def odoo_woocommerce_products_stock_quantity_sync(self: models.Model, odoo_product: 'product.product', woocommerce_products_stock_map: dict[int, dict[str, Any]]) -> None:
+    def odoo_woocommerce_products_stock_quantity_sync(self: models.Model, odoo_product: models.Model, woocommerce_products_stock_map: dict[int, dict[str, Any]]) -> None:
         # WooCommerce REST API
         woocommerce_api = self.woocommerce_api_get()
 
@@ -796,13 +789,7 @@ class WoocommerceConnector(models.Model):
 
         product_woocommerce_id = odoo_product.woocommerce_id or odoo_product.product_tmpl_id.woocommerce_id
 
-        # Determine the corresponding WooCommerce stock info
-        if len(odoo_product.product_tmpl_id.product_variant_ids) > 1:
-            # For variations, retrieve the specific variation stock
-            woocommerce_stock_info = self.woocommerce_product_variations_stock_retrieve(woocommerce_api, odoo_product)
-        else:
-            # For simple products, get the stock from the parent product
-            woocommerce_stock_info = woocommerce_products_stock_map.get(product_woocommerce_id)
+        woocommerce_stock_info = woocommerce_products_stock_map.get(product_woocommerce_id)
 
         if not woocommerce_stock_info:
             return
@@ -861,8 +848,7 @@ class WoocommerceConnector(models.Model):
                 )
 
             # Update the stock last sync
-            odoo_product.write({'woocommerce_stock_last_sync': woocommerce_date_modified_gmt})
-            odoo_product.product_tmpl_id.write({'woocommerce_stock_last_sync': woocommerce_date_modified_gmt})
+            odoo_product.woocommerce_stock_last_sync_update(woocommerce_date_modified_gmt)
 
         # If Odoo is the most recent source, update WooCommerce
         else:
@@ -891,8 +877,70 @@ class WoocommerceConnector(models.Model):
 
             # Update the stock last sync
             if woocommerce_product and 'date_modified_gmt' in woocommerce_product:
-                odoo_product.write({'woocommerce_stock_last_sync': self.datetime_convert(woocommerce_product['date_modified_gmt'])})
-                odoo_product.product_tmpl_id.write({'woocommerce_stock_last_sync': self.datetime_convert(woocommerce_product['date_modified_gmt'])})
+                odoo_product.woocommerce_stock_last_sync_update(self.datetime_convert(woocommerce_product['date_modified_gmt']))
+
+    def woocommerce_product_variations_stock_retrieve(self: models.Model, parent_id: int, temporary_sync_data_record_id: int) -> bool:
+        """Retrieves all WooCommerce product variations for the given WooCommerce product ID and stores them in a temporary sync data record."""
+        self.ensure_one()
+
+        woocommerce_api = self.woocommerce_api_get()
+
+        try:
+            variations = self.woocommerce_api_get_all_items(woocommerce_api, endpoint=f'products/{parent_id}/variations', params={'_fields': 'id,date_modified_gmt,stock_quantity'})
+
+            temporary_sync_data_record = self.env['woocommerce.sync.temp.data'].browse(temporary_sync_data_record_id)
+            if not temporary_sync_data_record:
+                _logger.error(f'Temporary sync data record not found: {temporary_sync_data_record_id}')
+                return False
+
+            with self.env.cr.savepoint():
+                current_data = temporary_sync_data_record.woocommerce_products_variations_data or {}
+                for variation in variations:
+                    current_data[variation['id']] = variation
+                temporary_sync_data_record.woocommerce_products_variations_data = current_data
+
+            return True
+
+        except Exception as error:
+            _logger.error(f'Failed to retrieve WooCommerce product variations for WooCommerce product ID {parent_id}. Error: {error}')
+            return False
+
+    def odoo_woocommerce_products_stock_quantity_process(self: models.Model, temporary_sync_data_record_id: int, *args) -> None:
+        """Processes all product data after variations have been fetched and schedules individual syncs."""
+        self.ensure_one()
+
+        temporary_sync_data_record = self.env['woocommerce.sync.temp.data'].browse(temporary_sync_data_record_id)
+        if not temporary_sync_data_record or not temporary_sync_data_record.woocommerce_products_variations_data:
+            _logger.warning('Temporary sync data record not found or no data to process')
+            return
+
+        woocommerce_products_stock_map = temporary_sync_data_record.woocommerce_products_variations_data
+
+        if version_info[0] == 16:
+            odoo_products_batch = self.env['product.product'].search(
+                [
+                    ('product_tmpl_id.woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                    ('product_tmpl_id.sync_to_woocommerce', '=', True),
+                    ('product_tmpl_id.active', '=', True),
+                    ('product_tmpl_id.woocommerce_id', '!=', False),
+                    ('detailed_type', '=', 'product'),
+                ],
+            )
+        elif version_info[0] == 18:
+            odoo_products_batch = self.env['product.product'].search(
+                [
+                    ('product_tmpl_id.woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                    ('product_tmpl_id.sync_to_woocommerce', '=', True),
+                    ('product_tmpl_id.active', '=', True),
+                    ('product_tmpl_id.woocommerce_id', '!=', False),
+                    ('is_storable', '=', True),
+                ],
+            )
+
+        for odoo_product in odoo_products_batch:
+            self.with_delay().odoo_woocommerce_products_stock_quantity_sync(odoo_product, woocommerce_products_stock_map)
+
+        temporary_sync_data_record.unlink()
 
     @api.model
     def odoo_woocommerce_products_stock_quantity_sync_batch(self: models.Model) -> None:
@@ -905,12 +953,11 @@ class WoocommerceConnector(models.Model):
 
         # Check if WooCommerce REST API connection is successful
         if not woocommerce_api:
-            error_message = 'WooCommerce REST API connection failed. Sync between WooCommerce and Odoo product stock quantity levels process halted; Please check your connection settings in the WooCommerce Configuration'
-            _logger.error(error_message)
+            _logger.error('WooCommerce REST API connection failed. Sync between WooCommerce and Odoo product stock quantity levels process halted; Please check your connection settings in the WooCommerce Configuration')
             return
 
         # WooCommerce REST API parameters
-        params = {'status': 'publish', 'manage_stock': 'true', '_fields': 'id,date_modified_gmt,stock_quantity'}
+        params = {'status': 'publish', 'manage_stock': 'true', '_fields': 'id,type,date_modified_gmt,stock_quantity'}
 
         # Retrieve last sync timestamp from the log model
         if self.settings_woocommerce_modified_records_import:
@@ -926,34 +973,17 @@ class WoocommerceConnector(models.Model):
             _logger.error(f'Failed to retrieve WooCommerce products from the API. Sync process halted. Error: {error}')
             return
 
-        woocommerce_products_stock_map = {product['id']: product for product in woocommerce_products}
+        # Build a single map for quick lookup of all products and variations
+        woocommerce_products_stock_map = {woocommerce_product['id']: woocommerce_product for woocommerce_product in woocommerce_products}
+        temporary_sync_data_record = self.env['woocommerce.sync.temp.data'].create({'woocommerce_products_variations_data': woocommerce_products_stock_map})
 
-        # Fetch all Odoo 'product.product' records linked to WooCommerce
-        if version_info[0] == 16:
-            odoo_products_batch = self.env['product.product'].search(
-                [
-                    ('product_tmpl_id.woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                    ('product_tmpl_id.sync_to_woocommerce', '=', True),
-                    ('product_tmpl_id.active', '=', True),
-                    ('product_tmpl_id.woocommerce_id', '!=', False),
-                    ('detailed_type', '=', 'product'),
-                ],
-            )
+        woocommerce_variable_product_ids = [woocommerce_product['id'] for woocommerce_product in woocommerce_products if woocommerce_product['type'] == 'variable']
 
-        elif version_info[0] == 18:
-            odoo_products_batch = self.env['product.product'].search(
-                [
-                    ('product_tmpl_id.woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                    ('product_tmpl_id.sync_to_woocommerce', '=', True),
-                    ('product_tmpl_id.active', '=', True),
-                    ('product_tmpl_id.woocommerce_id', '!=', False),
-                    ('is_storable', '=', True),
-                ],
-            )
-
-        for odoo_product in odoo_products_batch:
-            # Schedule a separate job for each WooCommerce products stock quantity sync in the batch
-            self.with_delay().odoo_woocommerce_products_stock_quantity_sync(odoo_product, woocommerce_products_stock_map)
+        # Chain the parallel jobs to the final processing job
+        chain(
+            *[self.delayable().woocommerce_product_variations_stock_retrieve(parent_id, temporary_sync_data_record.id) for parent_id in woocommerce_variable_product_ids],
+            self.delayable().odoo_woocommerce_products_stock_quantity_process(temporary_sync_data_record.id),
+        ).delay()
 
     @api.model
     def woocommerce_to_odoo_products_delete(self: models.Model) -> None:
@@ -1157,18 +1187,7 @@ class WoocommerceConnector(models.Model):
             # Create new product in Odoo if it does not yet exist or update product in Odoo only if WooCommerce version is newer
             product_values = self.woocommerce_product_fields(woocommerce_product, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates)
 
-            # Currency
-            if product_values['woocommerce_currency']:
-                odoo_product_currency = self.odoo_currency_retrieve(product_values['woocommerce_currency'])
-
-            # Tax
-            odoo_product_tax_id = []
-            if product_values['woocommerce_tax_rate']:
-                odoo_product_tax = self.odoo_tax_rate_create_or_retrieve(product_values['woocommerce_tax_rate'], woocommerce_prices_include_tax)
-                if odoo_product_tax:
-                    odoo_product_tax_id = [(6, 0, [odoo_product_tax.id])]
-
-            # Brand (requires 'product_brand' add-on)
+            # Brand (requires 'product_brand' Odoo add-on)
             if self.env['ir.module.module'].search([('name', '=', 'product_brand'), ('state', '=', 'installed')], limit=1):
                 odoo_product_brands_ids = []
                 for brand in woocommerce_product['brands']:
@@ -1185,25 +1204,15 @@ class WoocommerceConnector(models.Model):
                 if odoo_product_category:
                     odoo_product_categories_ids.append(odoo_product_category.id)
 
-            # Categories (requires 'product_multi_category' add-on)
+            # Categories (requires 'product_multi_category' Odoo add-on)
             if self.env['ir.module.module'].search([('name', '=', 'product_multi_category'), ('state', '=', 'installed')], limit=1):
                 product_values.update({'categ_ids': [(6, 0, odoo_product_categories_ids)]})
 
-            # Tags
-            odoo_product_tags_ids = []
-            for tag in woocommerce_product['tags']:
-                odoo_tag = self.odoo_tag_create_or_retrieve(tag['name'])
-                if odoo_tag:
-                    odoo_product_tags_ids.append(odoo_tag.id)
+            # Currency
+            if product_values['woocommerce_currency']:
+                odoo_product_currency = self.odoo_currency_retrieve(product_values['woocommerce_currency'])
 
-            # Unit of measure
-            if self.settings_woocommerce_products_package_size_unit_default:
-                odoo_product_unit_of_measure = self.env.ref('uom.product_uom_unit')
-
-            elif product_values['woocommerce_weight_unit']:
-                odoo_product_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(product_values['woocommerce_weight_unit'])
-
-            # Dimensions (requires 'product_dimension' add-on)
+            # Dimensions (requires 'product_dimension' Odoo add-on)
             if self.env['ir.module.module'].search([('name', '=', 'product_dimension'), ('state', '=', 'installed')], limit=1):
                 odoo_product_unit_of_measure_dimension = self.odoo_unit_of_measure_dimension_retrieve(product_values['woocommerce_dimension_unit'])
 
@@ -1215,6 +1224,27 @@ class WoocommerceConnector(models.Model):
                         'product_height': woocommerce_product['dimensions']['height'],
                     },
                 )
+
+            # Tags
+            odoo_product_tags_ids = []
+            for tag in woocommerce_product['tags']:
+                odoo_tag = self.odoo_tag_create_or_retrieve(tag['name'])
+                if odoo_tag:
+                    odoo_product_tags_ids.append(odoo_tag.id)
+
+            # Tax
+            odoo_product_tax_id = []
+            if product_values['woocommerce_tax_rate']:
+                odoo_product_tax = self.odoo_tax_rate_create_or_retrieve(product_values['woocommerce_tax_rate'], woocommerce_prices_include_tax)
+                if odoo_product_tax:
+                    odoo_product_tax_id = [(6, 0, [odoo_product_tax.id])]
+
+            # Unit of measure
+            if self.settings_woocommerce_products_package_size_unit_default:
+                odoo_product_unit_of_measure = self.env.ref('uom.product_uom_unit')
+
+            elif product_values['woocommerce_weight_unit']:
+                odoo_product_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(product_values['woocommerce_weight_unit'])
 
             # Image featured
             odoo_product_image_featured = None
@@ -1274,17 +1304,9 @@ class WoocommerceConnector(models.Model):
                 odoo_product = self.env['product.template'].create(product_values)
                 _logger.info(f'Imported WooCommerce product into Odoo: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {odoo_product["woocommerce_id"]})')
 
-            # Product gallery
+            # Product image gallery
             if odoo_product and self.settings_woocommerce_images_sync and len(woocommerce_product['images']) > 0:
-                attachment_ids = self.image_process_attachments(woocommerce_product['images'], odoo_product, create_attachments=True)
-                if attachment_ids:
-                    odoo_product.write({'product_image_ids': [(6, 0, attachment_ids)]})
-
-                if version_info[0] == 18 and self.env['ir.module.module'].search([('name', '=', 'website_sale'), ('state', '=', 'installed')], limit=1):
-                    image_values_list = self.image_process_attachments(woocommerce_product['images'], odoo_product, create_attachments=False)
-                    if image_values_list:
-                        # Clear the gallery ((5, 0, 0)), then create new images ((0, 0, {vals}))
-                        odoo_product.write({'product_template_image_ids': [(5, 0, 0)] + [(0, 0, values) for values in image_values_list]})
+                self.image_process_attachments(woocommerce_product['images'], odoo_product, create_attachments=True)
 
         except Exception as error:
             # Roll back changes
@@ -1576,6 +1598,11 @@ class WoocommerceConnector(models.Model):
                     if product_variation_values['woocommerce_currency']:
                         odoo_product_variant_currency = self.odoo_currency_retrieve(product_variation_values['woocommerce_currency'])
 
+                    # Image featured
+                    odoo_product_variant_image_featured = None
+                    if self.settings_woocommerce_images_sync and woocommerce_variation['image'] is not None:
+                        odoo_product_variant_image_featured = self.image_download_file_to_base64(woocommerce_variation['image'])
+
                     # Tax
                     odoo_product_variant_tax_id = []
                     if product_variation_values['woocommerce_tax_rate']:
@@ -1589,11 +1616,6 @@ class WoocommerceConnector(models.Model):
 
                     elif product_variation_values['woocommerce_weight_unit']:
                         odoo_product_variant_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(product_variation_values['woocommerce_weight_unit'])
-
-                    # Image featured
-                    odoo_product_variant_image_featured = None
-                    if self.settings_woocommerce_images_sync and woocommerce_variation['image'] is not None:
-                        odoo_product_variant_image_featured = self.image_download_file_to_base64(woocommerce_variation['image'])
 
                     # Build a list of Odoo attribute value IDs for the specific combination
                     odoo_product_template_attribute_value_ids = []
@@ -1811,7 +1833,7 @@ class WoocommerceConnector(models.Model):
 
             # Localization
 
-            ## Brazil (requires 'l10n_br_fiscal' add-on)
+            ## Brazil (requires 'l10n_br_fiscal' Odoo add-on)
             if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
                 if woocommerce_customer['billing']['cpf'] or woocommerce_customer['billing']['cnpj']:
                     customer_values.update({'cnpj_cpf': woocommerce_customer['billing']['cpf'] or woocommerce_customer['billing']['cnpj']})
@@ -2032,7 +2054,7 @@ class WoocommerceConnector(models.Model):
                 )
             order_values.update(
                 {
-                    'language_code': woocommerce_order.get('lang', None),  # Language (requires Polylang)
+                    'language_code': woocommerce_order.get('lang', None),  # Language (requires Polylang WordPress plugin)
                 },
             )
 
@@ -2104,7 +2126,7 @@ class WoocommerceConnector(models.Model):
 
                     # Localization
 
-                    ## Brazil (requires 'l10n_br_fiscal' add-on)
+                    ## Brazil (requires 'l10n_br_fiscal' Odoo add-on)
                     if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
                         if woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']:
                             customer_values.update({'cnpj_cpf': woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']})
@@ -2146,7 +2168,7 @@ class WoocommerceConnector(models.Model):
 
             # Localization
 
-            ## Brazil (requires 'l10n_br_fiscal' add-on)
+            ## Brazil (requires 'l10n_br_fiscal' Odoo add-on)
             if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
                 if woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']:
                     order_values.update({'cnpj_cpf': woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']})
@@ -2277,7 +2299,7 @@ class WoocommerceConnector(models.Model):
 
                 # Localization
 
-                ## Brazil (requires 'l10n_br_fiscal' add-on)
+                ## Brazil (requires 'l10n_br_fiscal' Odoo add-on)
                 if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
                     if woocommerce_order['shipping_total']:
                         order_line_values.update({'freight_value': float(woocommerce_order['shipping_total']) * (float(line_item['total']) / order_line_items_total)})
@@ -2373,15 +2395,116 @@ class WoocommerceConnector(models.Model):
         if language_code is not None:
             params['lang'] = language_code
 
-        woocommerce_attribute_values = self.woocommerce_api_get_all_items(woocommerce_api, endpoint=f'products/{attribute_type}', params=params)
-        if woocommerce_attribute_values:
-            return woocommerce_attribute_values[0]
-        else:
-            data = {'name': attribute_name}
-            if language_code is not None:
-                data['lang'] = language_code
+        try:
+            woocommerce_attribute_values = self.woocommerce_api_get_all_items(woocommerce_api, endpoint=f'products/{attribute_type}', params=params)
 
-            return woocommerce_api.post(f'products/{attribute_type}', data=data).json()
+            if woocommerce_attribute_values and len(woocommerce_attribute_values) > 0:
+                return woocommerce_attribute_values[0]
+
+            else:
+                data = {'name': attribute_name}
+                if language_code is not None:
+                    data['lang'] = language_code
+
+                response = woocommerce_api.post(f'products/{attribute_type}', data=data)
+
+                # Check if the response is a valid JSON object
+                if response and response.status_code == 201:
+                    return response.json()
+
+                else:
+                    _logger.error(f'Failed to create Odoo attribute in WooCommerce: {attribute_name}. WooCommerce REST API response: {response.text}')
+                    return None
+
+        except Exception as error:
+            _logger.error(f'Failed to create or retrieve Odoo attribute in WooCommerce: {attribute_name}: {error}')
+            return None
+
+    def wordpress_upload_image(self: models.Model, image: str, image_name: str) -> int | None:
+        """Uploads an image to WordPress."""
+
+        self.ensure_one()
+
+        if not image:
+            return None
+
+        try:
+            image = b64decode(image)
+            image_file_type = filetype.guess(image)
+            if not image_file_type:
+                _logger.error(f'Failed to determine image type for {image_name}')
+
+                return None
+
+            # Check if image already exists in WordPress using its unique slug
+            wordpress_media_existing = requests.get(
+                url=f'{self.settings_woocommerce_connection_url}/wp-json/wp/v2/media?slug={image_name}', auth=HTTPBasicAuth(self.settings_wordpress_username, self.settings_wordpress_user_application_password)
+            ).json()
+
+            if wordpress_media_existing and isinstance(wordpress_media_existing, list):
+                media = wordpress_media_existing[0]
+
+                _logger.info(f'Image with slug {image_name} already exists in WordPress')
+
+                return media.get('id')
+
+            # Upload new image
+            response = requests.post(
+                url=f'{self.settings_woocommerce_connection_url}/wp-json/wp/v2/media',
+                headers={'Content-Disposition': f'attachment; filename="{f"{image_name}.{image_file_type.extension}"}"'},
+                data=BytesIO(image),
+                auth=HTTPBasicAuth(self.settings_wordpress_username, self.settings_wordpress_user_application_password),
+            )
+
+            if response.status_code in (200, 201):
+                wordpress_media = response.json()
+                wordpress_image_id = wordpress_media.get('id')
+
+                _logger.info(f'Uploaded new image from Odoo to WordPress: {image_name}.{image_file_type.extension} (WordPress image ID: {wordpress_image_id}')
+
+                return wordpress_image_id
+
+            else:
+                _logger.error(f'Upload image from Odoo to WordPress failed: [{response.status_code}]: {response.text}')
+
+                return None
+
+        except Exception as error:
+            _logger.error(f'Error uploading image from Odoo to WordPress: {image_name}: {error}')
+
+            return None
+
+    def wordpress_upload_product_images(self: models.Model, odoo_product: models.Model) -> list[int]:
+        """Upload main image ('image_1920') + gallery images ('product_image_ids') and return list of WordPress media IDs."""
+        self.ensure_one()
+
+        wordpress_uploaded_image_ids = []
+        counter = 1
+
+        # Collect images
+        images = []
+
+        if odoo_product.image_1920:
+            images.append(odoo_product.image_1920)
+
+        if odoo_product.product_image_ids and len(odoo_product.product_image_ids) > 0:
+            gallery_images = odoo_product.product_image_ids.sorted(key=lambda attachment: attachment.id)
+            images.extend(gallery_images.mapped('datas'))
+
+        image_file_name = secure_filename(odoo_product.name.strip().replace(' ', '-').lower())
+
+        for image_base64 in images:
+            # Increment counter for each image
+            image_name = f'{image_file_name}-{counter}'
+
+            wordpress_image_id = self.wordpress_upload_image(image_base64, image_name)
+
+            if wordpress_image_id:
+                wordpress_uploaded_image_ids.append(wordpress_image_id)
+
+            counter += 1
+
+        return wordpress_uploaded_image_ids
 
     def odoo_to_woocommerce_products_sync(
         self: models.Model, woocommerce_currency: str, woocommerce_tax_rates: dict[str, float], woocommerce_prices_include_tax: bool, woocommerce_weight_unit: str, woocommerce_dimension_unit: str
@@ -2439,11 +2562,6 @@ class WoocommerceConnector(models.Model):
                         'regular_price': f'{odoo_product.list_price:.2f}',
                         'type': 'simple',
                         'weight': odoo_product.weight if odoo_product.weight != 0.0 else '',
-                        'dimensions': {
-                            'length': odoo_product.product_length if odoo_product.product_length != 0.0 else '',
-                            'width': odoo_product.product_width if odoo_product.product_width != 0.0 else '',
-                            'height': odoo_product.product_height if odoo_product.product_height != 0.0 else '',
-                        },
                     }
 
                     # Product meta data "odoo_id"
@@ -2495,7 +2613,7 @@ class WoocommerceConnector(models.Model):
                             if woocommerce_attributes:
                                 product_values['attributes'] = woocommerce_attributes
 
-                    # Brand (requires 'product_brand' add-on)
+                    # Brand (requires 'product_brand' Odoo add-on)
                     if self.env['ir.module.module'].search([('name', '=', 'product_brand'), ('state', '=', 'installed')], limit=1) and len(odoo_product.product_brand_id) > 0:
                         woocommerce_brands = []
                         woocommerce_brand = self.woocommerce_attribute_create_or_retrieve(
@@ -2513,7 +2631,7 @@ class WoocommerceConnector(models.Model):
                     # Categories
                     woocommerce_categories = []
 
-                    ## 'categ_ids' (requires 'product_multi_category' add-on)
+                    ## 'categ_ids' (requires 'product_multi_category' Odoo add-on)
                     if self.env['ir.module.module'].search([('name', '=', 'product_multi_category'), ('state', '=', 'installed')], limit=1) and len(odoo_product.categ_ids) > 0:
                         for odoo_category in odoo_product.categ_ids:
                             woocommerce_category = self.woocommerce_attribute_create_or_retrieve(
@@ -2541,6 +2659,33 @@ class WoocommerceConnector(models.Model):
                     if len(woocommerce_categories) > 0:
                         product_values.update({'categories': [{'id': category_id} for category_id in woocommerce_categories]})
 
+                    # Dimensions (requires 'product_dimension' Odoo add-on)
+                    if self.env['ir.module.module'].search([('name', '=', 'product_dimension'), ('state', '=', 'installed')], limit=1):
+                        product_values.update(
+                            {
+                                'dimensions': {
+                                    'length': odoo_product.product_length if odoo_product.product_length != 0.0 else '',
+                                    'width': odoo_product.product_width if odoo_product.product_width != 0.0 else '',
+                                    'height': odoo_product.product_height if odoo_product.product_height != 0.0 else '',
+                                }
+                            }
+                        )
+
+                    # Images
+                    if (
+                        self.settings_woocommerce_images_sync
+                        and self.settings_wordpress_username
+                        and self.settings_wordpress_user_application_password
+                        and (odoo_product.image_1920 or len(odoo_product.product_image_ids) > 0)
+                    ):
+                        wordpress_image_ids = self.wordpress_upload_product_images(odoo_product)
+                        if wordpress_image_ids:
+                            product_values['images'] = [{'id': image_id} for image_id in wordpress_image_ids]
+
+                    # Language
+                    if odoo_product.language_code:
+                        product_values.update({'lang': odoo_product.language_code})
+
                     # Tags
                     woocommerce_tags = []
 
@@ -2553,10 +2698,6 @@ class WoocommerceConnector(models.Model):
                         if len(woocommerce_tags) > 0:
                             product_values.update({'tags': woocommerce_tags})
 
-                    # Language
-                    if odoo_product.language_code:
-                        product_values.update({'lang': odoo_product.language_code})
-
                     # Update product in WooCommerce only if Odoo version is newer
                     if woocommerce_product:
                         woocommerce_product = woocommerce_api.put(f'products/{woocommerce_product["id"]}', data=product_values).json()
@@ -2566,14 +2707,11 @@ class WoocommerceConnector(models.Model):
                         woocommerce_product = woocommerce_api.post('products', data=product_values).json()
 
                         if woocommerce_product['id']:
-                            odoo_product.write(
-                                self.woocommerce_product_fields(woocommerce_product, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates).update(
-                                    {'odoo_to_woocommerce_last_sync': fields.Datetime.now()}
-                                )
-                            )
+                            woocommerce_product_fields = self.woocommerce_product_fields(woocommerce_product, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates)
+                            woocommerce_product_fields.update({'odoo_to_woocommerce_last_sync': fields.Datetime.now()})
+                            odoo_product.write(woocommerce_product_fields)
 
-                    if woocommerce_product:
-                        _logger.info(f'WooCommerce response: {woocommerce_product}')
+                            _logger.info(f'Imported Odoo product into WooCommerce: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {odoo_product["woocommerce_id"]})')
 
                     # For variable products, handle variations
                     if product_values.get('type') == 'variable':
@@ -2598,6 +2736,18 @@ class WoocommerceConnector(models.Model):
                                 'regular_price': str(odoo_product_variant.list_price or 0.0),
                                 'attributes': variation_attributes,
                             }
+
+                            # Dimensions (requires 'product_dimension' Odoo add-on)
+                            if self.env['ir.module.module'].search([('name', '=', 'product_dimension'), ('state', '=', 'installed')], limit=1):
+                                variation_data.update(
+                                    {
+                                        'dimensions': {
+                                            'length': odoo_product_variant.product_length if odoo_product_variant.product_length != 0.0 else '',
+                                            'width': odoo_product_variant.product_width if odoo_product_variant.product_width != 0.0 else '',
+                                            'height': odoo_product_variant.product_height if odoo_product_variant.product_height != 0.0 else '',
+                                        }
+                                    }
+                                )
 
                             # Product variation meta data "odoo_id"
                             woocommerce_product_variation_meta_data = []
@@ -2642,14 +2792,15 @@ class WoocommerceConnector(models.Model):
                                 woocommerce_variant = woocommerce_api.post(f'products/{woocommerce_product["id"]}/variations', data=variation_data).json()
 
                                 if woocommerce_variant['id']:
-                                    odoo_product_variant.write(
-                                        self.woocommerce_product_variation_fields(woocommerce_variant, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates).update(
-                                            {'odoo_to_woocommerce_last_sync': fields.Datetime.now()}
-                                        )
+                                    woocommerce_product_variation_fields = self.woocommerce_product_variation_fields(
+                                        woocommerce_variant, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates
                                     )
+                                    woocommerce_product_variation_fields.update({'odoo_to_woocommerce_last_sync': fields.Datetime.now()})
+                                    odoo_product_variant.write(woocommerce_product_variation_fields)
 
-                            if woocommerce_variant:
-                                _logger.info(f'WooCommerce response: {woocommerce_variant}')
+                                    _logger.info(
+                                        f'Imported Odoo product variant into WooCommerce: {odoo_product_variant.name} (Odoo product variant ID: {odoo_product_variant.id}, WooCommerce product variation ID: {woocommerce_variant["id"]})'
+                                    )
 
             except Exception as error:
                 _logger.exception(f'Error syncing Odoo product {odoo_product.id} into WooCommerce: {error}')

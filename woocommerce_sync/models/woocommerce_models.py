@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 
 from odoo import api, fields, models
@@ -175,21 +176,21 @@ class ProductTemplate(models.Model):
         source = fields.Char(string='Source', readonly=True)
     if not hasattr(models.BaseModel, '_fields') or 'language_code' not in ProductTemplate._fields:
         language_code = fields.Char(string='Language', help='2-digit ISO 639-1 language code.')
-    if not hasattr(models.BaseModel, '_fields') or 'product_image_ids' not in ProductTemplate._fields:
-        product_image_ids = fields.Many2many(
-            comodel_name='ir.attachment',
-            string='Images',
-            help='Multiple product images',
-            relation='product_template_ir_attachment_rel',
-            column1='product_template_id',
-            column2='attachment_id',
-            domain=[('mimetype', 'ilike', 'image')],
-        )
 
     woocommerce_service = fields.Boolean(string='Is service?')
 
     # Custom fields
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
+
+    if not hasattr(models.BaseModel, '_fields') or 'product_image_ids' not in ProductTemplate._fields:
+        product_image_ids = fields.Many2many(comodel_name='ir.attachment', string='Images', compute='product_image_ids_compute')
+
+    def product_image_ids_compute(self: models.Model) -> None:
+        """Computes the product image gallery by retrieving all image attachments linked to the current product record from the ir.attachment model."""
+
+        for product in self:
+            attachments = self.env['ir.attachment'].search([('res_model', '=', product._name), ('res_id', '=', product.id), ('mimetype', 'ilike', 'image')])
+            product.product_image_ids = attachments
 
 
 # Product variations
@@ -253,6 +254,21 @@ class ProductProduct(models.Model):
     odoo_to_woocommerce_last_sync = fields.Datetime(string='Odoo to WooCommerce Last Sync', readonly=True)
     woocommerce_stock_last_sync = fields.Datetime(string='Stock Date Updated', readonly=True)
     woocommerce_service = fields.Boolean(string='Is service?')
+
+    def woocommerce_stock_last_sync_update(self: models.Model, timestamp: datetime) -> None:
+        """Updates the 'woocommerce_stock_last_sync' field for both the product and its template directly via SQL to avoid updating the 'write_date'."""
+
+        self.ensure_one()
+
+        # Update the product.product record using a parameterized query
+        self.env.cr.execute(query='UPDATE product_product SET woocommerce_stock_last_sync = %s WHERE id = %s', params=(timestamp, self.id))
+
+        # Update the product.template record using a parameterized query
+        self.env.cr.execute(query='UPDATE product_template SET woocommerce_stock_last_sync = %s WHERE id = %s', params=(timestamp, self.product_tmpl_id.id))
+
+        # Invalidate the cache for the modified records to ensure consistency
+        self.env['product.product']._invalidate_cache(ids=[self.id])
+        self.env['product.template']._invalidate_cache(ids=[self.product_tmpl_id.id])
 
 
 # Product attribute
@@ -339,11 +355,6 @@ class ResPartner(models.Model):
 # Orders
 class SaleOrder(models.Model):
     _inherit = 'sale.order'
-
-    @api.depends('woocommerce_total', 'woocommerce_transaction_fee')
-    def payout_compute(self: models.Model) -> None:
-        for order in self:
-            order.woocommerce_payout = order.woocommerce_total - order.woocommerce_transaction_fee
 
     # WooCommerce REST API - Order properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-properties
     woocommerce_id = fields.Char(string='WooCommerce Order ID', readonly=True, index=True)
@@ -434,6 +445,11 @@ class SaleOrder(models.Model):
     # Computed fields
     woocommerce_payout = fields.Float(string='Payout', help='Total - Order Transaction Fee.', compute='payout_compute', store=True, readonly=True)
 
+    @api.depends('woocommerce_total', 'woocommerce_transaction_fee')
+    def payout_compute(self: models.Model) -> None:
+        for order in self:
+            order.woocommerce_payout = order.woocommerce_total - order.woocommerce_transaction_fee
+
     @api.ondelete(at_uninstall=False)
     def _unlink_except_draft_or_cancel(self: models.Model) -> None:
         """Remove Odoo's restriction on deletion (allow deleting any order)."""
@@ -497,3 +513,10 @@ class WoocommerceStockSyncLog(models.Model):
     _description = 'WooCommerce Stock Sync Log'
 
     odoo_woocommerce_last_sync = fields.Datetime(string='Sync Date', readonly=True)
+
+
+class WoocommerceSyncTempData(models.Model):
+    _name = 'woocommerce.sync.temp.data'
+    _description = 'Odoo-WooCommerce Sync temporary data'
+
+    woocommerce_products_variations_data = fields.Json(string='WooCommerce Products Variations Data')

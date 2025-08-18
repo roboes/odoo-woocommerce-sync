@@ -15,10 +15,6 @@ database_name="database_name"
 odoo_addon_name="woocommerce_sync"
 
 
-# First Odoo run after fresh install
-# $website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin --config=$odoo_conf --database $database_name --load=base,web --without-demo=all --update=all
-
-
 # Delete all queue jobs
 sudo -u postgres psql $database_name <<EOF
 DELETE FROM queue_job;

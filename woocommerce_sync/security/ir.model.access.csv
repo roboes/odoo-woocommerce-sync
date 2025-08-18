@@ -3,3 +3,4 @@ access_woocommerce_sync,woocommerce.configuration,model_woocommerce_configuratio
 access_woocommerce_order_status,access.woocommerce.order.status access,model_woocommerce_order_status,base.group_user,1,0,0,0
 access_woocommerce_sync_log,woocommerce.sync.log access,model_woocommerce_sync_log,,1,1,1,1
 access_woocommerce_stock_sync_log,woocommerce.stock.sync.log access,model_woocommerce_stock_sync_log,,1,1,1,1
+access_woocommerce_sync_temp_data,woocommerce.sync.temp.data access,model_woocommerce_sync_temp_data,,1,1,1,1
