@@ -1,5 +1,16 @@
 # Changelog
 
+## v16.0.2.4 / v18.0.2.4 - 2025-08-18
+
+### Features
+
+- Added support for uploading product images from Odoo to WooCommerce.
+- Product image gallery now leverage Odoo's native `ir.attachment` model.
+
+### Improvements
+
+- Optimized stock quantity synchronization for better performance and to prevent unnecessary updates to the product's `write_date` field.
+
 ## v16.0.2.3 / v18.0.2.3 - 2025-08-14
 
 ### Improvements
@@ -94,7 +105,7 @@
 ### Features
 
 - First fully compatible version for Odoo 18, now maintained in its own branch.
-- Updated image storage logic for products with multiple images. The `Product Gallery` is now displayed under the `Sales` tab, following the same UX pattern as Odoo's `website_sale` module.
+- Updated image storage logic for products with multiple images. The `Product Image Gallery` is now displayed under the `Sales` tab, following the same UX pattern as Odoo's `website_sale` module.
 
 ### Fixes
 

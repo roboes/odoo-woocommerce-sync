@@ -29,13 +29,18 @@
               </h1>
             </div>
             <notebook>
-              <page string="WooCommerce REST API">
-                <group>
+              <page string="REST API">
+                <group string="WooCommerce REST API">
                   <field name="settings_woocommerce_connection_name"/>
                   <field name="settings_woocommerce_connection_url"/>
                   <field name="settings_woocommerce_consumer_key"/>
                   <field name="settings_woocommerce_consumer_secret" password="True"/>
                   <field name="settings_woocommerce_timeout"/>
+                </group>
+                <group string="WordPress REST API">
+                  <p>The WordPress REST API configuration is optional and only required when uploading images from Odoo to WooCommerce. This functionality relies on the core WordPress REST API, which operates separately from the WooCommerce REST API.</p>
+                  <field name="settings_wordpress_username"/>
+                  <field name="settings_wordpress_user_application_password" password="True"/>
                 </group>
               </page>
               <page string="Sync Items">
@@ -97,9 +102,11 @@
                     </tbody>
                   </table>
                 </group>
-                <group string="WooCommerce to Odoo Products Import Settings">
+                <group string="Stock Management">
                   <field name="settings_woocommerce_products_stock_management"/>
                   <field name="settings_woocommerce_products_warehouse_location" invisible="not settings_woocommerce_products_stock_management"/>
+                </group>
+                <group string="WooCommerce to Odoo Products Import Settings">
                   <field name="settings_woocommerce_products_related_ids_map"/>
                   <field name="settings_woocommerce_to_odoo_products_language_code"/>
                   <field name="settings_woocommerce_products_package_size_unit_default"/>

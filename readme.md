@@ -17,7 +17,7 @@ The **Odoo-WooCommerce Sync** add-on enables synchronization between WooCommerce
 - **Extended Models and Views:** Enhance existing Odoo models and views for `product.template`, `product.product`, `res.partner`, `sale.order`, and `sale.order.line` to accommodate corresponding WooCommerce REST API fields.
 - **Automated and Manual Synchronization:** A built-in cron job scheduler enables regular synchronization, complemented by a dedicated button for manually triggering updates.
 - **Advanced Settings:** Support for multiple WooCommerce websites with specific configuration options for each instance (e.g. syncing only products from WooCommerce to Odoo).
-- **Image Synchronization:** Optionally synchronize product images from WooCommerce to Odoo. For products imported from WooCommerce that include multiple images/product gallery, an additional product gallery is added to the `product.template` view.
+- **Image Synchronization:** Optionally synchronize product images from WooCommerce to Odoo and Odoo to WooCommerce. For products imported from WooCommerce that include multiple images/product image gallery, an additional product image gallery is added to the `product.template` view.
 - **Language Filtering:** Synchronize products by language (*requires Polylang*).
 - **Orders Transactions Fee Support:** Integrates additional fee fields into orders processed with PayPal and Stripe (*requires the respective plugins*).
 
@@ -31,7 +31,7 @@ Some features require additional setup, as detailed in the [Requirements](#requi
 - **Performance:** Updating product variations may take long, as each variable product is processed through a separate WooCommerce REST API call.
 - **Stock Management:** If a WooCommerce product variation's "Manage Stock" setting is modified, the corresponding parent product in Odoo is removed. This requires a complete re-import of the parent product and its variations, which can be manually retriggered by pressing the `Sync Now` button.
 - **Unique SKU Requirement:** Every product must have a unique SKU. For product variations, both the parent product and each individual variation must possess a SKU. In Odoo, the internal reference field (`default_code`) should be used to store this value.
-- **Media Endpoints:** The WooCommerce REST API does not provide direct access to media endpoints; therefore, uploading images from Odoo to WooCommerce is not supported in this add-on.
+- **Media Endpoints:** The WooCommerce REST API itself does not provide direct access to media endpoints. Instead, media management (such as uploading images) is handled by the core [WordPress REST API](https://developer.wordpress.org/rest-api/).
 
 ## Requirements
 
@@ -42,7 +42,7 @@ Some features require additional setup, as detailed in the [Requirements](#requi
 Install the necessary Python packages by running:
 
 ```sh
-python -m pip install phonenumbers woocommerce
+python -m pip install filetype phonenumbers woocommerce
 ```
 
 #### Odoo Add-ons (Required)
@@ -148,6 +148,7 @@ All copyrights and trademarks are the property of their respective owners.
 ## References
 
 - [WooCommerce REST API Documentation](https://woocommerce.github.io/woocommerce-rest-api-docs/)
+- [WordPress REST API Handbook](https://developer.wordpress.org/rest-api/)
 
 ## See also
 
