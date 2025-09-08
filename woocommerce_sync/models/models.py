@@ -39,7 +39,7 @@ class WoocommerceConnector(models.Model):
 
     # WordPress REST API settings
     settings_wordpress_username = fields.Char(string='WordPress Username')
-    settings_wordpress_user_application_password = fields.Char(string='WordPress User App Password', help='Can be generated from WordPress Admin > Users > Profile > Application Passwords.')
+    settings_wordpress_user_application_password = fields.Char(string='WordPress User App Password', help='Can be generated from WordPress Admin → Users → Profile → Application Passwords.')
 
     # Sync items settings
     settings_woocommerce_to_odoo_products_sync = fields.Boolean(default=True)
