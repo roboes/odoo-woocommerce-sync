@@ -55,26 +55,26 @@ python -m pip install filetype phonenumbers woocommerce
 
 - **Products & Pricelists** (`product`)
   - The user should have **Administrator** privileges:
-    - `Home Menu` > `Settings` > `Users & Companies` > `Users` > Select the user > `Sales` > `Sales` > `Administrator`.
+    - `Home Menu` → `Settings` → `Users & Companies` → `Users` → Select the user → `Sales` → `Sales` → `Administrator`.
 - **Invoicing** (`account`)
   - The user should have **Billing Administrator** privileges:
-    - `Home Menu` > `Settings` > `Users & Companies` > `Users` > Select the user > `Accounting` > `Invoicing` > `Billing Administrator`.
+    - `Home Menu` → `Settings` → `Users & Companies` → `Users` → Select the user → `Accounting` → `Invoicing` → `Billing Administrator`.
   - Configure Fiscal Localization:
-    - `Home Menu` > `Settings` > `Invoicing` > `Fiscal Localization` > `Package` > Set the `Fiscal Localization` package (e.g. `Germany SKR04 - Accounting`).
+    - `Home Menu` → `Settings` → `Invoicing` → `Fiscal Localization` → `Package` → Set the `Fiscal Localization` package (e.g. `Germany SKR04 - Accounting`).
   - Enable full accounting features:
-    - `Home Menu` > `Settings` > `Users & Company` > `Groups` > Select the `Technical / Show Full Accounting Features` group > `Add a line` > Select the user.
+    - `Home Menu` → `Settings` → `Users & Company` → `Groups` → Select the `Technical / Show Full Accounting Features` group → `Add a line` → Select the user.
 - **Sales** (`sale_management`)
   - Enable [Product Variants](https://www.odoo.com/documentation/18.0/applications/sales/sales/products_prices/products/variants.html):
-    - `Home Menu` > `Settings` > `Sales` > `Product Catalog` > Enable `Variants`.
+    - `Home Menu` → `Settings` → `Sales` → `Product Catalog` → Enable `Variants`.
 - **Inventory** (`stock`)
   - Enable Delivery Methods:
-    - `Home Menu` > `Settings` > `Inventory` > `Shipping` > Enable `Delivery Methods`.
+    - `Home Menu` → `Settings` → `Inventory` → `Shipping` → Enable `Delivery Methods`.
   - (Optional) Enable [Product Packagings](https://www.odoo.com/documentation/18.0/applications/inventory_and_mrp/inventory/product_management/configure/packaging.html):
-    - `Home Menu` > `Settings` > `Inventory` > `Products` > Enable `Product Packagings`.
+    - `Home Menu` → `Settings` → `Inventory` → `Products` → Enable `Product Packagings`.
   - Enable Units of Measure:
-    - `Home Menu` > `Settings` > `Inventory` > `Products` > Enable `Units of Measure`.
+    - `Home Menu` → `Settings` → `Inventory` → `Products` → Enable `Units of Measure`.
   - (Optional) Set up a dedicated warehouse for WooCommerce sales:
-    - `Home Menu` > `Settings` > `Inventory` > `Warehouse` > Enable `Storage Locations` and configure under `Locations` the warehouse accordingly.
+    - `Home Menu` → `Settings` → `Inventory` → `Warehouse` → Enable `Storage Locations` and configure under `Locations` the warehouse accordingly.
 - **Contacts** (`contacts`)
 - **Job Queue** (`queue_job`)
   - [GitHub](https://github.com/OCA/queue/tree/18.0/queue_job) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/queue_job) (requires additional [configuration instructions](https://github.com/OCA/queue/tree/18.0/queue_job#configuration)).
@@ -110,7 +110,7 @@ Brazil:
   - [Polylang Pro](https://polylang.pro/downloads/polylang-pro/) (which enables the `lang` argument in the WooCommerce REST API); or
   - The custom code snippet provided in [this file](./woocommerce-rest-api/woocommerce-rest-api-polylang-language-slug.php), saved either into the `functions.php` file or into a code snippet plugin (e.g. [WPCode](https://wordpress.org/plugins/insert-headers-and-footers/)).
 - **Orders Transactions Fee** (`woocommerce_order_transaction_fee` field): Requires the [WooCommerce PayPal Payments](https://wordpress.org/plugins/woocommerce-paypal-payments/) and/or [Payment Plugins for Stripe WooCommerce](https://wordpress.org/plugins/woo-stripe-payment/) plugin.
-  - For the [Payment Plugins for Stripe WooCommerce](https://wordpress.org/plugins/woo-stripe-payment/), the following setting needs to be changed in order to enable the Stripe transaction fee field: `WooCommerce` > `Stripe by Payment Plugins` > `Settings` > `Advanced Settings` > Enable `Display Stripe Fee`.
+  - For the [Payment Plugins for Stripe WooCommerce](https://wordpress.org/plugins/woo-stripe-payment/), the following setting needs to be changed in order to enable the Stripe transaction fee field: `WooCommerce` → `Stripe by Payment Plugins` → `Settings` → `Advanced Settings` → Enable `Display Stripe Fee`.
 
 ##### WordPress Localization (Optional)
 
@@ -124,15 +124,15 @@ Follow these steps to install the Odoo-WooCommerce Sync add-on:
 
 1. **Install Python Dependencies:** Ensure the [Python dependencies](#python-dependencies) are installed on the Odoo instance.
 2. **Enable Odoo Add-ons:** Install and activate all [required](#odoo-add-ons-required) and, if applicable, [optional](#odoo-add-ons-optional) Odoo add-ons.
-3. **Configure WordPress (if applicable):** Install and set up the [optional plugins](#wordpress-plugins-optional) for WordPress. Retrieve the WooCommerce REST API `consumer key` and `consumer secret` from `WooCommerce` > `Settings` > `Advanced` > `REST API`.
+3. **Configure WordPress (if applicable):** Install and set up the [optional plugins](#wordpress-plugins-optional) for WordPress. Retrieve the WooCommerce REST API `consumer key` and `consumer secret` from `WooCommerce` → `Settings` → `Advanced` → `REST API`.
 4. **Add the Add-on:** Download and place the [`woocommerce_sync`](./woocommerce_sync) directory into the Odoo `addons` directory.
 5. **Activate Debug Mode:** Log in to Odoo and enable [Debug Mode](https://www.odoo.com/documentation/18.0/applications/general/developer_mode.html).
-6. **Update the Apps List:** Navigate to `Home Menu` > `Apps` and click **Update Apps List**.
+6. **Update the Apps List:** Navigate to `Home Menu` → `Apps` and click **Update Apps List**.
 7. **Activate the Add-on:** Use the filter to search for `woocommerce_sync` and activate the add-on.
 
 ## Configuration
 
-The add-on is configured through the WooCommerce Sync configuration, accessible via `Home Menu` > `WooCommerce Sync`.
+The add-on is configured through the WooCommerce Sync configuration, accessible via `Home Menu` → `WooCommerce Sync`.
 
 For orders import, two optional mapping logics can be activated. By default, a product and customer (for orders placed by guest customer) placeholder/dummy is created. The options are:
 
