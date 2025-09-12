@@ -153,3 +153,4 @@ All copyrights and trademarks are the property of their respective owners.
 ## See also
 
 - [Odoo-Shore POS Sync](https://github.com/roboes/odoo-shorepos-sync): Connector add-on for Odoo that synchronizes data between Shore POS and Odoo.
+- [OdooFlow - Odoo Integration for WooCommerce](https://github.com/boringpluginsco/odooflow-for-woocommerce): Seamlessly integrate your WooCommerce store with Odoo ERP system for synchronized product, customer, and order management.
