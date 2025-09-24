@@ -505,6 +505,7 @@ class WoocommerceSyncLog(models.Model):
     _name = 'woocommerce.sync.log'
     _description = 'WooCommerce Sync Log'
 
+    woocommerce_connection_id = fields.Integer(string='Connection ID', required=True, index=True)
     odoo_woocommerce_last_sync = fields.Datetime(string='Sync Date', readonly=True)
 
 
@@ -512,6 +513,7 @@ class WoocommerceStockSyncLog(models.Model):
     _name = 'woocommerce.stock.sync.log'
     _description = 'WooCommerce Stock Sync Log'
 
+    woocommerce_connection_id = fields.Integer(string='Connection ID', required=True, index=True)
     odoo_woocommerce_last_sync = fields.Datetime(string='Sync Date', readonly=True)
 
 

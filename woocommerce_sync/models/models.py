@@ -27,9 +27,6 @@ class WoocommerceConnector(models.Model):
     _name = 'woocommerce.configuration'
     _description = 'WooCommerce Configuration'
 
-    # View settings
-    woocommerce_connection_sequence = fields.Char(string='Connection ID', required=True, copy=False, readonly=True, index=True, default=lambda self: _('New'))
-
     # WooCommerce REST API settings
     settings_woocommerce_connection_name = fields.Char(string='Instance Name')
     settings_woocommerce_connection_url = fields.Char(string='Store URL', help='WordPress URL. Example: https://www.mystore.com')
@@ -142,22 +139,15 @@ class WoocommerceConnector(models.Model):
     odoo_woocommerce_last_sync = fields.Datetime(string='Last Synced', compute='odoo_woocommerce_last_sync_assign', store=False, readonly=True)
 
     def odoo_woocommerce_last_sync_assign(self: models.Model) -> None:
-        self.ensure_one()
-        sync_log = self.env['woocommerce.sync.log'].search([], limit=1)
-        self.odoo_woocommerce_last_sync = sync_log.odoo_woocommerce_last_sync if sync_log else False
+        for record in self:
+            sync_log = self.env['woocommerce.sync.log'].search([('woocommerce_connection_id', '=', record.id)], limit=1)
+            record.odoo_woocommerce_last_sync = sync_log.odoo_woocommerce_last_sync if sync_log else False
 
     @api.model_create_multi
     def create(self: models.Model, values_list: list[dict[str, Any]]) -> models.Model:
-        for values in values_list:
-            if values.get('woocommerce_connection_sequence', _('New')) == _('New'):
-                values['woocommerce_connection_sequence'] = self.env['ir.sequence'].next_by_code('woocommerce.configuration.sequence') or _('New')
-
         records = super().create(values_list)
-
-        # Run post-creation logic per record
         for record in records:
             record.cron_job_update()
-
         return records
 
     def write(self: models.Model, values: dict[str, Any]) -> bool:
@@ -329,24 +319,28 @@ class WoocommerceConnector(models.Model):
         # Stock quantity
         if self.settings_woocommerce_products_stock_management:
             queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=None).odoo_woocommerce_products_stock_quantity_sync_batch())
-            queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=None).update_sync_last_log(model_name='woocommerce.stock.sync.log', field_name='odoo_woocommerce_last_sync'))
+            queue_jobs_run_in_sequence.append(
+                self.delayable(priority=None, description=None).update_sync_last_log(woocommerce_connection_id=self.id, model_name='woocommerce.stock.sync.log', field_name='odoo_woocommerce_last_sync')
+            )
 
         # Store 'odoo_woocommerce_last_sync'
-        queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=None).update_sync_last_log(model_name='woocommerce.sync.log', field_name='odoo_woocommerce_last_sync'))
+        queue_jobs_run_in_sequence.append(
+            self.delayable(priority=None, description=None).update_sync_last_log(woocommerce_connection_id=self.id, model_name='woocommerce.sync.log', field_name='odoo_woocommerce_last_sync')
+        )
 
         # Create chain and delay the jobs
         if queue_jobs_run_in_sequence:
             chain(*queue_jobs_run_in_sequence).delay()
 
     @api.model
-    def update_sync_last_log(self: models.Model, model_name: str, field_name: str) -> None:
-        sync_log = self.env[model_name].search([], limit=1)
+    def update_sync_last_log(self: models.Model, woocommerce_connection_id: int, model_name: str, field_name: str) -> None:
+        sync_log = self.env[model_name].search([('woocommerce_connection_id', '=', woocommerce_connection_id)], limit=1)
 
         if sync_log:
             sync_log.write({field_name: fields.Datetime.now()})
 
         else:
-            self.env[model_name].create({field_name: fields.Datetime.now()})
+            self.env[model_name].create({'woocommerce_connection_id': woocommerce_connection_id, field_name: fields.Datetime.now()})
 
     def woocommerce_api_get(self: models.Model) -> API | None:
         """Retrieves WooCommerce REST API instance."""
@@ -726,6 +720,10 @@ class WoocommerceConnector(models.Model):
             # Ensure the product is archived
             if odoo_product_placeholder.active:
                 odoo_product_placeholder.write({'active': False})
+
+        # Ensure at least one variant exists
+        if not odoo_product_placeholder.product_variant_ids:
+            self.env['product.product'].create({'product_tmpl_id': odoo_product_placeholder.id, 'default_code': odoo_product_placeholder.default_code})
 
         return odoo_product_placeholder
 
@@ -1833,9 +1831,9 @@ class WoocommerceConnector(models.Model):
 
             # Localization
 
-            ## Brazil (requires 'l10n_br_fiscal' Odoo add-on)
-            if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
-                if woocommerce_customer['billing']['cpf'] or woocommerce_customer['billing']['cnpj']:
+            ## Brazil (requires 'l10n_br_base' Odoo add-on)
+            if self.env['ir.module.module'].search([('name', '=', 'l10n_br_base'), ('state', '=', 'installed')], limit=1):
+                if (woocommerce_customer['billing']['cpf'] or woocommerce_customer['billing']['cnpj']) and 'cnpj_cpf' in self.env['res.partner']._fields:
                     customer_values.update({'cnpj_cpf': woocommerce_customer['billing']['cpf'] or woocommerce_customer['billing']['cnpj']})
 
             # Custom fields
@@ -2126,9 +2124,9 @@ class WoocommerceConnector(models.Model):
 
                     # Localization
 
-                    ## Brazil (requires 'l10n_br_fiscal' Odoo add-on)
-                    if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
-                        if woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']:
+                    ## Brazil (requires 'l10n_br_base' Odoo add-on)
+                    if self.env['ir.module.module'].search([('name', '=', 'l10n_br_base'), ('state', '=', 'installed')], limit=1):
+                        if (woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']) and 'cnpj_cpf' in self.env['res.partner']._fields:
                             customer_values.update({'cnpj_cpf': woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']})
 
                     # Odoo 'res.partner' model fields
@@ -2165,13 +2163,6 @@ class WoocommerceConnector(models.Model):
                 else:
                     # Create/retrieve customer placeholder
                     odoo_customer = self.odoo_customer_placeholder_create_or_retrieve()
-
-            # Localization
-
-            ## Brazil (requires 'l10n_br_fiscal' Odoo add-on)
-            if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
-                if woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']:
-                    order_values.update({'cnpj_cpf': woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']})
 
             # Odoo 'sale.order' model fields
             order_values.update(
@@ -2299,9 +2290,9 @@ class WoocommerceConnector(models.Model):
 
                 # Localization
 
-                ## Brazil (requires 'l10n_br_fiscal' Odoo add-on)
-                if self.env['ir.module.module'].search([('name', '=', 'l10n_br_fiscal'), ('state', '=', 'installed')], limit=1):
-                    if woocommerce_order['shipping_total']:
+                ## Brazil (requires 'l10n_br_sale' Odoo add-on)
+                if self.env['ir.module.module'].search([('name', '=', 'l10n_br_sale'), ('state', '=', 'installed')], limit=1):
+                    if woocommerce_order['shipping_total'] and 'freight_value' in self.env['sale.order.line']._fields:
                         order_line_values.update({'freight_value': float(woocommerce_order['shipping_total']) * (float(line_item['total']) / order_line_items_total)})
 
                 # Odoo 'sale.order.line' model fields
@@ -2310,7 +2301,7 @@ class WoocommerceConnector(models.Model):
                         # General information
                         'order_id': odoo_sale_order.id,
                         'name': order_line_values['woocommerce_name'],
-                        'product_id': odoo_product_mapped.id if self.settings_woocommerce_line_items_product_map else odoo_product.product_variant_ids[:1].id,
+                        'product_id': odoo_product_mapped.id if odoo_product_mapped else odoo_product.product_variant_ids[:1].id,
                         # Shipping and stock
                         'warehouse_id': self.settings_woocommerce_products_warehouse_location.id,
                         # Dimensions

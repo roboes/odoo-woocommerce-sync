@@ -6,7 +6,6 @@
       <field name="model">woocommerce.configuration</field>
       <field name="arch" type="xml">
         <tree string="WooCommerce Configurations">
-          <field name="woocommerce_connection_sequence"/>
           <field name="settings_woocommerce_connection_name"/>
           <field name="settings_woocommerce_connection_url"/>
           <field name="settings_woocommerce_consumer_key"/>
@@ -23,11 +22,6 @@
       <field name="arch" type="xml">
         <form string="WooCommerce Configuration Form">
           <sheet>
-            <div class="oe_title">
-              <h1>
-                <field name="woocommerce_connection_sequence"/>
-              </h1>
-            </div>
             <notebook>
               <page string="REST API">
                 <group string="WooCommerce REST API">

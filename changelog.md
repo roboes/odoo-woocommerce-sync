@@ -1,5 +1,11 @@
 # Changelog
 
+## v16.0.2.5 / v18.0.2.5 - 2025-09-24
+
+### Features
+
+- Bug fixes and improvements.
+
 ## v16.0.2.4 / v18.0.2.4 - 2025-08-18
 
 ### Features
