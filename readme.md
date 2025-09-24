@@ -98,8 +98,8 @@ While not mandatory, the following Odoo Community Association (OCA) add-ons are 
 
 Brazil:
 
-- **Módulo Fiscal Brasileiro** (`l10n_br_fiscal`): Supports Cadastro de Pessoa Física (CPF), Cadastro Nacional da Pessoa Jurídica (CNPJ), local taxes, shipping costs, and electronic fiscal documents.
-  - [GitHub](https://github.com/OCA/l10n-brazil/tree/18.0/l10n_br_fiscal) | [Odoo Apps Store](https://odoo-community.org/shop/brazilian-localization-base-1252)
+- **Módulo Fiscal Brasileiro** (`l10n_br_base`, `l10n_br_sale`): Supports Cadastro de Pessoa Física (CPF), Cadastro Nacional da Pessoa Jurídica (CNPJ), local taxes, shipping costs, and electronic fiscal documents.
+  - [GitHub](https://github.com/OCA/l10n-brazil/tree/18.0) | [Odoo Apps Store](https://odoo-community.org/shop/brazilian-localization-base-1252)
 
 ### WordPress
 

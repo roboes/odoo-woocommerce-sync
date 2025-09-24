@@ -1,7 +1,7 @@
 # Odoo-WooCommerce Sync Odoo Module Dependency Installer
 
 > [!NOTE]
-> Last update: 2025-07-20
+> Last update: 2025-09-24
 
 ## Settings
 
@@ -30,6 +30,8 @@ declare -A repos=(
   ["server-tools"]="https://github.com/OCA/server-tools.git"
   ["product-attribute"]="https://github.com/OCA/product-attribute.git"
   ["brand"]="https://github.com/OCA/brand.git"
+  # Optional add-ons
+  # ["account-payment"]="https://github.com/OCA/account-payment.git"
   # Optional Localization add-ons
   # ["l10n-brazil"]="https://github.com/OCA/l10n-brazil.git"
 )
@@ -41,10 +43,12 @@ declare -A modules_to_install=(
   ["queue"]="queue_job queue_job_cron"
   # Optional Odoo Community Association (OCA) add-ons
   ["server-tools"]="module_auto_update"
-  ["product-attribute"]="product_dimension product_multi_category"
+  ["product-attribute"]="product_dimension product_multi_category uom_alias"
   ["brand"]="product_brand"
+  # Optional add-ons
+  # ["account-payment"]="account_due_list"
   # Optional Localization add-ons
-  # ["l10n-brazil"]="l10n_br_fiscal"
+  # ["l10n-brazil"]="l10n_br_account l10n_br_account_due_list l10n_br_base l10n_br_coa l10n_br_fiscal l10n_br_sale"
 )
 
 # Create addons directory (if necessary)
@@ -110,30 +114,24 @@ find "$addons_path" -name "requirements.txt" -exec python -m pip install -r {} \
 ### Update base modules
 
 ```.sh
-echo "Updating base module list..."
-$website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin \
-    --config=$odoo_conf \
-    --database $database_name \
-    --update base \
-    --stop-after-init
-
-# Build module list for installation
+# Rebuild the module list
 install_modules=""
 for repo in "${!repos[@]}"; do
   if [[ -n "${modules_to_install[$repo]}" ]]; then
-    install_modules+="${modules_to_install[$repo]},"
+    install_modules+=",${modules_to_install[$repo]}"
   fi
 done
 
-# Remove trailing comma
-install_modules="${install_modules%,}"
+# Define the module list manually
+# install_modules="l10n_br_base,l10n_br_fiscal"
 
-if [[ -n "$install_modules" ]]; then
-  echo "Installing modules: $install_modules"
-  $website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin --config="$odoo_conf" --database="$database_name" --init="$install_modules" --stop-after-init
-else
-  echo "No modules to install."
-fi
+echo "Initializing and installing modules: $install_modules"
+$website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin \
+    --config="$odoo_conf" \
+    --database="$database_name" \
+    --init="$install_modules" \
+    --without-demo=all \
+    --stop-after-init
 
 # Exit the virtual environment
 deactivate

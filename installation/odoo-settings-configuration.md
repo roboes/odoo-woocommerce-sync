@@ -1,7 +1,7 @@
 # Odoo-WooCommerce Sync Odoo Settings Configuration
 
 > [!NOTE]
-> Last update: 2025-08-04
+> Last update: 2025-09-23
 
 ## Settings
 
@@ -21,8 +21,16 @@ $website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin shell 
 
 ```.py
 settings_username = 'admin'
+settings_account_fiscal_localization_country = 'de'
 settings_account_fiscal_localization_module = 'l10n_de'
-settings_account_fiscal_localization_template = 'Germany SKR04 - Accounting'
+settings_account_fiscal_localization_chart_template = 'de_skr04'
+```
+
+```.py
+# List all available chart templates for the selected fiscal localization country
+options = [option for option in env['res.config.settings']._fields['chart_template'].selection(env['res.config.settings']) if settings_account_fiscal_localization_country in option[0]]
+for value, label in options:
+    print(f'{value}: {label}')
 ```
 
 ## Install modules
@@ -88,14 +96,8 @@ if odoo_user:
     # Fiscal Localization
     fiscal_module = env['ir.module.module'].search([('name', '=', settings_account_fiscal_localization_module)], limit=1)
     if fiscal_module and fiscal_module.state == 'installed':
-        template = env['account.chart.template'].search([('name', '=', settings_account_fiscal_localization_template)], limit=1)
-        if template:
-            company = env.user.company_id
-            company.chart_template_id = template.id
-            company._load_chart_template(template)
-            print(f'Loaded chart template: {settings_account_fiscal_localization_template}')
-        else:
-            print('Chart template not found')
+        env['res.config.settings'].create({'chart_template': settings_account_fiscal_localization_chart_template, 'account_fiscal_country_id': env['res.country'].search([('code', '=', settings_account_fiscal_localization_country.upper())]).id}).execute()
+        print(f'Loaded chart template: {settings_account_fiscal_localization_chart_template}')
     else:
         print('Fiscal localization module not installed')
 else:
