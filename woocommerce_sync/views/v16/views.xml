@@ -3,7 +3,7 @@
   <data>
     <record model="ir.ui.view" id="tree_view_woocommerce">
       <field name="name">WooCommerce Configuration List</field>
-      <field name="model">woocommerce.configuration</field>
+      <field name="model">woocommerce.sync.connector</field>
       <field name="arch" type="xml">
         <tree string="WooCommerce Configurations">
           <field name="settings_woocommerce_connection_name"/>
@@ -18,7 +18,7 @@
     </record>
     <record model="ir.ui.view" id="form_view_woocommerce">
       <field name="name">WooCommerce Configuration Form</field>
-      <field name="model">woocommerce.configuration</field>
+      <field name="model">woocommerce.sync.connector</field>
       <field name="arch" type="xml">
         <form string="WooCommerce Configuration Form">
           <sheet>
@@ -135,7 +135,7 @@
     <!-- Actions opening views on models -->
     <record model="ir.actions.act_window" id="action_woocommerce_configuration">
       <field name="name">WooCommerce Configuration</field>
-      <field name="res_model">woocommerce.configuration</field>
+      <field name="res_model">woocommerce.sync.connector</field>
       <field name="view_mode">tree,form</field>
     </record>
     <!-- Top menu item -->
