@@ -106,9 +106,10 @@ Brazil:
 #### WordPress Plugins (Optional)
 
 - **WooCommerce Customer Last Login:** (`woocommerce_customer_date_last_login` field): Requires the [Wordfence Security](https://wordpress.org/plugins/wordfence/) plugin.
-- **Product Language Code:** (`product_language_code` field): Requires [Polylang for WooCommerce](https://polylang.pro/downloads/polylang-for-woocommerce/) and either:
-  - [Polylang Pro](https://polylang.pro/downloads/polylang-pro/) (which enables the `lang` argument in the WooCommerce REST API); or
-  - The custom code snippet provided in [this file](./woocommerce-rest-api/woocommerce-rest-api-polylang-language-slug.php), saved either into the `functions.php` file or into a code snippet plugin (e.g. [WPCode](https://wordpress.org/plugins/insert-headers-and-footers/)).
+- **Product Language Code:** (`product_language_code` field):
+  - Requires [Polylang for WooCommerce](https://polylang.pro/downloads/polylang-for-woocommerce/) and either [Polylang Pro](https://polylang.pro/downloads/polylang-pro/) (which enables the `lang` argument in the WooCommerce REST API); or the custom [woocommerce-rest-api-polylang-language-slug](./woocommerce-snippets/woocommerce-rest-api-polylang-language-slug.php) code snippet, saved either into the `functions.php` file or into a code snippet plugin (e.g. [WPCode](https://wordpress.org/plugins/insert-headers-and-footers/)).
+- **Product Stock Translation Sync**:
+  - The custom [woocommerce-product-polylang-stock-change-update](./woocommerce-snippets/woocommerce-product-polylang-stock-change-update.php) code snippet automatically updates the modified date of all Polylang translations whenever a product's stock is changed.
 - **Orders Transactions Fee** (`woocommerce_order_transaction_fee` field): Requires the [WooCommerce PayPal Payments](https://wordpress.org/plugins/woocommerce-paypal-payments/) and/or [Payment Plugins for Stripe WooCommerce](https://wordpress.org/plugins/woo-stripe-payment/) plugin.
   - For the [Payment Plugins for Stripe WooCommerce](https://wordpress.org/plugins/woo-stripe-payment/), the following setting needs to be changed in order to enable the Stripe transaction fee field: `WooCommerce` → `Stripe by Payment Plugins` → `Settings` → `Advanced Settings` → Enable `Display Stripe Fee`.
 
