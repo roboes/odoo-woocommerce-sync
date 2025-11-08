@@ -18,12 +18,12 @@ The **Odoo-WooCommerce Sync** add-on enables synchronization between WooCommerce
 - **Automated and Manual Synchronization:** A built-in cron job scheduler enables regular synchronization, complemented by a dedicated button for manually triggering updates.
 - **Advanced Settings:** Support for multiple WooCommerce websites with specific configuration options for each instance (e.g. syncing only products from WooCommerce to Odoo).
 - **Image Synchronization:** Optionally synchronize product images from WooCommerce to Odoo and Odoo to WooCommerce. For products imported from WooCommerce that include multiple images/product image gallery, an additional product image gallery is added to the `product.template` view.
-- **Language Filtering:** Synchronize products by language (*requires Polylang*).
-- **Orders Transactions Fee Support:** Integrates additional fee fields into orders processed with PayPal and Stripe (*requires the respective plugins*).
+- **Language Filtering:** Synchronize products by language (_requires Polylang_).
+- **Orders Transactions Fee Support:** Integrates additional fee fields into orders processed with PayPal and Stripe (_requires the respective plugins_).
 
 Some features require additional setup, as detailed in the [Requirements](#requirements) section.
 
-> [!WARNING]
+> [!WARNING]  
 > This add-on is provided without any warranty and may contain bugs as it is a recently developed solution. Testing in a controlled environment is recommended before deployment, and usage is at one's own risk.
 
 ## Limitations
@@ -47,10 +47,10 @@ python -m pip install filetype phonenumbers woocommerce
 
 #### Odoo Add-ons (Required)
 
-> [!TIP]
+> [!TIP]  
 > To automatically download and install the required and optional Odoo add-ons listed below, follow the instructions in [odoo-module-dependency-installer.md](./installation/odoo-module-dependency-installer.md).
 
-> [!TIP]
+> [!TIP]  
 > To automatically apply the Odoo configuration listed below, follow the instructions in [odoo-settings-configuration.md](./installation/odoo-settings-configuration.md).
 
 - **Products & Pricelists** (`product`)

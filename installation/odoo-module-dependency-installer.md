@@ -1,6 +1,6 @@
 # Odoo-WooCommerce Sync Odoo Module Dependency Installer
 
-> [!NOTE]
+> [!NOTE]  
 > Last update: 2025-09-24
 
 ## Settings
