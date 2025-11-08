@@ -58,7 +58,7 @@
 ### Improvements
 
 - Improved performance for large WooCommerce stores by implementing a sequential workflow of queue jobs for the synchronization of each individual product, product variation, customer, and order. This prevents `CPU time limit exceeded` errors by ensuring tasks are processed one at a time.
-- Renamed WooCommerce-related fields across multiple models to follow a consistent woocommerce_\* naming convention, improving clarity and alignment with the WooCommerce REST API.
+- Renamed WooCommerce-related fields across multiple models to follow a consistent woocommerce\_\* naming convention, improving clarity and alignment with the WooCommerce REST API.
 
 ### Fixes
 
@@ -68,8 +68,7 @@
 
 ### Features
 
-- Introduced individual "last sync" tracking fields: `woocommerce_product_woocommerce_to_odoo_last_sync
-`woocommerce_product_variation_woocommerce_to_odoo_last_sync`,`woocommerce_customer_woocommerce_to_odoo_last_sync`,`woocommerce_order_woocommerce_to_odoo_last_sync` and `woocommerce_order_line_woocommerce_to_odoo_last_sync`.
+- Introduced individual "last sync" tracking fields: `woocommerce_product_woocommerce_to_odoo_last_sync`, `woocommerce_product_variation_woocommerce_to_odoo_last_sync`, `woocommerce_customer_woocommerce_to_odoo_last_sync`,`woocommerce_order_woocommerce_to_odoo_last_sync` and `woocommerce_order_line_woocommerce_to_odoo_last_sync`.
 
 ### Improvements
 
