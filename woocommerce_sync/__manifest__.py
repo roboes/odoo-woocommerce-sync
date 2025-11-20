@@ -6,12 +6,13 @@
     'author': 'roboes',
     'website': 'https://github.com/roboes/odoo-woocommerce-sync',
     'category': 'Connectors',
-    # 'version': '16.0.2.6',
-    'version': '18.0.2.6',
+    # 'version': '16.0.2.7',
+    'version': '18.0.2.7',
+    # 'version': '19.0.2.7',
     'external_dependencies': {
         'python': ['filetype', 'phonenumbers', 'woocommerce'],
     },
-    'depends': ['account', 'contacts', 'queue_job', 'product', 'sale_management', 'stock'],
+    'depends': ['account', 'contacts', 'delivery', 'product', 'queue_job', 'sale_management', 'stock', 'stock_account'],
     'data': [
         'security/ir.model.access.csv',
         'data/woocommerce.sync.order.status.xml',
@@ -35,6 +36,16 @@
         'views/v18/sale_order_form.xml',
         'views/v18/sale_order_tree.xml',
         'views/v18/views.xml',
+        # 'views/v19/product_product_form.xml',
+        # 'views/v19/product_product_tree.xml',
+        # 'views/v19/product_template_form.xml',
+        # 'views/v19/product_template_kanban.xml',
+        # 'views/v19/product_template_tree.xml',
+        # 'views/v19/res_partner_form.xml',
+        # 'views/v19/res_partner_tree.xml',
+        # 'views/v19/sale_order_form.xml',
+        # 'views/v19/sale_order_tree.xml',
+        # 'views/v19/views.xml',
     ],
     'assets': {
         'web.assets_backend': [

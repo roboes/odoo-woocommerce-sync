@@ -61,7 +61,7 @@ class StockMove(models.Model):
             ondelete='cascade',
         )
 
-    elif version_info[0] == 18:
+    elif version_info[0] in [18, 19]:
         product_id = fields.Many2one(
             comodel_name='product.product',
             string='Product',

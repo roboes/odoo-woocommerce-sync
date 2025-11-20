@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <record id="view_product_template_kanban_woocommerce" model="ir.ui.view">
+    <field name="name">product.template.kanban.woocommerce</field>
+    <field name="model">product.template</field>
+    <field name="inherit_id" ref="product.product_template_kanban_view"/>
+    <field name="arch" type="xml">
+      <xpath expr="//t[@t-name='card']/main/div[hasclass('mb-1')]" position="after">
+        <div class="float-end">
+          <field name="source" widget="badge" invisible="not source"/>
+        </div>
+        <div class="float-end">
+          <field name="language_code" widget="badge" invisible="not language_code"/>
+        </div>
+      </xpath>
+    </field>
+  </record>
+</odoo>

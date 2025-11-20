@@ -1,5 +1,11 @@
 # Changelog
 
+## v16.0.2.7 / v18.0.2.7 - 2025-11-20
+
+### Features
+
+- Updated codebase for initial Odoo 19 compatibility and easier future migration.
+
 ## v16.0.2.6 / v18.0.2.6 - 2025-09-29
 
 ### Features
