@@ -1,5 +1,5 @@
 ## Odoo-WooCommerce Sync Tests
-# Last update: 2025-08-13
+# Last update: 2025-11-20
 
 
 # Logs:
@@ -22,9 +22,6 @@ EOF
 
 
 # Stop Odoo Process
-
-## List all running Odoo processes
-ps aux | grep odoo
 
 ## Kill all Odoo processes except the grep process itself
 ps aux | grep odoo | grep -v grep | awk '{print $2}' | xargs -r kill -9
@@ -51,13 +48,6 @@ ps aux | grep odoo | grep -v grep | awk '{print $2}' | xargs -r kill -9
 # print(fields.keys())
 
 
-# Update the WooCommerce Sync module in Odoo and stop Odoo after initialization
-$website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin \
-    --config=$odoo_conf \
-    --database $database_name \
-    --update $odoo_addon_name \
-    --stop-after-init
-
 # Overwrite the Odoo log file with an empty content
 cat <<EOF > "/var/log/odoo/$website.log"
 EOF
@@ -67,4 +57,5 @@ $website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin \
 	--config=$odoo_conf \
 	--database $database_name \
 	--update $odoo_addon_name \
-	--load=product,web,queue_job
+	--load=product,web,queue_job \
+	--log-handler=:ERROR

@@ -186,7 +186,7 @@ class WoocommerceSyncConnector(models.Model):
                 'doall': True,
             }
 
-        elif version_info[0] == 18:
+        elif version_info[0] in [18, 19]:
             cron_values = {
                 'name': f'WooCommerce Auto-Sync - {self.settings_woocommerce_connection_url}',
                 'model_id': self.env['ir.model']._get(self._name).id,
@@ -924,7 +924,7 @@ class WoocommerceSyncConnector(models.Model):
                     ('detailed_type', '=', 'product'),
                 ],
             )
-        elif version_info[0] == 18:
+        elif version_info[0] in [18, 19]:
             odoo_products_batch = self.env['product.product'].search(
                 [
                     ('product_tmpl_id.woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
@@ -1290,7 +1290,7 @@ class WoocommerceSyncConnector(models.Model):
             if version_info[0] == 16:
                 product_values['detailed_type'] = 'service' if product_values['woocommerce_service'] else 'product' if product_values['woocommerce_manage_stock'] else 'consu'
 
-            elif version_info[0] == 18:
+            elif version_info[0] in [18, 19]:
                 product_values['type'] = 'service' if product_values['woocommerce_service'] else 'consu'
                 product_values['is_storable'] = True if product_values['woocommerce_manage_stock'] else False
 
@@ -1678,7 +1678,7 @@ class WoocommerceSyncConnector(models.Model):
                     if version_info[0] == 16:
                         product_variation_values['detailed_type'] = 'service' if product_variation_values['woocommerce_service'] else 'product' if product_variation_values['woocommerce_manage_stock'] else 'consu'
 
-                    elif version_info[0] == 18:
+                    elif version_info[0] in [18, 19]:
                         product_variation_values['type'] = 'service' if product_variation_values['woocommerce_service'] else 'consu'
                         product_variation_values['is_storable'] = True if product_variation_values['woocommerce_manage_stock'] else False
 
@@ -2314,28 +2314,38 @@ class WoocommerceSyncConnector(models.Model):
                         order_line_values.update({'freight_value': float(woocommerce_order['shipping_total']) * (float(line_item['total']) / order_line_items_total)})
 
                 # Odoo 'sale.order.line' model fields
-                order_line_values.update(
-                    {
-                        # General information
-                        'order_id': odoo_sale_order.id,
-                        'name': order_line_values['woocommerce_name'],
-                        'product_id': odoo_product_mapped.id if odoo_product_mapped else odoo_product.product_variant_ids[:1].id,
-                        # Shipping and stock
-                        'warehouse_id': self.settings_woocommerce_products_warehouse_location.id,
-                        # Dimensions
-                        'product_uom': odoo_order_line_item_unit_of_measure.id if odoo_order_line_item_unit_of_measure else False,
-                        # Payment
-                        'currency_id': odoo_order_currency.id,
-                        'tax_id': odoo_order_line_item_tax_id,
-                        'product_uom_qty': order_line_values['woocommerce_quantity'],
-                        'price_unit': (
-                            order_line_values['woocommerce_price'] + (float(order_line_values['woocommerce_subtotal_tax']) / order_line_values['woocommerce_quantity'])
-                            if order_values['woocommerce_prices_include_tax']
-                            else order_line_values['woocommerce_price']
-                        ),
-                        # 'discount'
-                    },
-                )
+                sale_order_line_fields = {
+                    # General information
+                    'order_id': odoo_sale_order.id,
+                    'name': order_line_values['woocommerce_name'],
+                    'product_id': odoo_product_mapped.id if odoo_product_mapped else odoo_product.product_variant_ids[:1].id,
+                    # Shipping and stock
+                    'warehouse_id': self.settings_woocommerce_products_warehouse_location.id,
+                    # Payment
+                    'currency_id': odoo_order_currency.id,
+                    'product_uom_qty': order_line_values['woocommerce_quantity'],
+                    'price_unit': (
+                        order_line_values['woocommerce_price'] + (float(order_line_values['woocommerce_subtotal_tax']) / order_line_values['woocommerce_quantity'])
+                        if order_values['woocommerce_prices_include_tax']
+                        else order_line_values['woocommerce_price']
+                    ),
+                    # 'discount'
+                }
+
+                # Dimensions
+                if version_info[0] in [16, 18]:
+                    sale_order_line_fields['product_uom'] = odoo_order_line_item_unit_of_measure.id if odoo_order_line_item_unit_of_measure else False
+
+                elif version_info[0] == 19:
+                    sale_order_line_fields['product_uom_id'] = odoo_order_line_item_unit_of_measure.id if odoo_order_line_item_unit_of_measure else False
+
+                # Tax
+                if version_info[0] in [16, 18]:
+                    sale_order_line_fields['tax_id'] = odoo_order_line_item_tax_id
+                elif version_info[0] == 19:
+                    sale_order_line_fields['tax_ids'] = odoo_order_line_item_tax_id
+
+                order_line_values.update(sale_order_line_fields)
 
                 odoo_sale_order_line = self.env['sale.order.line'].search(
                     [
@@ -2598,7 +2608,7 @@ class WoocommerceSyncConnector(models.Model):
                     if version_info[0] == 16:
                         product_values['manage_stock'] = True if odoo_product.detailed_type == 'product' else False
 
-                    elif version_info[0] == 18:
+                    elif version_info[0] in [18, 19]:
                         product_values['manage_stock'] = True if odoo_product.is_storable else False
 
                     # Check if product has multiple variants
@@ -2783,7 +2793,7 @@ class WoocommerceSyncConnector(models.Model):
                             if version_info[0] == 16:
                                 variation_data['manage_stock'] = True if odoo_product.detailed_type == 'product' else False
 
-                            elif version_info[0] == 18:
+                            elif version_info[0] in [18, 19]:
                                 variation_data['manage_stock'] = True if odoo_product.is_storable else False
 
                             # Check if a variation with this SKU already exists
