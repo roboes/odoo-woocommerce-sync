@@ -1,24 +1,28 @@
 <?php
 
 // WooCommerce - Update Polylang translation modified dates on product stock change
-// Last update: 2025-10-01
+// Last update: 2026-01-15
 
 
-if (class_exists('WooCommerce') && WC() && class_exists('Polylang')) {
+if (function_exists('WC') && class_exists('Polylang')) {
 
-    add_action($hook_name = 'woocommerce_product_set_stock', $callback = 'polylang_update_modified_date_on_stock_change', $priority = 10, $accepted_args = 1);
-    add_action($hook_name = 'woocommerce_variation_set_stock', $callback = 'polylang_update_modified_date_on_stock_change', $priority = 10, $accepted_args = 1);
+    add_action(hook_name: 'woocommerce_product_set_stock', callback: 'polylang_update_modified_date_on_stock_change', priority: 10, accepted_args: 1);
+    add_action(hook_name: 'woocommerce_variation_set_stock', callback: 'polylang_update_modified_date_on_stock_change', priority: 10, accepted_args: 1);
 
-    function polylang_update_modified_date_on_stock_change($product)
+    function polylang_update_modified_date_on_stock_change(mixed $product): void
     {
-        if (! $product instanceof WC_Product) {
+        if (!$product instanceof WC_Product) {
             return;
         }
 
-        $product_id = $product->get_id();
+        $product_id = (int) $product->get_id();
 
         // Get the modified date of the product that was just updated.
         $source_post = get_post($product_id);
+        if (!$source_post instanceof WP_Post) {
+            return;
+        }
+
         $modified_date_mysql = $source_post->post_modified;
         $modified_date_gmt = $source_post->post_modified_gmt;
 
@@ -26,8 +30,9 @@ if (class_exists('WooCommerce') && WC() && class_exists('Polylang')) {
         if (function_exists('pll_get_post_translations')) {
             $translations = pll_get_post_translations($product_id);
 
-            if (! empty($translations) && is_array($translations)) {
+            if (!empty($translations) && is_array($translations)) {
                 foreach ($translations as $lang => $translated_id) {
+                    $translated_id = (int) $translated_id;
                     if ($translated_id && $translated_id !== $product_id) {
                         wp_update_post([
                             'ID' => $translated_id,
@@ -39,5 +44,4 @@ if (class_exists('WooCommerce') && WC() && class_exists('Polylang')) {
             }
         }
     }
-
 }
