@@ -1,5 +1,16 @@
 # Changelog
 
+## v16.0.3.0 / v18.0.3.0 / v19.0.3.0
+
+### Features
+
+- First fully compatible version for Odoo 19, now maintained in its own branch.
+- App Configuration Shortcut: Added a functional "Sync Settings" stat-button directly on the Odoo Module info page (Apps > WooCommerce Sync).
+
+### Fixes
+
+- Partner Field Mapping: Migrated `mobile` field mapping to `phone`. This ensures compatibility with Odoo 19 (where mobile was removed from base) while remaining backwards compatible with Odoo 16 and 18.
+
 ## v16.0.2.7 / v18.0.2.7 - 2025-11-20
 
 ### Features

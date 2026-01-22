@@ -1,7 +1,7 @@
 # Odoo-WooCommerce Sync Odoo Settings Configuration
 
 > [!NOTE]  
-> Last update: 2025-09-23
+> Last update: 2026-01-22
 
 ## Settings
 
@@ -24,6 +24,11 @@ settings_username = 'admin'
 settings_account_fiscal_localization_country = 'de'
 settings_account_fiscal_localization_module = 'l10n_de'
 settings_account_fiscal_localization_chart_template = 'de_skr04'
+```
+
+```.py
+from odoo.release import version_info
+print(version_info[0])
 ```
 
 ```.py
@@ -77,15 +82,22 @@ odoo_user = env['res.users'].search([('login', '=', settings_username)], limit=1
 if odoo_user:
     def assign_group(xml_id: str) -> None:
         group = env.ref(xml_id)
-        if group not in odoo_user.groups_id:
-            odoo_user.write({'groups_id': [(4, group.id)]})
+        if version_info[0] == 18:
+            if group not in odoo_user.groups_id:
+                odoo_user.write({'groups_id': [(4, group.id)]})
+        elif version_info[0] == 19:
+            if group not in odoo_user.group_ids:
+                odoo_user.write({'group_ids': [(4, group.id)]})
             print(f'Assigned group: {xml_id}')
     # Group assignments
     assign_group('sales_team.group_sale_manager')  # Sales Administrator
     assign_group('account.group_account_manager')  # Billing Administrator
     assign_group('account.group_account_user')  # Full Accounting Features
     env['res.config.settings'].create({'group_product_variant': True}).execute()  # Product Variants
-    env['res.config.settings'].create({'group_stock_packaging': True}).execute() # Product Packagings
+    if version_info[0] == 18:
+        env['res.config.settings'].create({'group_stock_packaging': True}).execute() # Product Packagings
+    elif version_info[0] == 19:
+        env['res.config.settings'].create({'group_uom': True}).execute() # Product Packagings
     env['res.config.settings'].create({'group_uom': True}).execute()  # Units of Measure
     env.cr.commit()  # Commit changes to database
     assign_group('stock.group_stock_multi_locations')  # Storage Locations
