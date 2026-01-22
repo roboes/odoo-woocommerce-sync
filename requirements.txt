@@ -1,0 +1,3 @@
+filetype==1.2.0
+phonenumbers==9.0.22
+woocommerce==3.0.0

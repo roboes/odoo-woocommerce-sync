@@ -1277,7 +1277,6 @@ class WoocommerceSyncConnector(models.Model):
                     # Dimensions
                     'weight': product_values['woocommerce_weight'],
                     'uom_id': odoo_product_unit_of_measure.id if odoo_product_unit_of_measure else False,
-                    'uom_po_id': odoo_product_unit_of_measure.id if odoo_product_unit_of_measure else False,
                     'volume': (
                         float(product_values['woocommerce_dimensions']['length']) * float(product_values['woocommerce_dimensions']['width']) * float(product_values['woocommerce_dimensions']['height'])
                         if (product_values['woocommerce_dimensions']['length'] and product_values['woocommerce_dimensions']['width'] and product_values['woocommerce_dimensions']['height'])
@@ -1293,6 +1292,10 @@ class WoocommerceSyncConnector(models.Model):
             elif version_info[0] in [18, 19]:
                 product_values['type'] = 'service' if product_values['woocommerce_service'] else 'consu'
                 product_values['is_storable'] = True if product_values['woocommerce_manage_stock'] else False
+
+            # uom_po_id
+            if version_info[0] in [16, 18]:
+                product_values['uom_po_id'] = odoo_product_unit_of_measure.id if odoo_product_unit_of_measure else False
 
             if odoo_product:
                 odoo_product.write(product_values)
@@ -1881,7 +1884,7 @@ class WoocommerceSyncConnector(models.Model):
                     'company_type': 'person',
                     'customer_rank': 1 if customer_values['woocommerce_is_paying_customer'] else 0,
                     'email': customer_values['woocommerce_email'],
-                    'mobile': customer_values['woocommerce_billing_phone'],
+                    'phone': customer_values['woocommerce_billing_phone'],
                     'user_id': self.settings_woocommerce_user_responsible.id,
                     # Customer status
                     'active': True,
@@ -2155,7 +2158,7 @@ class WoocommerceSyncConnector(models.Model):
                             'ref': customer_values['woocommerce_id'],
                             'company_type': 'person',
                             'email': customer_values['woocommerce_billing_email'],
-                            'mobile': customer_values['woocommerce_billing_phone'],
+                            'phone': customer_values['woocommerce_billing_phone'],
                             'user_id': self.settings_woocommerce_user_responsible.id,
                             # Customer status
                             'active': True,

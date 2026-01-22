@@ -73,11 +73,13 @@ class StockMove(models.Model):
         )
 
 
-class StockValuationLayer(models.Model):
-    _inherit = 'stock.valuation.layer'
+if version_info[0] in [16, 18]:
 
-    # Override the existing 'product_id' field to add the ondelete cascade
-    product_id = fields.Many2one(comodel_name='product.product', string='Product', index=True, domain=lambda self: self._domain_product_id(), required=True, check_company=True, ondelete='cascade')
+    class StockValuationLayer(models.Model):
+        _inherit = 'stock.valuation.layer'
+
+        # Override the existing 'product_id' field to add the ondelete cascade
+        product_id = fields.Many2one(comodel_name='product.product', string='Product', index=True, domain=lambda self: self._domain_product_id(), required=True, check_company=True, ondelete='cascade')
 
 
 # Product
