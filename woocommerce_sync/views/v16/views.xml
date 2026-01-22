@@ -138,6 +138,19 @@
       <field name="res_model">woocommerce.sync.connector</field>
       <field name="view_mode">tree,form</field>
     </record>
+    <!-- Button on module form -->
+    <record id="view_module_form_inherit_woo" model="ir.ui.view">
+      <field name="name">ir.module.module.form.inherit.woo</field>
+      <field name="model">ir.module.module</field>
+      <field name="inherit_id" ref="base.module_form"/>
+      <field name="arch" type="xml">
+        <xpath expr="//sheet" position="inside">
+          <div class="oe_button_box" name="button_box">
+            <button name="%(action_woocommerce_configuration)d" string="Sync Settings" type="action" class="oe_stat_button" icon="fa-gears" attrs="{'invisible': [('name', '!=', 'woocommerce_sync')]}"/>
+          </div>
+        </xpath>
+      </field>
+    </record>
     <!-- Top menu item -->
     <menuitem name="WooCommerce Sync" id="woocommerce_menu_root" sequence="50"/>
     <!-- Menu categories -->
