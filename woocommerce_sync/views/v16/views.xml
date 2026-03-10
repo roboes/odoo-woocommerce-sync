@@ -146,7 +146,7 @@
       <field name="arch" type="xml">
         <xpath expr="//sheet" position="inside">
           <div class="oe_button_box" name="button_box">
-            <button name="%(action_woocommerce_configuration)d" string="Sync Settings" type="action" class="oe_stat_button" icon="fa-gears" attrs="{'invisible': [('name', '!=', 'woocommerce_sync')]}"/>
+            <button name="%(action_woocommerce_configuration)d" string="Sync Settings" type="action" class="oe_stat_button" icon="fa-gears"/>
           </div>
         </xpath>
       </field>
