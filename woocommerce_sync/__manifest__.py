@@ -6,13 +6,14 @@
     'author': 'roboes',
     'website': 'https://github.com/roboes/odoo-woocommerce-sync',
     'category': 'Connectors',
-    # 'version': '16.0.3.0',
-    'version': '18.0.3.0',
-    # 'version': '19.0.3.0',
+    # 'version': '16.0.4.0',
+    'version': '18.0.4.0',
+    # 'version': '19.0.4.0',
     'external_dependencies': {
         'python': ['filetype', 'phonenumbers', 'woocommerce'],
     },
-    'depends': ['account', 'contacts', 'delivery', 'product', 'queue_job', 'sale_management', 'stock', 'stock_account'],
+    'depends': ['account', 'base_multi_image', 'contacts', 'delivery', 'product', 'queue_job', 'sale_management', 'stock', 'stock_account'],
+    # 'depends': ['account', 'contacts', 'delivery', 'product', 'queue_job', 'sale_management', 'stock', 'stock_account'], # TODO Odoo v19
     'data': [
         'security/ir.model.access.csv',
         'data/woocommerce.sync.order.status.xml',
