@@ -1,5 +1,5 @@
 ## Odoo-WooCommerce Sync Tests
-# Last update: 2025-11-20
+# Last update: 2026-03-10
 
 
 # Logs:
@@ -8,28 +8,46 @@
 
 
 # Settings
-website="website.com"
-website_root_path="/var/www/vhosts/$website/httpdocs"
-odoo_conf="/etc/odoo.conf"
-database_name="database_name"
+domain="website.com"
+domain_root_path="/home/$domain"
+subdomain="erp"
+system_user="website"
+odoo_version="19.0"
+database_name="${system_user}_odoo"
+database_username="${system_user}_odoo_user"
 odoo_addon_name="woocommerce_sync"
 
+# Change current directory
+cd $domain_root_path/domains/$subdomain.$domain/odoo
 
 # Delete all queue jobs
-sudo -u postgres psql $database_name <<EOF
+docker exec -i odoo_postgres_${system_user} psql -U $database_username -d $database_name <<EOF
 DELETE FROM queue_job;
 EOF
 
+# Restart Odoo container
+docker restart odoo_server_${system_user}
 
-# Stop Odoo Process
+# Update WooCommerce Sync module
+docker exec -it odoo_server_${system_user} \
+    odoo \
+    --database $database_name \
+    --update $odoo_addon_name \
+    --no-http \
+    --stop-after-init
 
-## Kill all Odoo processes except the grep process itself
-ps aux | grep odoo | grep -v grep | awk '{print $2}' | xargs -r kill -9
+# Restart again Odoo container
+docker restart odoo_server_${system_user}
 
+# Clean logs
+truncate -s 0 $(docker inspect --format='{{.LogPath}}' odoo_server_${system_user})
 
+# View logs
+# docker logs odoo_server_${system_user}
+# docker logs odoo_postgres_${system_user}
 
-# Start Odoo command line
-# $website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin shell --config=$odoo_conf
+# Access Odoo shell
+# docker exec -it odoo_server_${system_user} odoo shell --no-http -d $database_name
 
 # Retrieve all field information for product templates
 # fields = self.env['product.template'].fields_get()
@@ -46,16 +64,3 @@ ps aux | grep odoo | grep -v grep | awk '{print $2}' | xargs -r kill -9
 # Retrieve read-only fields
 # fields = {field: data for field, data in fields.items() if data.get('readonly')}
 # print(fields.keys())
-
-
-# Overwrite the Odoo log file with an empty content
-cat <<EOF > "/var/log/odoo/$website.log"
-EOF
-
-# Update WooCommerce Sync module and load additional dependencies
-$website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin \
-	--config=$odoo_conf \
-	--database $database_name \
-	--update $odoo_addon_name \
-	--load=product,web,queue_job \
-	--log-handler=:ERROR

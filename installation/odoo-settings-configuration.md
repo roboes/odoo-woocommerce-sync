@@ -1,20 +1,23 @@
 # Odoo-WooCommerce Sync Odoo Settings Configuration
 
 > [!NOTE]  
-> Last update: 2026-01-22
+> Last update: 2026-03-09
 
 ## Settings
 
 ```.sh
-website="website.com"
-website_root_path="/var/www/vhosts/$website/httpdocs"
-odoo_conf="/etc/odoo.conf"
+domain="website.com"
+domain_root_path="/home/$domain"
+subdomain="erp"
+system_user="website"
+database_name="${system_user}_odoo"
 ```
 
-## Start Odoo command line
+## Start Odoo shell
 
 ```.sh
-$website_root_path/odoo/venv/bin/python3 $website_root_path/odoo/odoo-bin shell --config=$odoo_conf
+# Access Odoo shell
+docker exec -it odoo_server_${system_user} odoo shell --no-http -d $database_name
 ```
 
 ## Settings
@@ -118,4 +121,11 @@ else:
 
 ```.py
 exit()
+```
+
+```.sh
+# Rebuild Docker image
+cd $domain_root_path/domains/$subdomain.$domain/odoo
+docker compose build
+docker compose up -d
 ```
