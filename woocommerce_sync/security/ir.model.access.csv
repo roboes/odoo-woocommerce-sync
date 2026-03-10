@@ -1,6 +1,6 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
-access_woocommerce_sync_connector,woocommerce.sync.connector access,model_woocommerce_sync_connector,,1,1,1,1
+access_woocommerce_sync_connector,woocommerce.sync.connector access,model_woocommerce_sync_connector,base.group_user,1,1,1,1
 access_woocommerce_sync_order_status,access.woocommerce.sync.order.status access,model_woocommerce_sync_order_status,base.group_user,1,0,0,0
-access_woocommerce_sync_log,woocommerce.sync.log access,model_woocommerce_sync_log,,1,1,1,1
-access_woocommerce_sync_stock_log,woocommerce.sync.stock.log access,model_woocommerce_sync_stock_log,,1,1,1,1
-access_woocommerce_sync_data_temp,woocommerce.sync.data.temp access,model_woocommerce_sync_data_temp,,1,1,1,1
+access_woocommerce_sync_log,woocommerce.sync.log access,model_woocommerce_sync_log,base.group_user,1,1,1,1
+access_woocommerce_sync_stock_log,woocommerce.sync.stock.log access,model_woocommerce_sync_stock_log,base.group_user,1,1,1,1
+access_woocommerce_sync_data_temp,woocommerce.sync.data.temp access,model_woocommerce_sync_data_temp,base.group_user,1,1,1,1

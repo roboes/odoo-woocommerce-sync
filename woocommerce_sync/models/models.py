@@ -25,6 +25,8 @@ class DeliveryCarrier(models.Model):
     # Override the existing 'product_id' field to add the ondelete cascade
     product_id = fields.Many2one(comodel_name='product.product', string='Delivery Product', required=True, ondelete='cascade')
 
+    woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
+
 
 # Stock
 class StockQuant(models.Model):
@@ -84,7 +86,9 @@ if version_info[0] in [16, 18]:
 
 # Product
 class ProductTemplate(models.Model):
-    _inherit = 'product.template'
+    _name = 'product.template'
+    _inherit = ['product.template', 'base_multi_image.owner']
+    # _inherit = 'product.template' # TODO Odoo v19
 
     # Override the existing 'default_code' field to remove the compute/inverse for multi-variant products, so it can be set manually
     default_code = fields.Char(string='Internal Reference', store=True)
@@ -174,25 +178,21 @@ class ProductTemplate(models.Model):
     woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Last Sync', readonly=True)
     odoo_to_woocommerce_last_sync = fields.Datetime(string='Odoo to WooCommerce Last Sync', readonly=True)
     woocommerce_stock_last_sync = fields.Datetime(string='Stock Date Updated', readonly=True)
-    if not hasattr(models.BaseModel, '_fields') or 'source' not in ProductTemplate._fields:
-        source = fields.Char(string='Source', readonly=True)
-    if not hasattr(models.BaseModel, '_fields') or 'language_code' not in ProductTemplate._fields:
-        language_code = fields.Char(string='Language', help='2-digit ISO 639-1 language code.')
+    source = fields.Char(string='Source', readonly=True)
+    language_code = fields.Char(string='Language', help='2-digit ISO 639-1 language code.')
 
     woocommerce_service = fields.Boolean(string='Is service?')
 
     # Custom fields
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
 
-    if not hasattr(models.BaseModel, '_fields') or 'product_image_ids' not in ProductTemplate._fields:
-        product_image_ids = fields.Many2many(comodel_name='ir.attachment', string='Images', compute='product_image_ids_compute')
-
-    def product_image_ids_compute(self: models.Model) -> None:
-        """Computes the product image gallery by retrieving all image attachments linked to the current product record from the ir.attachment model."""
-
-        for product in self:
-            attachments = self.env['ir.attachment'].search([('res_model', '=', product._name), ('res_id', '=', product.id), ('mimetype', 'ilike', 'image')])
-            product.product_image_ids = attachments
+    def get_gallery_images(self):
+        """Returns list of base64 binary images for the product gallery (excluding the main image_1920)."""
+        self.ensure_one()
+        if 'base_multi_image.image' in self.env:
+            return [img.image_1920 for img in self.env['base_multi_image.image'].search([('owner_model', '=', 'product.template'), ('owner_id', '=', self.id)]).sorted('sequence') if img.image_1920]
+        else:
+            return [att.datas for att in self.env['ir.attachment'].search([('res_model', '=', 'product.template'), ('res_id', '=', self.id), ('mimetype', 'ilike', 'image')]) if att.datas]
 
 
 # Product variations
@@ -441,8 +441,7 @@ class SaleOrder(models.Model):
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
     woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Last Sync', readonly=True)
     woocommerce_transaction_fee = fields.Float(string='Transaction Fee', help='Transaction fees incurred from PayPal or Stripe.', readonly=True, default=0.0)
-    if not hasattr(models.BaseModel, '_fields') or 'language_code' not in ProductTemplate._fields:
-        language_code = fields.Char(string='Language', help='2-digit ISO 639-1 language code.', readonly=True)
+    language_code = fields.Char(string='Language', help='2-digit ISO 639-1 language code.', readonly=True)
 
     # Computed fields
     woocommerce_payout = fields.Float(string='Payout', help='Total - Order Transaction Fee.', compute='payout_compute', store=True, readonly=True)
