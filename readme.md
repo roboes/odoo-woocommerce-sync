@@ -24,6 +24,9 @@ The **Odoo-WooCommerce Sync** add-on enables synchronization between WooCommerce
 Some features require additional setup, as detailed in the [Requirements](#requirements) section.
 
 > [!WARNING]  
+> Version 19.0 of this module is a very initial port and is not yet finalized, given that most optional Odoo add-ons and the Multiple Images Base (`base_multi_image`) module have not been ported to Odoo 19 yet. For a stable experience, it is strongly recommended to use either version 16.0 or 18.0.
+
+> [!WARNING]  
 > This add-on is provided without any warranty and may contain bugs as it is a recently developed solution. Testing in a controlled environment is recommended before deployment, and usage is at one's own risk.
 
 ## Limitations
@@ -46,9 +49,6 @@ python -m pip install filetype phonenumbers woocommerce
 ```
 
 #### Odoo Add-ons (Required)
-
-> [!TIP]  
-> To automatically download and install the required and optional Odoo add-ons listed below, follow the instructions in [odoo-module-dependency-installer.md](./installation/odoo-module-dependency-installer.md).
 
 > [!TIP]  
 > To automatically apply the Odoo configuration listed below, follow the instructions in [odoo-settings-configuration.md](./installation/odoo-settings-configuration.md).
@@ -78,6 +78,8 @@ python -m pip install filetype phonenumbers woocommerce
 - **Contacts** (`contacts`)
 - **Job Queue** (`queue_job`)
   - [GitHub](https://github.com/OCA/queue/tree/19.0/queue_job) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/19.0/queue_job) (requires additional [configuration instructions](https://github.com/OCA/queue/tree/19.0/queue_job#configuration)).
+- **Multiple Images Base** (`base_multi_image`): Extends the functionality of any model to support multiple attached images (a gallery) and enables full management of them.
+  - [GitHub](https://github.com/OCA/server-tools/tree/19.0/base_multi_image) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/19.0/base_multi_image)
 
 #### Odoo Add-ons (Optional)
 
