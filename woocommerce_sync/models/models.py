@@ -87,8 +87,7 @@ if version_info[0] in [16, 18]:
 # Product
 class ProductTemplate(models.Model):
     _name = 'product.template'
-    _inherit = ['product.template', 'base_multi_image.owner']
-    # _inherit = 'product.template' # TODO Odoo v19
+    _inherit = 'product.template'
 
     # Override the existing 'default_code' field to remove the compute/inverse for multi-variant products, so it can be set manually
     default_code = fields.Char(string='Internal Reference', store=True)
