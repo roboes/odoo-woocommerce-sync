@@ -152,7 +152,7 @@
       </field>
     </record>
     <!-- Top menu item -->
-    <menuitem name="WooCommerce Sync" id="woocommerce_menu_root" sequence="50"/>
+    <menuitem name="WooCommerce Sync" id="woocommerce_menu_root" sequence="50" web_icon="woocommerce_sync,static/description/icon.png"/>
     <!-- Menu categories -->
     <menuitem name="Configuration" id="woocommerce_configuration_menu" parent="woocommerce_menu_root" action="action_woocommerce_configuration"/>
   </data>
