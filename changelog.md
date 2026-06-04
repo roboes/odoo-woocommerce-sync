@@ -1,5 +1,12 @@
 # Changelog
 
+## v16.0.4.1 / v18.0.4.1 / v19.0.4.1 - 2026-06-04
+
+### Fixes
+
+- Added `web_icon` to the root menu item across all versions (v16, v18, v19).
+- Odoo 19: Commented out the `product_image_ids` (Product Image Gallery) view and model inheritance from `base_multi_image.owner`, as the OCA `base_multi_image` module is not yet ported to Odoo 19. The feature will be re-enabled once `base_multi_image` is available for v19.
+
 ## v16.0.4.0 / v18.0.4.0 / v19.0.4.0
 
 ### Features
