@@ -1,5 +1,11 @@
 # Changelog
 
+## v16.0.4.2 / v18.0.4.2 / v19.0.4.2 - 2026-07-09
+
+### Features
+
+- Bug fixes and improvements.
+
 ## v16.0.4.1 / v18.0.4.1 / v19.0.4.1 - 2026-06-04
 
 ### Fixes
