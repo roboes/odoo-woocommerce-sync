@@ -1,10 +1,16 @@
-from __future__ import annotations
 from base64 import b64decode, b64encode
 from collections.abc import Generator
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 import logging
-from PIL import Image
+from PIL import features, Image
+
+try:
+    from PIL import AvifImagePlugin  # noqa: F401 - force AVIF plugin registration in Odoo worker
+
+    _pil_avif_supported = features.check('avif')
+except ImportError:
+    _pil_avif_supported = False
 import pytz
 import requests
 from requests.auth import HTTPBasicAuth
@@ -22,6 +28,10 @@ from woocommerce import API
 
 # Settings
 _logger = logging.getLogger(__name__)
+
+if not _pil_avif_supported:
+    _logger.warning('Pillow version on this system lacks AVIF support. Images served as AVIF will fail to process.')
+del _pil_avif_supported
 
 
 class WoocommerceSyncConnector(models.Model):
@@ -395,6 +405,10 @@ class WoocommerceSyncConnector(models.Model):
             params['page'] = page
             records = woocommerce_api.get(endpoint=endpoint, params=params).json()
 
+            if not isinstance(records, list):
+                _logger.error(f'WooCommerce REST API error for {endpoint}: {records}')
+                break
+
             records_all.extend(records)
 
             # If no records are returned, or "settings_woocommerce_test_mode" is enabled (fetch only first page), break the loop
@@ -424,6 +438,10 @@ class WoocommerceSyncConnector(models.Model):
             params['page'] = page
             records = woocommerce_api.get(endpoint=endpoint, params=params).json()
 
+            if not isinstance(records, list):
+                _logger.error(f'WooCommerce REST API error for {endpoint}: {records}')
+                break
+
             if records:
                 yield records
             else:
@@ -442,7 +460,7 @@ class WoocommerceSyncConnector(models.Model):
             return woocommerce_sync_log.odoo_woocommerce_last_sync.astimezone(pytz.timezone(self.env.user.tz or 'UTC')).replace(tzinfo=None)
 
         else:
-            False
+            return False
 
     @staticmethod
     def datetime_convert(date_string: str) -> datetime | bool:
@@ -467,7 +485,7 @@ class WoocommerceSyncConnector(models.Model):
 
         # Download and process the image
         try:
-            response = requests.get(image_url, timeout=10)
+            response = requests.get(url=image_url, timeout=10)
 
             # Ensure the request was successful
             response.raise_for_status()
@@ -477,7 +495,7 @@ class WoocommerceSyncConnector(models.Model):
 
             # Convert to base64 encoding
             buffered = BytesIO()
-            img.save(buffered, format='PNG')
+            img.convert('RGB').save(buffered, format='PNG')
             img_base64 = b64encode(buffered.getvalue()).decode('utf-8')
 
             return img_base64
@@ -494,15 +512,19 @@ class WoocommerceSyncConnector(models.Model):
         if not woocommerce_images:
             return
 
-        for index, image_data in enumerate(woocommerce_images):
+        for image_data in woocommerce_images:
             if not image_data['src'] or not image_data['name']:
                 continue
 
             try:
-                response = requests.get(image_data['src'], timeout=10)
+                response = requests.get(url=image_data['src'], timeout=10)
                 response.raise_for_status()
 
-                img_base64 = b64encode(response.content).decode('utf-8')
+                # Normalize to PNG via PIL - handles AVIF, WebP, RGBA, etc.
+                img = Image.open(BytesIO(response.content))
+                buffered = BytesIO()
+                img.convert('RGB').save(buffered, format='PNG')
+                img_base64 = b64encode(buffered.getvalue()).decode('utf-8')
 
                 # Multiple Images Base (requires 'base_multi_image' Odoo add-on)
                 if 'base_multi_image.image' in self.env:
@@ -512,16 +534,14 @@ class WoocommerceSyncConnector(models.Model):
                         if version_info[0] == 16:
                             self.env['base_multi_image.image'].create({'owner_model': 'product.template', 'owner_id': product.id, 'name': image_data['name'], 'image_1920': img_base64})
 
-                        elif version_info[0] == 18:  # TODO Odoo v19
+                        elif version_info[0] == 18:  # TODO Odoo v19: check https://github.com/OCA/server-tools/tree/19.0/base_multi_image when available
                             self.env['base_multi_image.image'].create({'owner_model': 'product.template', 'owner_id': product.id, 'name': image_data['name'], 'storage': 'filestore', 'attachment_image': img_base64})
 
                 else:
                     existing = self.env['ir.attachment'].search([('res_model', '=', 'product.template'), ('res_id', '=', product.id), ('name', '=', image_data['name'])], limit=1)
 
                     if not existing:
-                        self.env['ir.attachment'].create(
-                            {'name': image_data['name'], 'type': 'binary', 'datas': img_base64, 'mimetype': response.headers.get('Content-Type', 'image/jpeg'), 'res_model': 'product.template', 'res_id': product.id}
-                        )
+                        self.env['ir.attachment'].create({'name': image_data['name'], 'type': 'binary', 'datas': img_base64, 'mimetype': 'image/png', 'res_model': 'product.template', 'res_id': product.id})
 
             except requests.exceptions.RequestException as error:
                 _logger.error(f'Failed to download image from {image_data["src"]}: {error}')
@@ -614,7 +634,7 @@ class WoocommerceSyncConnector(models.Model):
 
         odoo_price_include_tax = self.env.company.account_sale_tax_id.price_include if self.env.company.account_sale_tax_id else False
         if odoo_price_include_tax != price_include_tax:
-            _logger.info(f'Mismatch between Odoo and WooCommerce tax rate settings for inclusion of tax in price: {tax_rate}%')
+            _logger.info(f'Mismatch between Odoo and WooCommerce tax rate settings for inclusion of tax in price: {tax_rate}% (Odoo price_include={odoo_price_include_tax}, WooCommerce price_include={price_include_tax})')
             return False
 
         try:
@@ -629,7 +649,7 @@ class WoocommerceSyncConnector(models.Model):
             return odoo_tax_rate
 
         except Exception as error:
-            _logger.error(f'Failed to create or retrieve WooCommerce tax rate in Odoo: {odoo_tax_rate}%: {error}')
+            _logger.error(f'Failed to create or retrieve WooCommerce tax rate in Odoo: {tax_rate}%: {error}')
             return False
 
     @api.model
@@ -1017,7 +1037,7 @@ class WoocommerceSyncConnector(models.Model):
         odoo_products = {odoo_product['woocommerce_id'] for odoo_product in odoo_products}
 
         # WooCommerce REST API parameters to fetch only IDs
-        params = {'status': 'publish', 'fields': 'id'}
+        params = {'status': 'publish', '_fields': 'id'}
 
         # Get all product IDs from WooCommerce
         woocommerce_products = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', params=params)
@@ -1082,7 +1102,7 @@ class WoocommerceSyncConnector(models.Model):
                 'woocommerce_total_sales': woocommerce_product['total_sales'],
                 'woocommerce_virtual': woocommerce_product['virtual'],
                 'woocommerce_downloadable': woocommerce_product['downloadable'],
-                'woocommerce_downloads': woocommerce_product['downloads'],
+                'woocommerce_downloads': woocommerce_product.get('downloads', []),
                 'woocommerce_download_limit': woocommerce_product['download_limit'],
                 'woocommerce_download_expiry': woocommerce_product['download_expiry'],
                 'woocommerce_external_url': woocommerce_product['external_url'],
@@ -1109,7 +1129,7 @@ class WoocommerceSyncConnector(models.Model):
                 'woocommerce_upsell_ids': woocommerce_product['upsell_ids'],
                 'woocommerce_cross_sell_ids': woocommerce_product['cross_sell_ids'],
                 'woocommerce_parent_id': woocommerce_product['parent_id'],
-                'woocommerce_purchase_note': woocommerce_product['purchase_note'],
+                'woocommerce_purchase_note': woocommerce_product.get('purchase_note', ''),
                 'woocommerce_categories': woocommerce_product['categories'],
                 'woocommerce_tags': woocommerce_product['tags'],
                 'woocommerce_images': woocommerce_product['images'],
@@ -1125,7 +1145,7 @@ class WoocommerceSyncConnector(models.Model):
         # WooCommerce REST API - Fields not mentioned in the documentation
         product_values.update(
             {
-                'woocommerce_brands': woocommerce_product['brands'],
+                'woocommerce_brands': woocommerce_product.get('brands', []),
             },
         )
 
@@ -1222,6 +1242,7 @@ class WoocommerceSyncConnector(models.Model):
                 product_values.update({'categ_ids': [(6, 0, odoo_product_categories_ids)]})
 
             # Currency
+            odoo_product_currency = None
             if product_values['woocommerce_currency']:
                 odoo_product_currency = self.odoo_currency_retrieve(product_values['woocommerce_currency'])
 
@@ -1253,6 +1274,7 @@ class WoocommerceSyncConnector(models.Model):
                     odoo_product_tax_id = [(6, 0, [odoo_product_tax.id])]
 
             # Unit of measure
+            odoo_product_unit_of_measure = None
             if self.settings_woocommerce_products_package_size_unit_default:
                 odoo_product_unit_of_measure = self.env.ref('uom.product_uom_unit')
 
@@ -1279,16 +1301,13 @@ class WoocommerceSyncConnector(models.Model):
                     'active': True if product_values['woocommerce_status'] == 'publish' else False,
                     'sale_ok': product_values['woocommerce_purchasable'],
                     # Pricing
-                    'currency_id': odoo_product_currency.id,
+                    'currency_id': odoo_product_currency.id if odoo_product_currency else False,
                     'taxes_id': odoo_product_tax_id,
                     'invoice_policy': 'order',
-                    'list_price': product_values['woocommerce_price'],
+                    'list_price': float(product_values['woocommerce_price']) if product_values['woocommerce_price'] else 0.0,
                     # Category and tags
                     'categ_id': odoo_product_categories_ids[0] if odoo_product_categories_ids else False,
                     'product_tag_ids': [(6, 0, odoo_product_tags_ids)],
-                    # Variations and attributes
-                    'is_product_variant': False,
-                    'has_configurable_attributes': True if product_values['woocommerce_type'] == 'variation' and len(attribute_value_ids or []) > 0 else False,
                     # Dimensions
                     'weight': product_values['woocommerce_weight'],
                     'uom_id': odoo_product_unit_of_measure.id if odoo_product_unit_of_measure else False,
@@ -1388,21 +1407,22 @@ class WoocommerceSyncConnector(models.Model):
         # Retrieve all Odoo products
         odoo_products = self.env['product.template'].with_context(lang=False).search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('active', '=', True)])
 
-        for odoo_product in odoo_products:
-            if len(odoo_product['woocommerce_related_ids'] or []) > 0:
-                odoo_products_related_ids = []
-                for product_related_id in odoo_product['woocommerce_related_ids']:
-                    odoo_product_related = (
-                        self.env['product.template']
-                        .with_context(lang=False)
-                        .search(
-                            [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_id', '=', product_related_id)],
-                            limit=1,
-                        )
-                    )
+        # Collect all related WooCommerce IDs upfront for a single bulk lookup
+        woocommerce_ids_related = [record_id for odoo_product in odoo_products for record_id in (odoo_product.woocommerce_related_ids or [])]
 
-                    if odoo_product_related:
-                        odoo_products_related_ids.append(odoo_product_related.id)
+        if not woocommerce_ids_related:
+            return
+
+        related_map = {
+            related.woocommerce_id: related.id
+            for related in self.env['product.template']
+            .with_context(lang=False)
+            .search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('active', '=', True), ('woocommerce_id', 'in', woocommerce_ids_related)])
+        }
+
+        for odoo_product in odoo_products:
+            if odoo_product.woocommerce_related_ids:
+                odoo_products_related_ids = [related_map[record_id] for record_id in odoo_product.woocommerce_related_ids if record_id in related_map]
 
                 # Update the optional_product_ids field for the current Odoo product
                 if odoo_products_related_ids:
@@ -1626,6 +1646,7 @@ class WoocommerceSyncConnector(models.Model):
                     )
 
                     # Currency
+                    odoo_product_variant_currency = None
                     if product_variation_values['woocommerce_currency']:
                         odoo_product_variant_currency = self.odoo_currency_retrieve(product_variation_values['woocommerce_currency'])
 
@@ -1642,6 +1663,7 @@ class WoocommerceSyncConnector(models.Model):
                             odoo_product_variant_tax_id = [(6, 0, [odoo_product_variant_tax.id])]
 
                     # Unit of measure
+                    odoo_product_variant_unit_of_measure = None
                     if self.settings_woocommerce_products_package_size_unit_default:
                         odoo_product_variant_unit_of_measure = self.env.ref('uom.product_uom_unit')
 
@@ -1687,13 +1709,10 @@ class WoocommerceSyncConnector(models.Model):
                             'active': True if product_variation_values['woocommerce_status'] == 'publish' else False,
                             'sale_ok': product_variation_values['woocommerce_purchasable'],
                             # Pricing
-                            'currency_id': odoo_product_variant_currency.id,
+                            'currency_id': odoo_product_variant_currency.id if odoo_product_variant_currency else False,
                             'taxes_id': odoo_product_variant_tax_id,
                             'invoice_policy': 'order',
-                            'list_price': product_variation_values['woocommerce_price'],
-                            # Variations and attributes
-                            'is_product_variant': True,
-                            'has_configurable_attributes': True if product_variation_values['woocommerce_type'] == 'variation' and len(odoo_product_template_attribute_value_ids or []) > 0 else False,
+                            'list_price': float(product_variation_values['woocommerce_price']) if product_variation_values['woocommerce_price'] else 0.0,
                             # Dimensions
                             'weight': product_variation_values['woocommerce_weight'],
                             'uom_id': odoo_product_variant_unit_of_measure.id if odoo_product_variant_unit_of_measure else False,
@@ -1776,7 +1795,7 @@ class WoocommerceSyncConnector(models.Model):
             return
 
         # WooCommerce REST API parameters
-        params = {'status': 'publish', 'fields': 'id,variations', 'type': 'variable'}
+        params = {'status': 'publish', '_fields': 'id,sku,name,variations', 'type': 'variable'}
 
         if self.settings_woocommerce_modified_records_import:
             odoo_woocommerce_last_sync = self.odoo_shorepos_last_sync_retrieve()
@@ -1887,7 +1906,7 @@ class WoocommerceSyncConnector(models.Model):
             # Custom fields
             customer_values.update(
                 {
-                    'woocommerce_last_login_date': datetime.fromtimestamp(int(meta['value']))
+                    'woocommerce_last_login_date': datetime.fromtimestamp(timestamp=int(meta['value']), tz=timezone.utc).replace(tzinfo=None)
                     if (meta := next((meta for meta in woocommerce_customer['meta_data'] if meta.get('key') == 'wfls-last-login'), None))
                     else None,  # Wordfence Security field
                 },
@@ -1910,10 +1929,11 @@ class WoocommerceSyncConnector(models.Model):
                 odoo_avatar_url = None
 
             # Odoo 'res.partner' model fields
+            customer_name = f'{customer_values["woocommerce_first_name"]} {customer_values["woocommerce_last_name"]}'.strip()
             customer_values.update(
                 {
                     # General information
-                    'name': f'{customer_values["woocommerce_billing_company"]}' or f'{customer_values["woocommerce_first_name"]} {customer_values["woocommerce_last_name"]}',
+                    'name': customer_values['woocommerce_billing_company'] or customer_name or 'Unknown',
                     'image_1920': odoo_avatar_url,
                     'ref': customer_values['woocommerce_id'],
                     'create_date': customer_values['woocommerce_date_created_gmt'],
@@ -2123,6 +2143,7 @@ class WoocommerceSyncConnector(models.Model):
                     order_values[column] = self.datetime_convert(order_values[column])
 
             # Currency
+            odoo_order_currency = None
             if order_values['woocommerce_currency']:
                 odoo_order_currency = self.odoo_currency_retrieve(order_values['woocommerce_currency'])
 
@@ -2195,10 +2216,11 @@ class WoocommerceSyncConnector(models.Model):
                             customer_values['l10n_br_ie_code'] = woocommerce_order['billing']['ie']
 
                     # Odoo 'res.partner' model fields
+                    customer_name = f'{customer_values["woocommerce_billing_first_name"]} {customer_values["woocommerce_billing_last_name"]}'.strip()
                     customer_values.update(
                         {
                             # General information
-                            'name': f'{customer_values["woocommerce_billing_company"]}' or f'{customer_values["woocommerce_billing_first_name"]} {customer_values["woocommerce_billing_last_name"]}',
+                            'name': customer_values['woocommerce_billing_company'] or customer_name or 'Unknown',
                             'ref': customer_values['woocommerce_id'],
                             'company_type': 'person',
                             'email': customer_values['woocommerce_billing_email'],
@@ -2267,14 +2289,6 @@ class WoocommerceSyncConnector(models.Model):
             else:
                 odoo_sale_order = self.env['sale.order'].create(order_values)
                 _logger.info(f'Imported WooCommerce order into Odoo: {odoo_sale_order.name} (Odoo sale order ID: {odoo_sale_order.id}, WooCommerce order ID: {odoo_sale_order["woocommerce_number"]})')
-
-            # Confirm order if WooCommerce status is 'processing', 'on-hold' or 'completed' (move order 'state' to 'sale')
-            if order_values['woocommerce_status'] in ('processing', 'on-hold', 'completed') and odoo_sale_order.state in ('draft', 'sent'):
-                odoo_sale_order.action_confirm()
-
-            # Cancel order if WooCommerce status is 'cancelled', 'refunded', 'failed' or 'trash' (move order 'state' to 'cancel')
-            elif order_values['woocommerce_status'] in ('cancelled', 'refunded', 'failed', 'trash') and odoo_sale_order.state not in ('cancel', 'done'):
-                odoo_sale_order.action_cancel()
 
             # Order line items
             order_line_items_total = sum(float(line_item['total']) for line_item in woocommerce_order['line_items'])
@@ -2390,11 +2404,11 @@ class WoocommerceSyncConnector(models.Model):
                     # Shipping and stock
                     'warehouse_id': self.settings_woocommerce_products_warehouse_location.id,
                     # Payment
-                    'currency_id': odoo_order_currency.id,
+                    'currency_id': odoo_order_currency.id if odoo_order_currency else False,
                     'product_uom_qty': order_line_values['woocommerce_quantity'],
                     'price_unit': (
                         order_line_values['woocommerce_price'] + (float(order_line_values['woocommerce_subtotal_tax']) / order_line_values['woocommerce_quantity'])
-                        if order_values['woocommerce_prices_include_tax']
+                        if order_values['woocommerce_prices_include_tax'] and order_line_values['woocommerce_quantity']
                         else order_line_values['woocommerce_price']
                     ),
                     # 'discount'
@@ -2436,6 +2450,14 @@ class WoocommerceSyncConnector(models.Model):
 
                 else:
                     self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(order_line_values)
+
+            # Confirm order if WooCommerce status is 'processing', 'on-hold' or 'completed' (move order 'state' to 'sale')
+            if order_values['woocommerce_status'] in ('processing', 'on-hold', 'completed') and odoo_sale_order.state in ('draft', 'sent'):
+                odoo_sale_order.action_confirm()
+
+            # Cancel order if WooCommerce status is 'cancelled', 'refunded', 'failed' or 'trash' (move order 'state' to 'cancel')
+            elif order_values['woocommerce_status'] in ('cancelled', 'refunded', 'failed', 'trash') and odoo_sale_order.state not in ('cancel', 'done'):
+                odoo_sale_order.action_cancel()
 
             # Delivery carrier
             if woocommerce_order['shipping_lines']:
