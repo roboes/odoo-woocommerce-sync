@@ -5,7 +5,7 @@
 
 ## Settings
 
-```.sh
+```sh
 domain="website.com"
 domain_root_path="/home/$domain"
 subdomain="erp"
@@ -15,26 +15,26 @@ database_name="${system_user}_odoo"
 
 ## Start Odoo shell
 
-```.sh
+```sh
 # Access Odoo shell
 docker exec -it odoo_server_${system_user} odoo shell --no-http -d $database_name
 ```
 
 ## Settings
 
-```.py
+```py
 settings_username = 'admin'
 settings_account_fiscal_localization_country = 'de'
 settings_account_fiscal_localization_module = 'l10n_de'
 settings_account_fiscal_localization_chart_template = 'de_skr04'
 ```
 
-```.py
+```py
 from odoo.release import version_info
 print(version_info[0])
 ```
 
-```.py
+```py
 # List all available chart templates for the selected fiscal localization country
 options = [option for option in env['res.config.settings']._fields['chart_template'].selection(env['res.config.settings']) if settings_account_fiscal_localization_country in option[0]]
 for value, label in options:
@@ -43,7 +43,7 @@ for value, label in options:
 
 ## Install modules
 
-```.py
+```py
 # Install "delivery" module if not installed
 delivery_module = env['ir.module.module'].search([('name', '=', 'delivery')], limit=1)
 if delivery_module:
@@ -79,7 +79,7 @@ else:
 
 ## Odoo settings configuration
 
-```.py
+```py
 odoo_user = env['res.users'].search([('login', '=', settings_username)], limit=1)
 
 if odoo_user:
@@ -119,11 +119,11 @@ else:
     print(f'User not found: {settings_username}')
 ```
 
-```.py
+```py
 exit()
 ```
 
-```.sh
+```sh
 # Rebuild Docker image
 cd $domain_root_path/domains/$subdomain.$domain/odoo
 docker compose build
