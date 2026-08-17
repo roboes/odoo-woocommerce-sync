@@ -1,29 +1,30 @@
+import logging
 from base64 import b64decode, b64encode
 from collections.abc import Generator
 from datetime import datetime, timezone
 from io import BytesIO
-import logging
-from PIL import features, Image
+
+from PIL import Image, features
 
 try:
-    from PIL import AvifImagePlugin  # noqa: F401 - force AVIF plugin registration in Odoo worker
+    from PIL import (
+        AvifImagePlugin,  # noqa: F401 - force AVIF plugin registration in Odoo worker
+    )
 
     _pil_avif_supported = features.check('avif')
 except ImportError:
     _pil_avif_supported = False
-import pytz
-import requests
-from requests.auth import HTTPBasicAuth
 from typing import Any
-from werkzeug.utils import secure_filename
 
 import filetype
-
+import pytz
+import requests
 from odoo import _, api, fields, models
 from odoo.addons.queue_job.delay import chain
 from odoo.exceptions import UserError, ValidationError
 from odoo.release import version_info
-
+from requests.auth import HTTPBasicAuth
+from werkzeug.utils import secure_filename
 from woocommerce import API
 
 # Settings
@@ -231,7 +232,7 @@ class WoocommerceSyncConnector(models.Model):
                     'links': [
                         {
                             'label': _('Open Job Queue'),
-                            'url': '/web#action=%d&model=queue.job&view_type=list' % self.env['ir.actions.act_window'].with_context(lang=False).search([('res_model', '=', 'queue.job')], limit=1).id,
+                            'url': f'/web#action={self.env["ir.actions.act_window"].with_context(lang=False).search([("res_model", "=", "queue.job")], limit=1).id}&model=queue.job&view_type=list',
                         }
                     ],
                     'sticky': False,
@@ -274,7 +275,7 @@ class WoocommerceSyncConnector(models.Model):
         woocommerce_dimension_unit = woocommerce_api.get(endpoint='settings/products/woocommerce_dimension_unit').json()['value']
 
         ## WooCommerce tax rates
-        woocommerce_prices_include_tax = True if woocommerce_api.get(endpoint='settings/tax/woocommerce_prices_include_tax').json()['value'].lower() == 'yes' else False
+        woocommerce_prices_include_tax = woocommerce_api.get(endpoint='settings/tax/woocommerce_prices_include_tax').json()['value'].lower() == 'yes'
         woocommerce_tax_rates = woocommerce_api.get(endpoint='taxes').json()
         woocommerce_tax_rates = {woocommerce_tax_rate['class']: float(woocommerce_tax_rate['rate']) for woocommerce_tax_rate in woocommerce_tax_rates}
 
@@ -463,13 +464,16 @@ class WoocommerceSyncConnector(models.Model):
             return False
 
     @staticmethod
-    def datetime_convert(date_string: str) -> datetime | bool:
+    def datetime_convert(date_string: str, tz: timezone | None = timezone.utc) -> datetime | bool:
         """Convert ISO 8601 date format string to Odoo datetime format."""
         if date_string:
             try:
-                # Replace 'T' with space and then convert to datetime
-                date_string = date_string.replace('T', ' ')
-                return datetime.strptime(date_string, '%Y-%m-%d %H:%M:%S')
+                parsed_date = datetime.fromisoformat(date_string)
+                if tz is None:
+                    return parsed_date.replace(tzinfo=None)
+                if parsed_date.tzinfo is None:
+                    return parsed_date.replace(tzinfo=tz)
+                return parsed_date.astimezone(tz)
             except ValueError:
                 raise ValidationError(f'Invalid WooCommerce date format: {date_string}')
         return False
@@ -1180,8 +1184,8 @@ class WoocommerceSyncConnector(models.Model):
             'woocommerce_date_on_sale_to',
             'woocommerce_date_on_sale_to_gmt',
         ]:
-            if column in product_values and product_values[column]:
-                product_values[column] = self.datetime_convert(product_values[column])
+            if product_values.get(column):
+                product_values[column] = self.datetime_convert(product_values[column], tz=timezone.utc if column.endswith('_gmt') else None)
 
         return product_values
 
@@ -1298,7 +1302,7 @@ class WoocommerceSyncConnector(models.Model):
                     'description_sale': product_values['woocommerce_description'],
                     'responsible_id': self.settings_woocommerce_user_responsible.id,
                     # Product status
-                    'active': True if product_values['woocommerce_status'] == 'publish' else False,
+                    'active': product_values['woocommerce_status'] == 'publish',
                     'sale_ok': product_values['woocommerce_purchasable'],
                     # Pricing
                     'currency_id': odoo_product_currency.id if odoo_product_currency else False,
@@ -1325,7 +1329,7 @@ class WoocommerceSyncConnector(models.Model):
 
             elif version_info[0] in [18, 19]:
                 product_values['type'] = 'service' if product_values['woocommerce_service'] else 'consu'
-                product_values['is_storable'] = True if product_values['woocommerce_manage_stock'] else False
+                product_values['is_storable'] = bool(product_values['woocommerce_manage_stock'])
 
             # uom_po_id
             if version_info[0] in [16, 18]:
@@ -1343,10 +1347,10 @@ class WoocommerceSyncConnector(models.Model):
             if odoo_product and self.settings_woocommerce_images_sync and len(woocommerce_product['images']) > 0:
                 self.image_process_attachments(woocommerce_product['images'][1:], odoo_product)  # Skips the main image
 
-        except Exception as error:
+        except Exception:
             # Roll back changes
             self.env.cr.rollback()
-            _logger.exception(f'Error syncing WooCommerce product {woocommerce_product["name"]} (WooCommerce product ID: {woocommerce_product["id"]}): {error}')
+            _logger.exception(f'Error syncing WooCommerce product {woocommerce_product["name"]} (WooCommerce product ID: {woocommerce_product["id"]})')
 
     @api.model
     def woocommerce_to_odoo_products_sync_batch(
@@ -1530,8 +1534,8 @@ class WoocommerceSyncConnector(models.Model):
             'woocommerce_date_on_sale_to',
             'woocommerce_date_on_sale_to_gmt',
         ]:
-            if column in product_variation_values and product_variation_values[column]:
-                product_variation_values[column] = self.datetime_convert(product_variation_values[column])
+            if product_variation_values.get(column):
+                product_variation_values[column] = self.datetime_convert(product_variation_values[column], tz=timezone.utc if column.endswith('_gmt') else None)
 
         return product_variation_values
 
@@ -1621,7 +1625,7 @@ class WoocommerceSyncConnector(models.Model):
                             _logger.info(f'Created WooCommerce product attribute value in Odoo: {odoo_product_attribute_value.name}')
 
                     # Ensure the product template has a matching attribute line and add the value
-                    attribute_line = odoo_product.attribute_line_ids.filtered(lambda line: line.attribute_id.id == odoo_product_attribute.id)
+                    attribute_line = odoo_product.attribute_line_ids.filtered(lambda line, odoo_product_attribute=odoo_product_attribute: line.attribute_id.id == odoo_product_attribute.id)
                     if not attribute_line:
                         attribute_line = self.env['product.template.attribute.line'].create(
                             {
@@ -1706,7 +1710,7 @@ class WoocommerceSyncConnector(models.Model):
                             'description': 'Imported via Odoo-WooCommerce Sync',
                             'description_sale': product_variation_values['woocommerce_description'],
                             # Product status
-                            'active': True if product_variation_values['woocommerce_status'] == 'publish' else False,
+                            'active': product_variation_values['woocommerce_status'] == 'publish',
                             'sale_ok': product_variation_values['woocommerce_purchasable'],
                             # Pricing
                             'currency_id': odoo_product_variant_currency.id if odoo_product_variant_currency else False,
@@ -1738,7 +1742,7 @@ class WoocommerceSyncConnector(models.Model):
 
                     elif version_info[0] in [18, 19]:
                         product_variation_values['type'] = 'service' if product_variation_values['woocommerce_service'] else 'consu'
-                        product_variation_values['is_storable'] = True if product_variation_values['woocommerce_manage_stock'] else False
+                        product_variation_values['is_storable'] = bool(product_variation_values['woocommerce_manage_stock'])
 
                     attribute_values_recset = self.env['product.template.attribute.value'].with_context(lang=False).browse(odoo_product_template_attribute_value_ids)
                     odoo_product_variant = odoo_product._get_variant_for_combination(attribute_values_recset)
@@ -1770,10 +1774,10 @@ class WoocommerceSyncConnector(models.Model):
                 # Save SKU back to 'parent.template'
                 odoo_product.write({'default_code': odoo_product_sku})
 
-        except Exception as error:
+        except Exception:
             # Roll back changes
             self.env.cr.rollback()
-            _logger.exception(f'Error syncing WooCommerce product: {woocommerce_product["name"]} (WooCommerce product ID: {woocommerce_product["id"]}): {error}')
+            _logger.exception(f'Error syncing WooCommerce product: {woocommerce_product["name"]} (WooCommerce product ID: {woocommerce_product["id"]})')
 
     def woocommerce_to_odoo_products_variations_sync_batch(
         self: models.Model,
@@ -1919,8 +1923,8 @@ class WoocommerceSyncConnector(models.Model):
                 'woocommerce_date_modified',
                 'woocommerce_date_modified_gmt',
             ]:
-                if column in customer_values and customer_values[column]:
-                    customer_values[column] = self.datetime_convert(customer_values[column])
+                if customer_values.get(column):
+                    customer_values[column] = self.datetime_convert(customer_values[column], tz=timezone.utc if column.endswith('_gmt') else None)
 
             # Customer avatar
             if self.settings_woocommerce_images_sync and woocommerce_customer['avatar_url'] != '':
@@ -1962,10 +1966,10 @@ class WoocommerceSyncConnector(models.Model):
                 odoo_customer = self.env['res.partner'].create(customer_values)
                 _logger.info(f'Imported WooCommerce customer into Odoo: {odoo_customer.name} (Odoo customer ID: {odoo_customer.id}, WooCommerce customer ID: {odoo_customer["woocommerce_id"]})')
 
-        except Exception as error:
+        except Exception:
             # Roll back changes
             self.env.cr.rollback()
-            _logger.exception(f'Error syncing WooCommerce customer: {woocommerce_customer["first_name"]} {woocommerce_customer["last_name"]} (WooCommerce customer ID: {woocommerce_customer["id"]}): {error}')
+            _logger.exception(f'Error syncing WooCommerce customer: {woocommerce_customer["first_name"]} {woocommerce_customer["last_name"]} (WooCommerce customer ID: {woocommerce_customer["id"]})')
 
     def woocommerce_to_odoo_customers_sync_batch(self: models.Model) -> None:
         self.ensure_one()
@@ -2139,8 +2143,8 @@ class WoocommerceSyncConnector(models.Model):
                 'woocommerce_date_completed',
                 'woocommerce_date_completed_gmt',
             ]:
-                if column in order_values and order_values[column]:
-                    order_values[column] = self.datetime_convert(order_values[column])
+                if order_values.get(column):
+                    order_values[column] = self.datetime_convert(order_values[column], tz=timezone.utc if column.endswith('_gmt') else None)
 
             # Currency
             odoo_order_currency = None
@@ -2391,9 +2395,12 @@ class WoocommerceSyncConnector(models.Model):
                 # Localization
 
                 ## Brazil (requires 'l10n_br_sale' Odoo add-on)
-                if self.env['ir.module.module'].with_context(lang=False).search([('name', '=', 'l10n_br_sale'), ('state', '=', 'installed')], limit=1):
-                    if woocommerce_order['shipping_total'] and 'freight_value' in self.env['sale.order.line']._fields:
-                        order_line_values.update({'freight_value': float(woocommerce_order['shipping_total']) * (float(line_item['total']) / order_line_items_total)})
+                if (
+                    self.env['ir.module.module'].with_context(lang=False).search([('name', '=', 'l10n_br_sale'), ('state', '=', 'installed')])
+                    and woocommerce_order['shipping_total']
+                    and 'freight_value' in self.env['sale.order.line']._fields
+                ):
+                    order_line_values.update({'freight_value': float(woocommerce_order['shipping_total']) * (float(line_item['total']) / order_line_items_total)})
 
                 # Odoo 'sale.order.line' model fields
                 sale_order_line_fields = {
@@ -2466,10 +2473,10 @@ class WoocommerceSyncConnector(models.Model):
                 if odoo_delivery_carrier:
                     odoo_sale_order.set_delivery_line(odoo_delivery_carrier, woocommerce_order['shipping_lines'][0]['total'])
 
-        except Exception as error:
+        except Exception:
             # Roll back changes
             self.env.cr.rollback()
-            _logger.exception(f'Error syncing WooCommerce order {woocommerce_order["id"]}: {error}')
+            _logger.exception(f'Error syncing WooCommerce order {woocommerce_order["id"]}')
 
     def woocommerce_to_odoo_orders_sync_batch(self: models.Model, woocommerce_tax_rates: dict[str, float], woocommerce_weight_unit: str, woocommerce_shipping_methods: list[dict[str, Any]]) -> bool:
         # WooCommerce REST API
@@ -2702,10 +2709,10 @@ class WoocommerceSyncConnector(models.Model):
 
                     # Manage stock
                     if version_info[0] == 16:
-                        product_values['manage_stock'] = True if odoo_product.detailed_type == 'product' else False
+                        product_values['manage_stock'] = odoo_product.detailed_type == 'product'
 
                     elif version_info[0] in [18, 19]:
-                        product_values['manage_stock'] = True if odoo_product.is_storable else False
+                        product_values['manage_stock'] = bool(odoo_product.is_storable)
 
                     # Check if product has multiple variants
                     if len(odoo_product.product_variant_ids) > 1:
@@ -2882,10 +2889,10 @@ class WoocommerceSyncConnector(models.Model):
 
                             # Manage stock
                             if version_info[0] == 16:
-                                variation_data['manage_stock'] = True if odoo_product.detailed_type == 'product' else False
+                                variation_data['manage_stock'] = odoo_product.detailed_type == 'product'
 
                             elif version_info[0] in [18, 19]:
-                                variation_data['manage_stock'] = True if odoo_product.is_storable else False
+                                variation_data['manage_stock'] = bool(odoo_product.is_storable)
 
                             # Check if a variation with this SKU already exists
                             variation_existing = variations_by_sku.get(odoo_product_variant.default_code)
@@ -2912,5 +2919,5 @@ class WoocommerceSyncConnector(models.Model):
                                         f'Imported Odoo product variant into WooCommerce: {odoo_product_variant.name} (Odoo product variant ID: {odoo_product_variant.id}, WooCommerce product variation ID: {woocommerce_variant["id"]})'
                                     )
 
-            except Exception as error:
-                _logger.exception(f'Error syncing Odoo product {odoo_product.id} into WooCommerce: {error}')
+            except Exception:
+                _logger.exception(f'Error syncing Odoo product {odoo_product.id} into WooCommerce')
