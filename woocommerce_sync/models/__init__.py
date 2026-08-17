@@ -1,4 +1,3 @@
-from . import connector
-from . import models
+from . import connector, models
 
 __all__ = ['connector', 'models']

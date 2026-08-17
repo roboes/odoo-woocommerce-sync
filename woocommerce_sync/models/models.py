@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from odoo import api, fields, models
 from odoo.release import version_info
@@ -87,7 +87,7 @@ if version_info[0] in [16, 18]:
 # Product
 class ProductTemplate(models.Model):
     _name = 'product.template'
-    _inherit = ['product.template', 'base_multi_image.owner']
+    _inherit: ClassVar[list[str]] = ['product.template', 'base_multi_image.owner']
     # _inherit = 'product.template' # TODO Odoo v19
 
     # Override the existing 'default_code' field to remove the compute/inverse for multi-variant products, so it can be set manually
