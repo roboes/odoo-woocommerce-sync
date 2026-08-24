@@ -1,13 +1,39 @@
 <?php
 
 // WooCommerce - Update multilingual translation (Polylang/WPML) modified dates on product stock change
-// Last update: 2026-01-28
+// Last update: 2026-08-24
 
 
 if (function_exists('WC')) {
 
     add_action(hook_name: 'woocommerce_product_set_stock', callback: 'multilingual_update_modified_date_on_stock_change', priority: 10, accepted_args: 1);
     add_action(hook_name: 'woocommerce_variation_set_stock', callback: 'multilingual_update_modified_date_on_stock_change', priority: 10, accepted_args: 1);
+
+    if (!function_exists('get_product_translation_ids')) {
+        function get_product_translation_ids(int $product_id): array
+        {
+            $ids = [];
+
+            $languages = apply_filters('wpml_active_languages', null, ['skip_missing' => 0]);
+
+            if (is_array($languages)) {
+                $type = get_post_type($product_id) ?: 'product';
+
+                foreach (array_keys($languages) as $lang_code) {
+                    $translated_id = apply_filters('wpml_object_id', $product_id, $type, false, $lang_code);
+                    if ($translated_id) {
+                        $ids[] = (int) $translated_id;
+                    }
+                }
+            }
+
+            if (empty($ids)) {
+                $ids[] = $product_id;
+            }
+
+            return array_unique($ids);
+        }
+    }
 
     function multilingual_update_modified_date_on_stock_change(mixed $product): void
     {
@@ -26,23 +52,17 @@ if (function_exists('WC')) {
         $modified_date_mysql = $source_post->post_modified;
         $modified_date_gmt = $source_post->post_modified_gmt;
 
-        // If Polylang/WPML is active, update translations
-        $translations = apply_filters('wpml_get_element_translations', null, $product_id, 'post_product');
+        // Get product ID + all its translation IDs (Polylang/WPML compatible)
+        $translated_ids = get_product_translation_ids($product_id);
 
-        if (!empty($translations) && is_array($translations)) {
-
-            foreach ($translations as $translation) {
-                // Extract element_id whether translation is array or object
-                $translated_id = is_object($translation) ? (int) ($translation->element_id ?? 0) : (int) ($translation['element_id'] ?? 0);
-
-                // Update if it's a valid ID and NOT the current product
-                if ($translated_id && $translated_id !== (int) $product_id) {
-                    wp_update_post([
-                        'ID' => $translated_id,
-                        'post_modified' => $modified_date_mysql,
-                        'post_modified_gmt' => $modified_date_gmt,
-                    ]);
-                }
+        // Update if it's a valid ID and NOT the current product
+        foreach ($translated_ids as $translated_id) {
+            if ($translated_id && $translated_id !== $product_id) {
+                wp_update_post([
+                    'ID' => $translated_id,
+                    'post_modified' => $modified_date_mysql,
+                    'post_modified_gmt' => $modified_date_gmt,
+                ]);
             }
         }
     }
