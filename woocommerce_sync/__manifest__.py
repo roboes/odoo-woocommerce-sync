@@ -6,17 +6,18 @@
     'author': 'roboes',
     'website': 'https://github.com/roboes/odoo-woocommerce-sync',
     'category': 'Connectors',
-    # 'version': '16.0.4.2',
-    # 'version': '18.0.4.2',
-    'version': '19.0.4.2',
+    # 'version': '16.0.5.0',
+    #'version': '18.0.5.0',
+    'version': '19.0.5.0',
     'external_dependencies': {
         'python': ['filetype', 'phonenumbers', 'woocommerce'],
     },
-    # 'depends': ['account', 'base_multi_image', 'contacts', 'delivery', 'product', 'queue_job', 'sale_management', 'stock', 'stock_account'],
-    'depends': ['account', 'contacts', 'delivery', 'product', 'queue_job', 'sale_management', 'stock', 'stock_account'],  # TODO Odoo v19
+    # 'depends': ['account', 'base_multi_image', 'contacts', 'delivery', 'mail', 'product', 'queue_job', 'sale_management', 'stock', 'stock_account'],
+    'depends': ['account', 'contacts', 'delivery', 'mail', 'product', 'queue_job', 'sale_management', 'stock', 'stock_account'],  # TODO Odoo v19
     'data': [
-        'security/ir.model.access.csv',
+        'data/res_partner.xml',
         'data/woocommerce.sync.order.status.xml',
+        'security/ir.model.access.csv',
         # 'views/v16/product_product_form.xml',
         # 'views/v16/product_product_tree.xml',
         # 'views/v16/product_template_form.xml',

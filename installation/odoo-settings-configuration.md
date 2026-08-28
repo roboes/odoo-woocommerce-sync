@@ -1,7 +1,7 @@
 # Odoo-WooCommerce Sync Odoo Settings Configuration
 
 > [!NOTE]  
-> Last update: 2026-03-09
+> Last update: 2026-08-26
 
 ## Settings
 
@@ -11,112 +11,75 @@ domain_root_path="/home/$domain"
 subdomain="erp"
 system_user="website"
 database_name="${system_user}_odoo"
+odoo_account_fiscal_localization_country='de'
 ```
 
-## Start Odoo shell
+## Install Modules
+
+```sh
+# Install "delivery", "stock" and the fiscal localization module (installed modules are skipped automatically)
+docker exec -it odoo_server_${system_user} odoo -d $database_name --init delivery,stock,l10n_${odoo_account_fiscal_localization_country} --stop-after-init --http-port 8070
+```
+
+## Odoo Settings Configuration
 
 ```sh
 # Access Odoo shell
 docker exec -it odoo_server_${system_user} odoo shell --no-http -d $database_name
 ```
 
-## Settings
-
 ```py
-settings_username = 'admin'
-settings_account_fiscal_localization_country = 'de'
-settings_account_fiscal_localization_module = 'l10n_de'
-settings_account_fiscal_localization_chart_template = 'de_skr04'
-```
+# Settings
+odoo_username = 'admin'
+odoo_account_fiscal_localization_country = 'de'
+odoo_account_price_include = 'tax_included'
+odoo_account_fiscal_localization_chart_template = env['account.chart.template']._guess_chart_template(env['res.country'].search([('code', '=', odoo_account_fiscal_localization_country.upper())], limit=1))
 
-```py
+odoo_user = env['res.users'].search([('login', '=', odoo_username)], limit=1)
+odoo_fiscal_module = env['ir.module.module'].search([('name', '=', f'l10n_{odoo_account_fiscal_localization_country}')], limit=1)
+
+# Odoo version
 from odoo.release import version_info
-print(version_info[0])
-```
 
-```py
+print(f'Odoo version: {version_info[0]}')
+
 # List all available chart templates for the selected fiscal localization country
-options = [option for option in env['res.config.settings']._fields['chart_template'].selection(env['res.config.settings']) if settings_account_fiscal_localization_country in option[0]]
-for value, label in options:
+chart_template_options = [option for option in env['res.config.settings']._fields['chart_template'].selection(env['res.config.settings']) if odoo_account_fiscal_localization_country in option[0]]
+for value, label in chart_template_options:
     print(f'{value}: {label}')
-```
 
-## Install modules
 
-```py
-# Install "delivery" module if not installed
-delivery_module = env['ir.module.module'].search([('name', '=', 'delivery')], limit=1)
-if delivery_module:
-    if delivery_module.state != 'installed':
-        delivery_module.button_immediate_install()
-        print('Installed: "delivery" module')
-    else:
-        print('Already installed: "delivery" module')
-else:
-    print('Error: Module "delivery" not found in module list')
+def assign_group(xml_id: str) -> None:
+    group = env.ref(xml_id)
+    # 'group_ids' replaced 'groups_id' on 'res.users' in Odoo v19
+    field_name = 'group_ids' if 'group_ids' in odoo_user._fields else 'groups_id'
+    if group not in odoo_user[field_name]:
+        odoo_user.write({field_name: [(4, group.id)]})
+    print(f'Assigned group: {xml_id}')
 
-stock_module = env['ir.module.module'].search([('name', '=', 'stock')], limit=1)
-if stock_module:
-    if stock_module.state != 'installed':
-        stock_module.button_immediate_install()
-        print('Installed: "stock" module')
-    else:
-        print('Already installed: "stock" module')
-else:
-    print('Error: Module "stock" not found in module list')
 
-# Install fiscal localization module if not installed
-fiscal_module = env['ir.module.module'].search([('name', '=', settings_account_fiscal_localization_module)], limit=1)
-if fiscal_module:
-    if fiscal_module.state != 'installed':
-        fiscal_module.button_immediate_install()
-        print(f'Installed: "{settings_account_fiscal_localization_module}" module')
-    else:
-        print(f'Already installed: "{settings_account_fiscal_localization_module}" module')
-else:
-    print(f'Error: Module "{settings_account_fiscal_localization_module}" not found in module list')
-```
-
-## Odoo settings configuration
-
-```py
-odoo_user = env['res.users'].search([('login', '=', settings_username)], limit=1)
-
-if odoo_user:
-    def assign_group(xml_id: str) -> None:
-        group = env.ref(xml_id)
-        if version_info[0] == 18:
-            if group not in odoo_user.groups_id:
-                odoo_user.write({'groups_id': [(4, group.id)]})
-        elif version_info[0] == 19:
-            if group not in odoo_user.group_ids:
-                odoo_user.write({'group_ids': [(4, group.id)]})
-            print(f'Assigned group: {xml_id}')
+if odoo_user and odoo_fiscal_module and odoo_fiscal_module.state == 'installed':
     # Group assignments
     assign_group('sales_team.group_sale_manager')  # Sales Administrator
     assign_group('account.group_account_manager')  # Billing Administrator
     assign_group('account.group_account_user')  # Full Accounting Features
-    env['res.config.settings'].create({'group_product_variant': True}).execute()  # Product Variants
-    if version_info[0] == 18:
-        env['res.config.settings'].create({'group_stock_packaging': True}).execute() # Product Packagings
-    elif version_info[0] == 19:
-        env['res.config.settings'].create({'group_uom': True}).execute() # Product Packagings
-    env['res.config.settings'].create({'group_uom': True}).execute()  # Units of Measure
-    env.cr.commit()  # Commit changes to database
     assign_group('stock.group_stock_multi_locations')  # Storage Locations
-    # Delivery Methods
-    delivery_module = env['ir.module.module'].search([('name', '=', 'delivery')], limit=1)
-    if delivery_module.state != 'installed':
-        delivery_module.button_immediate_install()
+    # Settings (Product Variants, Units of Measure, Product Packagings)
+    config_values = {'group_product_variant': True, 'group_uom': True}
+    if version_info[0] in [18, 19]:
+        config_values['group_stock_packaging'] = True
+    env['res.config.settings'].create(config_values).execute()
     # Fiscal Localization
-    fiscal_module = env['ir.module.module'].search([('name', '=', settings_account_fiscal_localization_module)], limit=1)
-    if fiscal_module and fiscal_module.state == 'installed':
-        env['res.config.settings'].create({'chart_template': settings_account_fiscal_localization_chart_template, 'account_fiscal_country_id': env['res.country'].search([('code', '=', settings_account_fiscal_localization_country.upper())]).id}).execute()
-        print(f'Loaded chart template: {settings_account_fiscal_localization_chart_template}')
-    else:
-        print('Fiscal localization module not installed')
+    env['res.config.settings'].create(
+        {'chart_template': odoo_account_fiscal_localization_chart_template, 'account_fiscal_country_id': env['res.country'].search([('code', '=', odoo_account_fiscal_localization_country.upper())]).id}
+    ).execute()
+    print(f'Current Purchase Tax Prices setting: {env.company.account_price_include}')
+    if env.company.account_price_include != odoo_account_price_include:
+        env['res.config.settings'].create({'account_price_include': odoo_account_price_include}).execute()
+        print(f'Updated Purchase Tax Prices setting: {env.company.account_price_include}')
+    env.cr.commit()  # Commit changes to database
 else:
-    print(f'User not found: {settings_username}')
+    print(f'User ({odoo_username}) and/or fiscal module ({f"l10n_{odoo_account_fiscal_localization_country}"}) not found')
 ```
 
 ```py

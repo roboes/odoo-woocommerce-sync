@@ -57,7 +57,7 @@ repos:
         args: ['--dialect=mysql', '--exclude-rules=ambiguous.column_count, layout.long_lines, references.keywords']
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.4
+    rev: v0.16.5
     hooks:
       - id: ruff
         args: ['--fix', '--exit-non-zero-on-fix', '--ignore=BLE001,D103,E501,F821,S102,S110,SIM105,TRY002']
