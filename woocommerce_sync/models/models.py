@@ -5,6 +5,31 @@ from odoo import api, fields, models
 from odoo.release import version_info
 
 
+def woocommerce_id_unique_index_create(cursor, table: str, column: str = 'woocommerce_id') -> None:
+    """Creates a partial unique index on (woocommerce_site_url, column) to prevent duplicate records being created for the same WooCommerce record by concurrent queue jobs."""
+    index_name = f'{table}_woocommerce_site_url_id_uniq' if column == 'woocommerce_id' else f'{table}_woocommerce_site_url_{column}_uniq'
+    cursor.execute(
+        f"""
+        CREATE UNIQUE INDEX IF NOT EXISTS {index_name}
+        ON {table} (woocommerce_site_url, {column})
+        WHERE {column} IS NOT NULL AND {column} != ''
+        """
+    )
+
+
+# Account Move
+class AccountMove(models.Model):
+    _inherit = 'account.move'
+
+    # Custom fields - used to make WooCommerce refund processing into Odoo credit notes idempotent
+    woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
+    woocommerce_refund_id = fields.Char(string='WooCommerce Refund ID', readonly=True, index=True)
+
+    def init(self) -> None:
+        super().init()
+        woocommerce_id_unique_index_create(self.env.cr, self._table, column='woocommerce_refund_id')
+
+
 # Account Move Line
 class AccountMoveLine(models.Model):
     _inherit = 'account.move.line'
@@ -186,6 +211,10 @@ class ProductTemplate(models.Model):
     # Custom fields
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
 
+    def init(self) -> None:
+        super().init()
+        woocommerce_id_unique_index_create(self.env.cr, self._table)
+
     def get_gallery_images(self):
         """Returns list of base64 binary images for the product gallery (excluding the main image_1920)."""
         self.ensure_one()
@@ -256,6 +285,10 @@ class ProductProduct(models.Model):
     odoo_to_woocommerce_last_sync = fields.Datetime(string='Odoo to WooCommerce Last Sync', readonly=True)
     woocommerce_stock_last_sync = fields.Datetime(string='Stock Date Updated', readonly=True)
     woocommerce_service = fields.Boolean(string='Is service?')
+
+    def init(self) -> None:
+        super().init()
+        woocommerce_id_unique_index_create(self.env.cr, self._table)
 
     def woocommerce_stock_last_sync_update(self: models.Model, timestamp: datetime) -> None:
         """Updates the 'woocommerce_stock_last_sync' field for both the product and its template directly via SQL to avoid updating the 'write_date'."""
@@ -353,6 +386,10 @@ class ResPartner(models.Model):
     woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Last Sync', readonly=True)
     woocommerce_last_login_date = fields.Datetime(string='Last Login Date', readonly=True)  # Wordfence fields
 
+    def init(self) -> None:
+        super().init()
+        woocommerce_id_unique_index_create(self.env.cr, self._table)
+
 
 # Orders
 class SaleOrder(models.Model):
@@ -446,6 +483,10 @@ class SaleOrder(models.Model):
     # Computed fields
     woocommerce_payout = fields.Float(string='Payout', help='Total - Order Transaction Fee.', compute='payout_compute', store=True, readonly=True)
 
+    def init(self) -> None:
+        super().init()
+        woocommerce_id_unique_index_create(self.env.cr, self._table)
+
     @api.depends('woocommerce_total', 'woocommerce_transaction_fee')
     def payout_compute(self: models.Model) -> None:
         for order in self:
@@ -523,3 +564,23 @@ class WoocommerceSyncDataTemp(models.Model):
     _description = 'Odoo-WooCommerce Sync temporary data'
 
     woocommerce_products_variations_data = fields.Json(string='WooCommerce Products Variations Data')
+
+
+class WoocommerceSyncSummaryEvent(models.Model):
+    """Append-only log of dispatched/completed chunk jobs for the aggregate sync-summary chatter feature.
+
+    Using append-only inserts (instead of incrementing shared counter columns on the connector record) avoids 'could not serialize access due to concurrent update' errors, since many chunk jobs finish at nearly the same time under queue_job's stricter job-transaction isolation level, and inserts never conflict with each other the way concurrent updates to the same row do.
+    """
+
+    _name = 'woocommerce.sync.summary.event'
+    _description = 'WooCommerce Sync Summary Event'
+
+    connector_id = fields.Many2one('woocommerce.sync.connector', required=True, index=True, ondelete='cascade')
+    run_started_at = fields.Datetime(required=True, index=True)
+    event_type = fields.Selection([('dispatched', 'Dispatched'), ('completed', 'Completed')], required=True)
+    sync_direction = fields.Selection([('products', 'Products'), ('variations', 'Product Variations'), ('customers', 'Customers'), ('orders', 'Orders')], index=True)
+    processed = fields.Integer(default=0)
+    new_count = fields.Integer(default=0)
+    updated_count = fields.Integer(default=0)
+    errors_count = fields.Integer(default=0)
+    errors_text = fields.Text()

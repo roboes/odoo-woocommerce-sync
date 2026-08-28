@@ -44,6 +44,7 @@ truncate -s 0 $(docker inspect --format='{{.LogPath}}' odoo_server_${system_user
 
 # View logs
 # docker logs odoo_server_${system_user}
+# docker logs odoo_server_${system_user} 2>&1 | grep -E "ERROR|WARNING"
 # docker logs odoo_postgres_${system_user}
 
 # Access Odoo shell

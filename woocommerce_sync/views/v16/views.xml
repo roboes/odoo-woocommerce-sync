@@ -30,9 +30,10 @@
                   <field name="settings_woocommerce_consumer_key"/>
                   <field name="settings_woocommerce_consumer_secret" password="True"/>
                   <field name="settings_woocommerce_timeout"/>
+                  <field name="settings_user_agent"/>
                 </group>
                 <group string="WordPress REST API">
-                  <p>The WordPress REST API configuration is optional and only required when uploading images from Odoo to WooCommerce. This functionality relies on the core WordPress REST API, which operates separately from the WooCommerce REST API.</p>
+                  <p>Optional: The WordPress REST API is only required when uploading images from Odoo to WooCommerce. This functionality relies on the core WordPress REST API, which operates separately from the WooCommerce REST API.</p>
                   <field name="settings_wordpress_username"/>
                   <field name="settings_wordpress_user_application_password" password="True"/>
                 </group>
@@ -42,6 +43,10 @@
                   <field name="settings_woocommerce_user_responsible"/>
                   <field name="settings_woocommerce_modified_records_import"/>
                   <field name="settings_woocommerce_images_sync"/>
+                  <field name="settings_odoo_tax_calculation"/>
+                  <field name="settings_job_chunk_size"/>
+                  <field name="settings_sync_summary_chatter_enable"/>
+                  <field name="settings_sync_summary_discuss_chat_enable"/>
                 </group>
                 <group string="Sync Settings">
                   <table class="o_group o_inner_group" style="width: 100%; border-collapse: collapse;">
@@ -129,6 +134,10 @@
               </page>
             </notebook>
           </sheet>
+          <div class="oe_chatter">
+            <field name="message_follower_ids" widget="mail_followers"/>
+            <field name="message_ids" widget="mail_thread"/>
+          </div>
         </form>
       </field>
     </record>

@@ -12,10 +12,10 @@
 
 The **Odoo-WooCommerce Sync** add-on enables synchronization between WooCommerce and Odoo. The main features are:
 
-- **WooCommerce to Odoo:** Synchronize new and existing products (including variations), stock quantity levels, customers, and orders (including line items).
+- **WooCommerce to Odoo:** Synchronize new and existing products (including variations), stock quantity levels, customers (including a separate shipping address contact), and orders (including line items, fee lines, coupon lines and full refunds converted into Odoo credit notes).
 - **Odoo to WooCommerce:** Synchronize new and existing products (including variations) and stock quantity levels.
 - **Extended Models and Views:** Enhance existing Odoo models and views for `product.template`, `product.product`, `res.partner`, `sale.order`, and `sale.order.line` to accommodate corresponding WooCommerce REST API fields.
-- **Automated and Manual Synchronization:** A built-in cron job scheduler enables regular synchronization, complemented by a dedicated button for manually triggering updates.
+- **Automated and Manual Synchronization:** A built-in cron job scheduler enables regular synchronization, complemented by a dedicated button for manually triggering updates. Optional WooCommerce webhooks (order/product/customer changes) can also be registered for near-real-time sync, in addition to the regular polling.
 - **Advanced Settings:** Support for multiple WooCommerce websites with specific configuration options for each instance (e.g. syncing only products from WooCommerce to Odoo).
 - **Image Synchronization:** Optionally synchronize product images from WooCommerce to Odoo and Odoo to WooCommerce. For products imported from WooCommerce that include multiple images/product image gallery, an additional product image gallery is added to the `product.template` view.
 - **Language Filtering:** Synchronize products by language (_requires Polylang_).
@@ -28,7 +28,6 @@ Some features require additional setup, as detailed in the [Requirements](#requi
 
 ## Limitations
 
-- **Performance:** Updating product variations may take long, as each variable product is processed through a separate WooCommerce REST API call.
 - **Stock Management:** If a WooCommerce product variation's "Manage Stock" setting is modified, the corresponding parent product in Odoo is removed. This requires a complete re-import of the parent product and its variations, which can be manually retriggered by pressing the `Sync Now` button.
 - **Unique SKU Requirement:** Every product must have a unique SKU. For product variations, both the parent product and each individual variation must possess a SKU. In Odoo, the internal reference field (`default_code`) should be used to store this value.
 - **Media Endpoints:** The WooCommerce REST API itself does not provide direct access to media endpoints. Instead, media management (such as uploading images) is handled by the core [WordPress REST API](https://developer.wordpress.org/rest-api/).
@@ -78,6 +77,12 @@ python -m pip install filetype phonenumbers woocommerce
 - **Multiple Images Base** (`base_multi_image`): Extends the functionality of any model to support multiple attached images (a gallery) and enables full management of them.
   - [GitHub](https://github.com/OCA/server-tools/tree/18.0/base_multi_image) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/base_multi_image)
 
+#### Taxes and Prices
+
+Odoo taxes created by this add-on match the `Tax Calculation` setting on the WooCommerce Configuration record's `Sync Items` tab (`Match Odoo Company Settings` by default, `Tax Included`, or `Tax Excluded`) - not WooCommerce's own `Prices entered with tax` setting. `Match Odoo Company Settings` (the default) uses whatever convention is already configured for the Odoo company (`Home Menu` → `Settings` → `Invoicing` → `Taxes` → `Purchase Tax Prices`). Product, variation and order line prices synced from WooCommerce are automatically converted (grossed up or stripped of tax) to match this same convention before being stored on `list_price`/`price_unit`, so no manual price adjustment is needed regardless of how the two systems differ.
+
+This mirrors Odoo's own [B2B (tax excluded) vs. B2C (tax included) pricing](https://www.odoo.com/documentation/18.0/applications/finance/accounting/taxes/B2B_B2C.html) guidance: register product prices with taxes excluded or included, but not both together - if all prices are managed with tax included (or excluded) only, Odoo can still easily do a sale order with a price having taxes excluded (or included) instead.
+
 #### Odoo Add-ons (Optional)
 
 While not mandatory, the following Odoo Community Association (OCA) add-ons are recommended to enhance functionality:
@@ -116,7 +121,7 @@ Brazil:
 
 Brazil:
 
-- **Cadastro de Pessoa Física (CPF)** (`l10n_br_cpf_code` field) and **Cadastro Nacional da Pessoa Jurídica (CNPJ)** (`cnpj_cpf` field): Requires the [Brazilian Market on WooCommerce](https://wordpress.org/plugins/woocommerce-extra-checkout-fields-for-brazil/) plugin.
+- **Cadastro de Pessoa Física (CPF)** (`l10n_br_cpf_code` field) and **Cadastro Nacional da Pessoa Jurídica (CNPJ)** (`cnpj_cpf` field): Requires the [Calculadora de Frete e Campos Checkout para o Brasil](https://wordpress.org/plugins/woo-better-shipping-calculator-for-brazil/) plugin (the [Brazilian Market on WooCommerce](https://wordpress.org/plugins/woocommerce-extra-checkout-fields-for-brazil/) plugin, no longer maintained, also works, as both plugins expose the same `cpf`/`cnpj`/`rg`/`ie` billing fields).
 
 ## Installation
 
@@ -138,6 +143,8 @@ For order imports, two mapping logics are enabled by default. If disabled, the s
 
 - **Guest Customers Mapping:** When enabled, orders placed by guest (unregistered) customers are matched to existing Odoo customers using their email addresses. If no matching customer exists, a new record is created automatically. When disabled, a customer placeholder (`ref = WooCommerce_Customer_Placeholder`) is assigned to the order.
 - **Line Items Product Mapping:** When enabled, each line item is mapped to an existing Odoo product using the `woocommerce_product_id`. If no match is found, a product placeholder is used. When disabled, all order line items are assigned to a placeholder product (`default_code = WooCommerce_Product_Placeholder`) while still displaying the WooCommerce product name. This option is not recommended since product details in WooCommerce may change over time, complicating accurate mapping.
+
+WooCommerce webhooks (`WooCommerce Webhooks` group) are optional and disabled by default. When enabled, this Odoo instance must be reachable from WooCommerce at its configured base URL, since WooCommerce delivers webhook events to `<base_url>/woocommerce_sync/webhook/<connector_id>`.
 
 ## Disclaimer
 

@@ -1,3 +1,3 @@
-from . import connector, models
+from . import connector, models, woocommerce_client
 
-__all__ = ['connector', 'models']
+__all__ = ['connector', 'models', 'woocommerce_client']
