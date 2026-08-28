@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <record id="res_partner_woocommerce_sync" model="res.partner">
+    <field name="name">WooCommerce Sync</field>
+    <field name="type">other</field>
+    <field name="active">True</field>
+    <field name="email">woocommerce-sync@noreply.local</field>
+    <field name="image_1920" type="base64" file="woocommerce_sync/static/description/icon.png"/>
+  </record>
+</odoo>
