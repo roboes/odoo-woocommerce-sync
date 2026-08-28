@@ -1,7 +1,9 @@
 import logging
+import secrets
+import time
 from base64 import b64decode, b64encode
 from collections.abc import Generator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 from PIL import Image, features
@@ -14,18 +16,21 @@ try:
     _pil_avif_supported = features.check('avif')
 except ImportError:
     _pil_avif_supported = False
-from typing import Any
+from typing import Any, ClassVar
 
 import filetype
-import pytz
+import psycopg2
 import requests
+from markupsafe import Markup, escape
 from odoo import _, api, fields, models
 from odoo.addons.queue_job.delay import chain
 from odoo.exceptions import UserError, ValidationError
 from odoo.release import version_info
+from odoo.tools import float_compare
 from requests.auth import HTTPBasicAuth
 from werkzeug.utils import secure_filename
-from woocommerce import API
+
+from .woocommerce_client import WooCommerceClient
 
 # Settings
 _logger = logging.getLogger(__name__)
@@ -38,6 +43,228 @@ del _pil_avif_supported
 class WoocommerceSyncConnector(models.Model):
     _name = 'woocommerce.sync.connector'
     _description = 'WooCommerce Sync Connector'
+    _inherit: ClassVar[list[str]] = ['mail.thread']
+
+    @staticmethod
+    def list_chunks(items: list, chunk_size: int) -> Generator[list, Any, None]:
+        """Splits 'items' into consecutive chunks of at most 'chunk_size' elements."""
+        for index in range(0, len(items), chunk_size):
+            yield items[index : index + chunk_size]
+
+    def job_description(self: models.Model, method_name: str) -> str:
+        """Returns a '<model>.<method>' description for 'with_delay()'/'delayable()' calls, so the Job Queue view shows the function name instead of falling back to the function's docstring."""
+        return f'{self._name}.{method_name}'
+
+    def sync_summary_reset(self: models.Model) -> None:
+        """Resets the aggregate sync-summary state at the start of a full sync run (posted once as a single chatter message when every dispatched chunk job has completed).
+
+        No-ops if a previous run's tracking is still active (i.e. this 'woocommerce_sync()' call started before the previous one's chunk jobs all finished, e.g. the scheduled interval is shorter than a full sync takes) - resetting in that case would permanently orphan the previous run's already-dispatched/in-flight chunk jobs (their eventual 'sync_summary_chunk_completed()' calls would never satisfy a 'total_completed == total_dispatched' check again), so the summary message would never post. Instead, this run's own dispatched/completed events simply accumulate into the still-active previous run and get reported together in a single, later message.
+
+        Wrapped in a savepoint so a failure here can never block the sync itself.
+        """
+        if not self.settings_sync_summary_chatter_enable:
+            return
+
+        # A stale run (e.g. a chunk job permanently failed/got lost, so it never called 'sync_summary_chunk_completed()') would otherwise leave 'sync_summary_run_active' stuck True forever, silencing every future summary message - treat a run older than 6 hours as stale and reset anyway instead of skipping
+        stale_cutoff = fields.Datetime.now() - timedelta(hours=6)
+        if self.sync_summary_run_active and self.sync_summary_started_at and self.sync_summary_started_at > stale_cutoff:
+            _logger.debug(f"Sync-summary run already active for connector {self.id}; skipping reset (this run's events will be reported together with the still-in-progress previous run)")
+            return
+
+        try:
+            with self.env.cr.savepoint():
+                self.write({'sync_summary_run_active': True, 'sync_summary_all_dispatched': False, 'sync_summary_started_at': fields.Datetime.now()})
+                # Drop any leftover events from a previous run that never fully completed (e.g. a permanently failed chunk job)
+                self.env['woocommerce.sync.summary.event'].sudo().search([('connector_id', '=', self.id)]).unlink()
+        except Exception:
+            _logger.exception('Failed to reset sync-summary tracking for this run (harmless - only affects the chatter summary, not the actual sync)')
+
+    def sync_summary_chunk_dispatched(self: models.Model) -> None:
+        """Registers, as an independent event row, that one more chunk job has been dispatched for the current sync run.
+
+        Uses an insert rather than incrementing a shared counter column, since many chunk-dispatch calls happen in quick succession and inserts never conflict with each other the way concurrent updates to the same row do. Wrapped in a savepoint so any failure here (this is a best-effort reporting feature) can never poison the surrounding job's transaction or affect the actual sync work.
+        """
+        if not self.settings_sync_summary_chatter_enable:
+            return
+
+        try:
+            with self.env.cr.savepoint():
+                self.env['woocommerce.sync.summary.event'].sudo().create({'connector_id': self.id, 'run_started_at': self.sync_summary_started_at, 'event_type': 'dispatched'})
+            _logger.debug(f'Registered a dispatched sync-summary event for connector {self.id}')
+        except Exception:
+            _logger.exception('Failed to register a dispatched sync-summary event (harmless - only affects the chatter summary, not the actual sync)')
+
+    def sync_summary_finalize_dispatch(self: models.Model) -> None:
+        """Marks that every stage has finished dispatching its chunk jobs, so the summary can be posted once the last chunk job completes."""
+        if not self.settings_sync_summary_chatter_enable:
+            return
+
+        try:
+            with self.env.cr.savepoint():
+                self.sync_summary_all_dispatched = True
+        except Exception:
+            _logger.exception('Failed to finalize sync-summary dispatch tracking (harmless - only affects the chatter summary, not the actual sync)')
+            return
+
+        # Dispatched as its own job (rather than called inline) so a transient DB conflict (see 'sync_summary_maybe_post()') only requires retrying this small, self-contained job instead of jeopardizing this chunk job's own real sync work
+        self.with_delay(description=self.job_description('sync_summary_maybe_post')).sync_summary_maybe_post()
+
+    def sync_summary_chunk_completed(self: models.Model, direction: str, processed: int, new_count: int, updated_count: int, errors: list[str]) -> None:
+        """Registers, as an independent event row, one chunk job's own results, then attempts to post the final chatter message.
+
+        'direction' is one of 'products'/'variations'/'customers'/'orders' (matches 'woocommerce.sync.summary.event.sync_direction'), used to break the posted summary down per sync direction instead of only a single combined total.
+
+        Uses an insert rather than incrementing shared counter columns, for the same concurrency reason as 'sync_summary_chunk_dispatched()' above - many chunk jobs can finish at nearly the same time. Wrapped in a savepoint (see 'sync_summary_chunk_dispatched()') so a failure here can never affect the actual sync work.
+        """
+        if not self.settings_sync_summary_chatter_enable:
+            return
+
+        # No active run to attach this event to (e.g. this chunk method was called directly, bypassing 'sync_summary_chunk_dispatched()') - nothing to register
+        if not self.sync_summary_started_at:
+            _logger.debug(f'Skipping sync-summary event registration for connector {self.id}: no active run (sync_summary_started_at is not set)')
+            return
+
+        try:
+            with self.env.cr.savepoint():
+                self.env['woocommerce.sync.summary.event'].sudo().create(
+                    {
+                        'connector_id': self.id,
+                        'run_started_at': self.sync_summary_started_at,
+                        'event_type': 'completed',
+                        'sync_direction': direction,
+                        'processed': processed,
+                        'new_count': new_count,
+                        'updated_count': updated_count,
+                        'errors_count': len(errors),
+                        'errors_text': (f'{chr(10).join(errors)}\n') if errors else '',
+                    }
+                )
+            _logger.debug(f'Registered a completed sync-summary event for connector {self.id} ({direction}): {processed} processed, {len(errors)} error(s)')
+        except Exception:
+            _logger.exception('Failed to register a completed sync-summary event (harmless - only affects the chatter summary, not the actual sync)')
+            return
+
+        # Dispatched as its own job (rather than called inline) so a transient DB conflict (see 'sync_summary_maybe_post()') only requires retrying this small, self-contained job instead of jeopardizing this chunk job's own real sync work
+        self.with_delay(description=self.job_description('sync_summary_maybe_post')).sync_summary_maybe_post()
+
+    def sync_summary_maybe_post(self: models.Model) -> None:
+        """Posts the aggregate sync-summary chatter message once all chunk jobs dispatched for the current run have completed (no-op otherwise, or if already posted).
+
+        Dispatched as its own dedicated queue job (see 'sync_summary_chunk_completed()'/'sync_summary_finalize_dispatch()') rather than called inline within a chunk job, so a 'SerializationFailure' (several chunk jobs finishing at nearly the same time and racing on the same connector row - expected under queue_job's REPEATABLE READ isolation) can be safely left to propagate: queue_job automatically retries this small, self-contained job with backoff, without risking any real synced data (unlike if this ran inline in a chunk job and had to be silently swallowed instead). Any other, non-transient failure (SQL, message_post, etc.) is still caught/logged instead of retried forever.
+        """
+        if not self.settings_sync_summary_chatter_enable or not self.sync_summary_run_active or not self.sync_summary_all_dispatched:
+            _logger.debug(
+                f'Skipping sync-summary post for connector {self.id}: enabled={self.settings_sync_summary_chatter_enable}, run_active={self.sync_summary_run_active}, all_dispatched={self.sync_summary_all_dispatched}'
+            )
+            return
+
+        try:
+            with self.env.cr.savepoint():
+                self.env.cr.execute(
+                    """
+                    SELECT count(*) FILTER (WHERE event_type = 'dispatched'),
+                           count(*) FILTER (WHERE event_type = 'completed')
+                    FROM woocommerce_sync_summary_event
+                    WHERE connector_id = %s AND run_started_at = %s
+                    """,
+                    (self.id, self.sync_summary_started_at),
+                )
+                total_dispatched, total_completed = self.env.cr.fetchone()
+
+                _logger.debug(f'Sync-summary progress for connector {self.id}: {total_completed}/{total_dispatched} chunk job(s) completed')
+
+                if total_completed < total_dispatched:
+                    return
+
+                # Claim the right to post exactly once for this run: only the caller that flips 'run_active' True -> False proceeds (a lost race here is harmless - another chunk job finishing at the same time will post it instead)
+                self.env.cr.execute('UPDATE woocommerce_sync_connector SET sync_summary_run_active = false WHERE id = %s AND sync_summary_run_active = true RETURNING true', (self.id,))
+                claimed = self.env.cr.fetchone()
+                if not claimed:
+                    _logger.debug(f'Sync-summary post for connector {self.id} already claimed by another chunk job finishing at the same time')
+                    return
+
+                # Per-direction breakdown (products/variations/customers/orders), in a fixed display order
+                self.env.cr.execute(
+                    """
+                    SELECT sync_direction,
+                           coalesce(sum(processed), 0),
+                           coalesce(sum(new_count), 0),
+                           coalesce(sum(updated_count), 0),
+                           coalesce(sum(errors_count), 0),
+                           left(coalesce(string_agg(NULLIF(errors_text, ''), ''), ''), 10000)
+                    FROM woocommerce_sync_summary_event
+                    WHERE connector_id = %s AND run_started_at = %s AND event_type = 'completed'
+                    GROUP BY sync_direction
+                    """,
+                    (self.id, self.sync_summary_started_at),
+                )
+                direction_labels = {'products': 'Products', 'variations': 'Product Variations', 'customers': 'Customers', 'orders': 'Orders'}
+                direction_rows = {row[0]: row[1:] for row in self.env.cr.fetchall()}
+
+                processed = sum(row[0] for row in direction_rows.values())
+                errors_count = sum(row[3] for row in direction_rows.values())
+                errors_text = ''.join(row[4] for row in direction_rows.values() if row[4])
+
+                duration = fields.Datetime.now() - self.sync_summary_started_at if self.sync_summary_started_at else None
+                last_sync = self.odoo_woocommerce_last_sync_retrieve() if self.settings_woocommerce_modified_records_import else False
+
+                # Odoo 'Datetime' fields are stored/returned in naive UTC; converting to the posting user's timezone here is required since these values are interpolated as plain text below, unlike an actual 'Datetime' field widget (which converts automatically)
+                sync_summary_started_at_local = fields.Datetime.context_timestamp(self, self.sync_summary_started_at).strftime('%Y-%m-%d %H:%M:%S') if self.sync_summary_started_at else None
+                last_sync_local = fields.Datetime.context_timestamp(self, last_sync).strftime('%Y-%m-%d %H:%M:%S') if last_sync else None
+
+                duration_text = ''
+                if duration is not None:
+                    hours, remainder = divmod(int(duration.total_seconds()), 3600)
+                    minutes, seconds = divmod(remainder, 60)
+                    duration_text = f' in {hours:02d}:{minutes:02d}:{seconds:02d}'
+
+                started_at_text = f'that started at {sync_summary_started_at_local} ' if sync_summary_started_at_local else ''
+                body = f'<p>WooCommerce sync {started_at_text}completed: {processed} record(s) processed, {errors_count} error(s){duration_text}.</p>'
+                body += '<ul>'
+                for direction, label in direction_labels.items():
+                    if direction not in direction_rows:
+                        continue
+                    direction_processed, direction_new, direction_updated, direction_errors, _direction_errors_text = direction_rows[direction]
+                    body += f'<li>{label}: {direction_processed} processed ({direction_new} new, {direction_updated} updated), {direction_errors} error(s).</li>'
+                body += '</ul>'
+                if last_sync_local:
+                    body += f'<p>Synced records modified since last sync at {last_sync_local}.</p>'
+                if self.settings_woocommerce_test_mode:
+                    body += '<p>Note: Test mode is enabled - only the first 10 items per WooCommerce endpoint were retrieved, so these counts do not reflect a full sync.</p>'
+                if errors_text:
+                    # 'Markup.replace()' escapes its replacement argument too, so escape/stringify first and only wrap the final result as trusted HTML below
+                    body += f'<p>Error(s):<br/>{str(escape(errors_text)).replace(chr(10), "<br/>")}</p>'
+                # 'message_post()' treats a plain string 'body' as untrusted text and HTML-escapes it (showing literal '<p>' tags); mark it as trusted HTML instead, now that any untrusted data within it ('errors_text' above) has already been escaped
+                body = Markup(body)
+
+                self.message_post(body=body, subtype_xmlid='mail.mt_comment', author_id=self.env.ref('woocommerce_sync.res_partner_woocommerce_sync').id)
+                if self.settings_sync_summary_discuss_chat_enable:
+                    self.sync_summary_notify_discuss(body)
+                _logger.info(f'Posted sync-summary chatter message on connector {self.id}: {processed} record(s) processed, {errors_count} error(s)')
+                self.env['woocommerce.sync.summary.event'].sudo().search([('connector_id', '=', self.id), ('run_started_at', '=', self.sync_summary_started_at)]).unlink()
+        except psycopg2.errors.SerializationFailure:
+            _logger.warning(f'Serialization conflict while posting sync-summary for connector {self.id}; letting queue_job automatically retry this job')
+            raise
+        except Exception:
+            _logger.exception('Failed to post the sync-summary chatter message (harmless - only affects the chatter summary, not the actual sync); the run will remain marked active until the next sync run resets it')
+
+    def sync_summary_notify_discuss(self: models.Model, body: str) -> None:
+        """Sends the sync-summary as a direct-message Discuss chat from the 'WooCommerce Sync' partner.
+
+        A plain 'message_post()' on this record (see 'sync_summary_maybe_post()' above) only ever shows up on this record's own chatter - the Discuss app's 'Chats' sidebar only lists direct-message channels a user actually belongs to, so posting a message on an unrelated business record never appears there. Recipients are this record's own followers plus whichever user created it (so it works out of the box without requiring the user to manually follow this record first).
+        """
+        woocommerce_sync_partner = self.env.ref('woocommerce_sync.res_partner_woocommerce_sync')
+        recipient_partners = (self.message_partner_ids | self.create_uid.partner_id) - woocommerce_sync_partner
+        discuss_channel_model = 'discuss.channel' if version_info[0] in [18, 19] else 'mail.channel'
+
+        for target_user in recipient_partners.filtered('user_ids').mapped('user_ids'):
+            try:
+                with self.env.cr.savepoint():
+                    # 'channel_get()' returns the private chat between the *calling* user and 'partners_to', so impersonate the recipient here
+                    channel = self.env[discuss_channel_model].with_user(target_user).sudo().channel_get(partners_to=[woocommerce_sync_partner.id])
+                    channel.sudo().message_post(body=body, message_type='comment', subtype_xmlid='mail.mt_comment', author_id=woocommerce_sync_partner.id)
+            except Exception:
+                _logger.exception(f'Failed to send the sync-summary Discuss chat message to user {target_user.id} (harmless - the chatter message on this record was still posted)')
 
     # WooCommerce REST API settings
     settings_woocommerce_connection_name = fields.Char(string='Instance Name')
@@ -45,10 +272,47 @@ class WoocommerceSyncConnector(models.Model):
     settings_woocommerce_consumer_key = fields.Char(string='Consumer Key')
     settings_woocommerce_consumer_secret = fields.Char(string='Consumer Secret')
     settings_woocommerce_timeout = fields.Integer(string='Timeout (in seconds)', default=30)
+    settings_user_agent = fields.Char(string='User Agent', default='Odoo-Woocommerce Sync', help="HTTP 'User-Agent' header sent with every WooCommerce REST API request.")
+    settings_job_chunk_size = fields.Integer(
+        string='Queue Job Chunk Size',
+        default=10,
+        help='Number of records grouped into a single queue job when dispatching per-record sync jobs, to reduce per-job overhead (worker pickup, transaction/commit, connection re-validation) versus one job per record.',
+    )
+    settings_sync_summary_chatter_enable = fields.Boolean(
+        string='Post Sync Summary to Chatter',
+        default=True,
+        help=(
+            "If enabled, a summary message (records processed, new/updated, errors) is posted to this record's chatter once per full sync run (products, "
+            'product variations, customers and orders directions only; triggered by "Sync Now"/the scheduled cron, not by webhooks).'
+        ),
+    )
+    settings_sync_summary_discuss_chat_enable = fields.Boolean(
+        string='Post Sync Summary to Discuss Chat',
+        default=True,
+        help=(
+            'If enabled, the summary message is sent as a direct-message Discuss chat from "WooCommerce Sync" (similar to the built-in "OdooBot" '
+            "conversation), to this record's followers and to whichever user created it."
+        ),
+    )
+
+    # Sync summary (chatter) tracking - covers the WooCommerce<->Odoo products/variations/customers/orders chunk syncs only. Per-chunk counts/errors are tracked separately in 'woocommerce.sync.summary.event' (append-only, to avoid concurrent-update conflicts); these 3 fields only track the current run's own state
+    sync_summary_run_active = fields.Boolean(default=False)
+    sync_summary_all_dispatched = fields.Boolean(default=False)
+    sync_summary_started_at = fields.Datetime()
 
     # WordPress REST API settings
     settings_wordpress_username = fields.Char(string='WordPress Username')
     settings_wordpress_user_application_password = fields.Char(string='WordPress User App Password', help='Can be generated from WordPress Admin → Users → Profile → Application Passwords.')
+
+    # WooCommerce webhooks settings
+    settings_woocommerce_webhooks_enable = fields.Boolean(
+        string='Enable WooCommerce webhooks?',
+        help='If enabled, order/product/customer changes in WooCommerce are synced to Odoo as soon as WooCommerce sends the corresponding webhook, in addition to the regular polling sync. Requires the webhooks to be registered (see the related button) and this Odoo instance to be reachable from WooCommerce.',
+        default=False,
+    )
+    settings_woocommerce_webhooks_secret = fields.Char(
+        string='Webhook Secret', readonly=True, help='Secret used to validate the X-WC-Webhook-Signature header on incoming WooCommerce webhook requests. Auto-generated when webhooks are registered.'
+    )
 
     # Sync items settings
     settings_woocommerce_to_odoo_products_sync = fields.Boolean(default=True)
@@ -60,11 +324,7 @@ class WoocommerceSyncConnector(models.Model):
 
     # General settings
     settings_woocommerce_user_responsible = fields.Many2one(
-        comodel_name='res.users',
-        string='Responsible',
-        help='Default responsible user for WooCommerce operations.',
-        default=lambda self: self.env.user,
-        ondelete='set null',
+        comodel_name='res.users', string='Responsible', help='Default responsible user for WooCommerce operations.', default=lambda self: self.env.user, ondelete='set null'
     )
     settings_woocommerce_modified_records_import = fields.Boolean(
         string='Import only modified records?',
@@ -72,6 +332,17 @@ class WoocommerceSyncConnector(models.Model):
         default=False,
     )
     settings_woocommerce_images_sync = fields.Boolean(string='Sync images?', default=True)
+    settings_odoo_tax_calculation = fields.Selection(
+        selection=[('company', 'Match Odoo Company Settings'), ('tax_included', 'Tax Included'), ('tax_excluded', 'Tax Excluded')],
+        string='Tax Calculation',
+        default='company',
+        required=True,
+        help=(
+            "Whether taxes created/looked up by this sync are tax-included or tax-excluded. 'Match Odoo Company Settings' (the default) uses the company's own setting "
+            '(Home Menu → Settings → Invoicing → Taxes → Prices). WooCommerce product/variation/order line prices are always automatically converted to match this '
+            'setting before being stored in Odoo, regardless of whether WooCommerce itself sends tax-included or tax-excluded prices.'
+        ),
+    )
 
     # Stock management
     settings_woocommerce_products_stock_management = fields.Boolean(string='Sync stock quantity?', default=True)
@@ -221,7 +492,7 @@ class WoocommerceSyncConnector(models.Model):
 
         # Run woocommerce_sync in the background (requires 'queue_job' Odoo add-on)
         if 'queue.job' in self.env:
-            self.with_delay().woocommerce_sync()
+            self.with_delay(description=self.job_description('woocommerce_sync')).woocommerce_sync()
 
             return {
                 'type': 'ir.actions.client',
@@ -282,6 +553,8 @@ class WoocommerceSyncConnector(models.Model):
         ## WooCommerce shipping methods
         woocommerce_shipping_methods = woocommerce_api.get(endpoint='shipping_methods').json()
 
+        self.sync_summary_reset()
+
         queue_jobs_run_in_sequence = []
 
         # WooCommerce to Odoo
@@ -290,11 +563,11 @@ class WoocommerceSyncConnector(models.Model):
         if self.settings_woocommerce_to_odoo_products_sync:
             ### Products delete
             if self.settings_woocommerce_to_odoo_products_delete:
-                queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=None).woocommerce_to_odoo_products_delete())
+                queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=self.job_description('woocommerce_to_odoo_products_delete')).woocommerce_to_odoo_products_delete())
 
             ### Products
             queue_jobs_run_in_sequence.append(
-                self.delayable(priority=None, description=None).woocommerce_to_odoo_products_sync_batch(
+                self.delayable(priority=None, description=self.job_description('woocommerce_to_odoo_products_sync_batch')).woocommerce_to_odoo_products_sync_batch(
                     woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit
                 )
             )
@@ -302,44 +575,55 @@ class WoocommerceSyncConnector(models.Model):
             ## Product variations
             if self.settings_woocommerce_to_odoo_products_variations_sync:
                 queue_jobs_run_in_sequence.append(
-                    self.delayable(priority=None, description=None).woocommerce_to_odoo_products_variations_sync_batch(
+                    self.delayable(priority=None, description=self.job_description('woocommerce_to_odoo_products_variations_sync_batch')).woocommerce_to_odoo_products_variations_sync_batch(
                         woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit
                     )
                 )
 
         ## Products related ids map
         if self.settings_woocommerce_products_related_ids_map:
-            queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=None).woocommerce_to_odoo_products_related_ids())
+            queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=self.job_description('woocommerce_to_odoo_products_related_ids')).woocommerce_to_odoo_products_related_ids())
 
         ## Customers
         if self.settings_woocommerce_to_odoo_customers_sync:
-            queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=None).woocommerce_to_odoo_customers_sync_batch())
+            queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=self.job_description('woocommerce_to_odoo_customers_sync_batch')).woocommerce_to_odoo_customers_sync_batch())
 
         ## Orders
         if self.settings_woocommerce_to_odoo_orders_sync:
-            queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=None).woocommerce_to_odoo_orders_sync_batch(woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods))
+            queue_jobs_run_in_sequence.append(
+                self.delayable(priority=None, description=self.job_description('woocommerce_to_odoo_orders_sync_batch')).woocommerce_to_odoo_orders_sync_batch(
+                    woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods
+                )
+            )
 
         # Odoo to WooCommerce
 
         ## Products
         if self.settings_odoo_to_woocommerce_products_sync:
             queue_jobs_run_in_sequence.append(
-                self.delayable(priority=None, description=None).odoo_to_woocommerce_products_sync(
+                self.delayable(priority=None, description=self.job_description('odoo_to_woocommerce_products_sync')).odoo_to_woocommerce_products_sync(
                     woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit
                 )
             )
 
         # Stock quantity
         if self.settings_woocommerce_products_stock_management:
-            queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=None).odoo_woocommerce_products_stock_quantity_sync_batch())
+            queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=self.job_description('odoo_woocommerce_products_stock_quantity_sync_batch')).odoo_woocommerce_products_stock_quantity_sync_batch())
             queue_jobs_run_in_sequence.append(
-                self.delayable(priority=None, description=None).update_sync_last_log(woocommerce_connection_id=self.id, model_name='woocommerce.sync.stock.log', field_name='odoo_woocommerce_last_sync')
+                self.delayable(priority=None, description=self.job_description('update_sync_last_log')).update_sync_last_log(
+                    woocommerce_connection_id=self.id, model_name='woocommerce.sync.stock.log', field_name='odoo_woocommerce_last_sync'
+                )
             )
 
         # Store 'odoo_woocommerce_last_sync'
         queue_jobs_run_in_sequence.append(
-            self.delayable(priority=None, description=None).update_sync_last_log(woocommerce_connection_id=self.id, model_name='woocommerce.sync.log', field_name='odoo_woocommerce_last_sync')
+            self.delayable(priority=None, description=self.job_description('update_sync_last_log')).update_sync_last_log(
+                woocommerce_connection_id=self.id, model_name='woocommerce.sync.log', field_name='odoo_woocommerce_last_sync'
+            )
         )
+
+        # Marks that every stage above has finished dispatching its chunk jobs, so the aggregate summary chatter message can be posted once the last one completes
+        queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=self.job_description('sync_summary_finalize_dispatch')).sync_summary_finalize_dispatch())
 
         # Create chain and delay the jobs
         if queue_jobs_run_in_sequence:
@@ -355,8 +639,8 @@ class WoocommerceSyncConnector(models.Model):
         else:
             self.env[model_name].create({'woocommerce_connection_id': woocommerce_connection_id, field_name: fields.Datetime.now()})
 
-    def woocommerce_api_get(self: models.Model) -> API | None:
-        """Retrieves WooCommerce REST API instance."""
+    def woocommerce_api_get(self: models.Model, validate: bool = True) -> WooCommerceClient | None:
+        """Retrieves a WooCommerce REST API client. Set 'validate=False' to skip the 'system_status' connectivity ping (e.g. in per-record queue jobs where the connection was already validated by the batch job that scheduled them)."""
 
         self.ensure_one()
 
@@ -364,119 +648,94 @@ class WoocommerceSyncConnector(models.Model):
             _logger.error('Missing WooCommerce REST API configuration details (url, consumer key, consumer secret or timeout). Cannot retrieve API instance')
             return False
 
-        try:
-            woocommerce_api = API(
-                url=self.settings_woocommerce_connection_url,
-                consumer_key=self.settings_woocommerce_consumer_key,
-                consumer_secret=self.settings_woocommerce_consumer_secret,
-                version='wc/v3',
-                timeout=self.settings_woocommerce_timeout,
-                # query_string_auth=False,
-                user_agent='Odoo-Woocommerce Sync',
-            )
+        woocommerce_api = WooCommerceClient(
+            url=self.settings_woocommerce_connection_url,
+            consumer_key=self.settings_woocommerce_consumer_key,
+            consumer_secret=self.settings_woocommerce_consumer_secret,
+            timeout=self.settings_woocommerce_timeout,
+            user_agent=self.settings_user_agent or 'Odoo-Woocommerce Sync',
+            test_mode=self.settings_woocommerce_test_mode,
+        )
 
-            response = woocommerce_api.get(endpoint='system_status')
-            response.raise_for_status()
-
-        except requests.RequestException as error:
-            _logger.error(f'WooCommerce REST API connection failed: {error}')
+        if validate and not woocommerce_api.validate_connection():
             return False
-
-        _logger.info('WooCommerce REST API connection successful')
 
         return woocommerce_api
 
     @api.model
-    def woocommerce_api_get_all_items(self: models.Model, woocommerce_api: API, endpoint: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def woocommerce_api_request(self: models.Model, woocommerce_api: WooCommerceClient, endpoint: str, params: dict[str, Any] | None = None, max_retries: int = 5) -> Any:
+        """Performs a single WooCommerce REST API GET request with rate-limit (HTTP 429) and transient server error (5xx) retry/backoff handling."""
         self.ensure_one()
-
-        # Set default records per page if not already provided
-        if params is None:
-            params = {}
-        params.setdefault('per_page', 100)
-
-        # If "settings_woocommerce_test_mode" is enabled, limit to 10 items
-        if self.settings_woocommerce_test_mode:
-            params['per_page'] = 10
-
-        records_all = []
-        page = 1
-        while True:
-            # Update the page number for each request
-            params['page'] = page
-            records = woocommerce_api.get(endpoint=endpoint, params=params).json()
-
-            if not isinstance(records, list):
-                _logger.error(f'WooCommerce REST API error for {endpoint}: {records}')
-                break
-
-            records_all.extend(records)
-
-            # If no records are returned, or "settings_woocommerce_test_mode" is enabled (fetch only first page), break the loop
-            if not records or self.settings_woocommerce_test_mode:
-                break
-
-            page += 1
-
-        return records_all
+        return woocommerce_api.request(endpoint=endpoint, params=params, max_retries=max_retries)
 
     @api.model
-    def woocommerce_api_get_items_in_batches(self: models.Model, woocommerce_api: API, endpoint: str, params: dict[str, Any] | None = None, batch_size: int = 10) -> Generator[list[dict[str, Any]], Any, None]:
+    def woocommerce_api_get_all_items(self: models.Model, woocommerce_api: WooCommerceClient, endpoint: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         self.ensure_one()
-
-        if params is None:
-            params = {}
-
-        # Use the provided batch_size
-        params['per_page'] = batch_size
-
-        # If "settings_woocommerce_test_mode" is enabled, limit to 10 items
-        if self.settings_woocommerce_test_mode:
-            params['per_page'] = 10
-
-        page = 1
-        while True:
-            params['page'] = page
-            records = woocommerce_api.get(endpoint=endpoint, params=params).json()
-
-            if not isinstance(records, list):
-                _logger.error(f'WooCommerce REST API error for {endpoint}: {records}')
-                break
-
-            if records:
-                yield records
-            else:
-                break
-
-            if self.settings_woocommerce_test_mode:
-                break
-
-            page += 1
+        return woocommerce_api.get_all_items(endpoint=endpoint, params=params)
 
     @api.model
-    def odoo_shorepos_last_sync_retrieve(self: models.Model) -> datetime | bool:
+    def woocommerce_api_get_items_in_batches(
+        self: models.Model, woocommerce_api: WooCommerceClient, endpoint: str, params: dict[str, Any] | None = None, batch_size: int = 10
+    ) -> Generator[list[dict[str, Any]], Any, None]:
+        self.ensure_one()
+        yield from woocommerce_api.get_items_in_batches(endpoint=endpoint, params=params, batch_size=batch_size)
+
+    @api.model
+    def odoo_woocommerce_last_sync_retrieve(self: models.Model) -> datetime | bool:
+        """Returns the last sync's naive UTC datetime, as-is (Odoo 'Datetime' fields are always stored/returned in naive UTC).
+
+        Used exclusively to build the 'modified_after' WooCommerce REST API filter, which is compared against WooCommerce's own GMT-based 'date_modified_gmt' field - converting to the current user's local timezone here would silently shift that filter by the user's UTC offset, causing incorrect results.
+        """
         woocommerce_sync_log = self.env['woocommerce.sync.log'].search([], limit=1)
-
-        if woocommerce_sync_log.odoo_woocommerce_last_sync:
-            return woocommerce_sync_log.odoo_woocommerce_last_sync.astimezone(pytz.timezone(self.env.user.tz or 'UTC')).replace(tzinfo=None)
-
-        else:
-            return False
+        return woocommerce_sync_log.odoo_woocommerce_last_sync or False
 
     @staticmethod
     def datetime_convert(date_string: str, tz: timezone | None = timezone.utc) -> datetime | bool:
-        """Convert ISO 8601 date format string to Odoo datetime format."""
+        """Convert ISO 8601 date format string to a naive datetime, as required by Odoo Datetime fields."""
         if date_string:
             try:
                 parsed_date = datetime.fromisoformat(date_string)
-                if tz is None:
-                    return parsed_date.replace(tzinfo=None)
-                if parsed_date.tzinfo is None:
-                    return parsed_date.replace(tzinfo=tz)
-                return parsed_date.astimezone(tz)
+                if tz is not None:
+                    if parsed_date.tzinfo is None:
+                        parsed_date = parsed_date.replace(tzinfo=tz)
+                    parsed_date = parsed_date.astimezone(tz)
+                # Odoo Datetime fields require naive datetimes
+                return parsed_date.replace(tzinfo=None)
             except ValueError:
                 raise ValidationError(f'Invalid WooCommerce date format: {date_string}')
         return False
+
+    @classmethod
+    def datetime_gmt_pairs_convert(cls, values: dict[str, Any], base_columns: list[str]) -> None:
+        """Converts each '<base>'/'<base>_gmt' column pair in 'values' (in place) to the same naive-UTC instant, taken from the '_gmt' value.
+
+        WooCommerce's non-'_gmt' variant is reported in the store's own local timezone with no UTC offset attached, so naively treating it as UTC (as this used to do) silently mislabels local time as UTC - Odoo's timezone-aware 'Datetime' widgets then shift it a second time on display, making it look 2x the store's UTC offset ahead of the real time. Reusing the '_gmt' value (always true UTC) for both columns avoids that double-shift.
+        """
+        for column in base_columns:
+            gmt_column = f'{column}_gmt'
+            if values.get(gmt_column):
+                values[gmt_column] = cls.datetime_convert(values[gmt_column], tz=timezone.utc)
+                values[column] = values[gmt_column]
+            elif values.get(column):
+                values[column] = cls.datetime_convert(values[column], tz=timezone.utc)
+
+    @api.model
+    def image_download(self: models.Model, image_url: str, attempts: int = 3, backoff_seconds: float = 1.0) -> requests.Response:
+        """Downloads a URL with a small retry/backoff loop, matching the resilience already applied to WooCommerce REST API calls in 'WooCommerceClient.request()'."""
+        last_error = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                response = requests.get(url=image_url, timeout=10)
+                response.raise_for_status()
+                return response
+            except requests.exceptions.RequestException as error:
+                last_error = error
+                if attempt < attempts:
+                    _logger.warning(f'Attempt {attempt}/{attempts} to download image from {image_url} failed: {error}. Retrying...')
+                    time.sleep(backoff_seconds * attempt)
+
+        raise last_error
 
     @api.model
     def image_download_file_to_base64(self: models.Model, woocommerce_images: dict[str, Any]) -> str | None:
@@ -489,10 +748,7 @@ class WoocommerceSyncConnector(models.Model):
 
         # Download and process the image
         try:
-            response = requests.get(url=image_url, timeout=10)
-
-            # Ensure the request was successful
-            response.raise_for_status()
+            response = self.image_download(image_url)
 
             # Open image with PIL
             img = Image.open(BytesIO(response.content))
@@ -521,8 +777,7 @@ class WoocommerceSyncConnector(models.Model):
                 continue
 
             try:
-                response = requests.get(url=image_data['src'], timeout=10)
-                response.raise_for_status()
+                response = self.image_download(image_data['src'])
 
                 # Normalize to PNG via PIL - handles AVIF, WebP, RGBA, etc.
                 img = Image.open(BytesIO(response.content))
@@ -553,10 +808,13 @@ class WoocommerceSyncConnector(models.Model):
                 _logger.error(f'Error processing image from {image_data["src"]}: {error}')
 
     @api.model
-    def odoo_brand_create_or_retrieve(self: models.Model, brand_name: str) -> models.Model | bool:
-        """Create or retrieve an Odoo brand."""
+    def odoo_brand_create_or_retrieve(self: models.Model, brand_name: str, cache: dict[str, int] | None = None) -> models.Model | bool:
+        """Create or retrieve an Odoo brand. If 'cache' (name -> id) is provided, it is used to avoid repeated searches/creates for the same name within a batch."""
         if not brand_name:
             return False
+
+        if cache is not None and brand_name in cache:
+            return self.env['product.brand'].browse(cache[brand_name])
 
         try:
             odoo_brand = self.env['product.brand'].with_context(lang=False).search([('name', '=', brand_name)], limit=1)
@@ -565,6 +823,9 @@ class WoocommerceSyncConnector(models.Model):
                 odoo_brand = self.env['product.brand'].create({'name': brand_name})
                 _logger.info(f'Created new WooCommerce brand in Odoo: {odoo_brand.name}')
 
+            if cache is not None:
+                cache[brand_name] = odoo_brand.id
+
             return odoo_brand
 
         except Exception as error:
@@ -572,10 +833,13 @@ class WoocommerceSyncConnector(models.Model):
             return False
 
     @api.model
-    def odoo_category_create_or_retrieve(self: models.Model, category_name: str) -> models.Model | bool:
-        """Create or retrieve an Odoo category."""
+    def odoo_category_create_or_retrieve(self: models.Model, category_name: str, cache: dict[str, int] | None = None) -> models.Model | bool:
+        """Create or retrieve an Odoo category. If 'cache' (name -> id) is provided, it is used to avoid repeated searches/creates for the same name within a batch."""
         if not category_name:
             return False
+
+        if cache is not None and category_name in cache:
+            return self.env['product.category'].browse(cache[category_name])
 
         try:
             odoo_category = self.env['product.category'].search([('name', '=', category_name)], limit=1)
@@ -583,6 +847,9 @@ class WoocommerceSyncConnector(models.Model):
             if not odoo_category:
                 odoo_category = self.env['product.category'].create({'name': category_name})
                 _logger.info(f'Created new WooCommerce category in Odoo: {odoo_category.name}')
+
+            if cache is not None:
+                cache[category_name] = odoo_category.id
 
             return odoo_category
 
@@ -611,10 +878,31 @@ class WoocommerceSyncConnector(models.Model):
             return False
 
     @api.model
-    def odoo_tag_create_or_retrieve(self: models.Model, tag_name: str) -> models.Model | bool:
-        """Create or retrieve an Odoo tag."""
+    def odoo_country_retrieve(self: models.Model, country_code: str, cache: dict[str, int] | None = None) -> models.Model:
+        """Retrieve an Odoo country by its ISO code. Returns an empty 'res.country' recordset if not found or 'country_code' is falsy. If 'cache' (country_code -> id) is provided, it is used to avoid repeated searches for the same code within a batch."""
+        if cache is not None and country_code in cache:
+            return self.env['res.country'].browse(cache[country_code])
+
+        try:
+            odoo_country = self.env['res.country'].with_context(lang=False).search([('code', '=', country_code)], limit=1) if country_code else self.env['res.country']
+
+            if cache is not None:
+                cache[country_code] = odoo_country.id
+
+            return odoo_country
+
+        except Exception as error:
+            _logger.error(f'Failed to retrieve WooCommerce country in Odoo: {country_code}: {error}')
+            return self.env['res.country']
+
+    @api.model
+    def odoo_tag_create_or_retrieve(self: models.Model, tag_name: str, cache: dict[str, int] | None = None) -> models.Model | bool:
+        """Create or retrieve an Odoo tag. If 'cache' (name -> id) is provided, it is used to avoid repeated searches/creates for the same name within a batch."""
         if not tag_name:
             return False
+
+        if cache is not None and tag_name in cache:
+            return self.env['product.tag'].browse(cache[tag_name])
 
         try:
             odoo_tag = self.env['product.tag'].with_context(lang=False).search([('name', '=', tag_name)], limit=1)
@@ -624,6 +912,9 @@ class WoocommerceSyncConnector(models.Model):
                     odoo_tag = self.env['product.tag'].create({'name': tag_name})
                     _logger.info(f'Created new WooCommerce tag in Odoo: {odoo_tag.name}')
 
+            if cache is not None:
+                cache[tag_name] = odoo_tag.id
+
             return odoo_tag
 
         except Exception as error:
@@ -631,24 +922,48 @@ class WoocommerceSyncConnector(models.Model):
             return False
 
     @api.model
-    def odoo_tax_rate_create_or_retrieve(self: models.Model, tax_rate: float | None, price_include_tax: bool = False) -> models.Model | bool:
-        """Create or retrieve an Odoo tax rate."""
+    def odoo_tax_calculation_price_include(self: models.Model) -> bool:
+        """Resolves whether Odoo taxes/prices created by this sync should be tax-included, based on the 'settings_odoo_tax_calculation' setting.
+
+        'company' matches the Odoo company's own 'Prices' setting ('env.company.account_price_include').
+        """
+        if self.settings_odoo_tax_calculation == 'company':
+            return self.env.company.account_price_include == 'tax_included'
+
+        return self.settings_odoo_tax_calculation == 'tax_included'
+
+    @api.model
+    def odoo_tax_rate_create_or_retrieve(self: models.Model, tax_rate: float | None, cache: dict[float, int] | None = None) -> models.Model | bool:
+        """Create or retrieve an Odoo tax rate.
+
+        The tax's 'price_include' always matches the 'settings_odoo_tax_calculation' setting (see 'odoo_tax_calculation_price_include()') instead of WooCommerce's - so a freshly-created tax always matches every other tax already used in this Odoo company by default. Prices are converted to match this same convention before being stored on the Odoo side - see 'woocommerce_price_to_odoo_price()'.
+        """
         if tax_rate is None:
             return False
 
-        odoo_price_include_tax = self.env.company.account_sale_tax_id.price_include if self.env.company.account_sale_tax_id else False
-        if odoo_price_include_tax != price_include_tax:
-            _logger.info(f'Mismatch between Odoo and WooCommerce tax rate settings for inclusion of tax in price: {tax_rate}% (Odoo price_include={odoo_price_include_tax}, WooCommerce price_include={price_include_tax})')
-            return False
+        if cache is not None and tax_rate in cache:
+            return self.env['account.tax'].browse(cache[tax_rate])
 
         try:
-            odoo_tax_rate = self.env['account.tax'].search(
-                [('active', '=', True), ('name', '=', f'{tax_rate}%'), ('amount', '=', tax_rate), ('type_tax_use', '=', 'sale'), ('price_include', '=', price_include_tax)], limit=1
-            )
+            odoo_price_include = self.odoo_tax_calculation_price_include()
+            # ':g' avoids '19.0%' (which doesn't match an existing '19%' tax) for whole-number rates
+            tax_name = f'{tax_rate:g}%'
+            tax_domain = [('active', '=', True), ('name', '=', tax_name), ('amount', '=', tax_rate), ('type_tax_use', '=', 'sale'), ('price_include', '=', odoo_price_include)]
+            odoo_tax_rate = self.env['account.tax'].search(tax_domain, limit=1)
 
             if not odoo_tax_rate:
-                odoo_tax_rate = self.env['account.tax'].create({'name': f'{tax_rate}%', 'amount': tax_rate, 'type_tax_use': 'sale', 'price_include': price_include_tax})
-                _logger.info(f'Created new WooCommerce tax rate in Odoo: {odoo_tax_rate.name}')
+                try:
+                    with self.env.cr.savepoint():
+                        odoo_tax_rate = self.env['account.tax'].create({'name': tax_name, 'amount': tax_rate, 'type_tax_use': 'sale', 'price_include': odoo_price_include})
+                    _logger.info(f'Created new WooCommerce tax rate in Odoo: {odoo_tax_rate.name}')
+                except Exception:
+                    # A concurrent sync job already created this tax rate between the search above and this create() - reuse it instead of failing
+                    odoo_tax_rate = self.env['account.tax'].search(tax_domain, limit=1)
+                    if not odoo_tax_rate:
+                        raise
+
+            if cache is not None:
+                cache[tax_rate] = odoo_tax_rate.id
 
             return odoo_tax_rate
 
@@ -657,10 +972,35 @@ class WoocommerceSyncConnector(models.Model):
             return False
 
     @api.model
-    def odoo_unit_of_measure_create_or_retrieve(self: models.Model, unit_of_measure_name: str) -> models.Model | bool:
+    def woocommerce_price_to_odoo_price(self: models.Model, price: str | float | None, tax_rate: float | None, woocommerce_prices_include_tax: bool) -> float:
+        """Converts a WooCommerce product/variation price to match whichever tax convention the Odoo tax created by 'odoo_tax_rate_create_or_retrieve()' uses (see 'odoo_tax_calculation_price_include()'), so the stored 'list_price' and its attached tax always agree on whether tax is included.
+
+        WooCommerce's product/variation 'price' and 'regular_price' fields hold whatever the shop admin entered, interpreted as tax-included/tax-excluded based on the store's own 'Prices entered with tax' setting - unlike order line items, whose 'price' is always tax-excluded regardless of that setting (see 'woocommerce_to_odoo_order_sync()').
+        """
+        if not price:
+            return 0.0
+
+        price = float(price)
+        if not tax_rate:
+            return price
+
+        odoo_price_include = self.odoo_tax_calculation_price_include()
+
+        if woocommerce_prices_include_tax and not odoo_price_include:
+            price /= 1 + (tax_rate / 100)
+        elif not woocommerce_prices_include_tax and odoo_price_include:
+            price *= 1 + (tax_rate / 100)
+
+        return price
+
+    @api.model
+    def odoo_unit_of_measure_create_or_retrieve(self: models.Model, unit_of_measure_name: str, cache: dict[str, int] | None = None) -> models.Model | bool:
         """Create or retrieve an Odoo unit of measure."""
         if not unit_of_measure_name:
             return False
+
+        if cache is not None and unit_of_measure_name in cache:
+            return self.env['uom.uom'].browse(cache[unit_of_measure_name])
 
         try:
             odoo_unit_of_measure = self.env['uom.uom'].with_context(lang=False).search([('active', '=', True), ('name', '=', unit_of_measure_name)], limit=1)
@@ -668,6 +1008,9 @@ class WoocommerceSyncConnector(models.Model):
             if not odoo_unit_of_measure:
                 odoo_unit_of_measure = self.env['uom.uom'].create({'name': unit_of_measure_name, 'category_id': self.env.ref('uom.uom_categ_unit').id, 'factor': 1, 'uom_type': 'reference'})
                 _logger.info(f'Created new WooCommerce unit of measure in Odoo: {odoo_unit_of_measure.name}')
+
+            if cache is not None:
+                cache[unit_of_measure_name] = odoo_unit_of_measure.id
 
             return odoo_unit_of_measure
 
@@ -695,7 +1038,7 @@ class WoocommerceSyncConnector(models.Model):
 
     @api.model
     def odoo_customer_placeholder_create_or_retrieve(self: models.Model) -> models.Model:
-        """Create or retrieve an Odoo placeholder customer for WooCommerce Order integration. The customer placeholder is archived (active=False) and can be used to satisfy the product requirement on sale orders."""
+        """Creates or retrieves an Odoo placeholder customer for WooCommerce Order integration. The customer placeholder is archived (active=False) and can be used to satisfy the customer requirement on sale orders."""
 
         odoo_customer_placeholder = self.env['res.partner'].with_context(active_test=False).search([('ref', '=', 'WooCommerce_Customer_Placeholder')], limit=1)
 
@@ -719,7 +1062,7 @@ class WoocommerceSyncConnector(models.Model):
 
     @api.model
     def odoo_product_placeholder_create_or_retrieve(self: models.Model) -> models.Model:
-        """Create or retrieve an Odoo placeholder product for WooCommerce Order Line Item integration. The product placeholder is archived (active=False) and can be used to satisfy the product requirement on sale order lines."""
+        """Creates or retrieves an Odoo placeholder product for WooCommerce Order Line Item integration. The product placeholder is archived (active=False) and can be used to satisfy the product requirement on sale order lines."""
 
         odoo_product_placeholder = self.env['product.template'].with_context(active_test=False, lang=False).search([('default_code', '=', 'WooCommerce_Product_Placeholder')], limit=1)
 
@@ -745,6 +1088,37 @@ class WoocommerceSyncConnector(models.Model):
             self.env['product.product'].create({'product_tmpl_id': odoo_product_placeholder.id, 'default_code': odoo_product_placeholder.default_code})
 
         return odoo_product_placeholder
+
+    @api.model
+    def odoo_customer_shipping_address_create_or_update(self: models.Model, odoo_customer: models.Model, shipping_values: dict[str, Any], odoo_country_cache: dict[str, int] | None = None) -> models.Model:
+        """Create or update a 'delivery' type child contact under 'odoo_customer' from WooCommerce shipping address fields (works for both 'customer_values' and 'order_values', which share the same 'woocommerce_shipping_*' keys), so 'partner_shipping_id' can point to the real shipping address instead of always reusing the billing partner. Returns 'odoo_customer' unchanged if no shipping address data is present."""
+        if not odoo_customer or not any(shipping_values.get(key) for key in ('woocommerce_shipping_address_1', 'woocommerce_shipping_city', 'woocommerce_shipping_postcode')):
+            return odoo_customer
+
+        shipping_name = f'{shipping_values.get("woocommerce_shipping_first_name") or ""} {shipping_values.get("woocommerce_shipping_last_name") or ""}'.strip() or 'Shipping Address'
+
+        shipping_partner_values = {
+            'type': 'delivery',
+            'parent_id': odoo_customer.id,
+            'name': shipping_name,
+            'street': shipping_values.get('woocommerce_shipping_address_1'),
+            'street2': shipping_values.get('woocommerce_shipping_address_2'),
+            'city': shipping_values.get('woocommerce_shipping_city'),
+            'zip': shipping_values.get('woocommerce_shipping_postcode'),
+            'country_id': self.odoo_country_retrieve(shipping_values.get('woocommerce_shipping_country'), cache=odoo_country_cache).id,
+        }
+
+        odoo_shipping_partner = (
+            self.env['res.partner'].with_context(lang=False).search([('parent_id', '=', odoo_customer.id), ('type', '=', 'delivery'), ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url)], limit=1)
+        )
+
+        if odoo_shipping_partner:
+            odoo_shipping_partner.write(shipping_partner_values)
+        else:
+            shipping_partner_values['woocommerce_site_url'] = self.settings_woocommerce_connection_url
+            odoo_shipping_partner = self.env['res.partner'].create(shipping_partner_values)
+
+        return odoo_shipping_partner
 
     @api.model
     def odoo_delivery_carrier_create_or_retrieve(self: models.Model, woocommerce_shipping_methods: list[dict[str, Any]], shipping_line: dict[str, Any]) -> models.Model | bool:
@@ -804,22 +1178,36 @@ class WoocommerceSyncConnector(models.Model):
 
         return odoo_delivery_carrier
 
-    def odoo_woocommerce_products_stock_quantity_sync(self: models.Model, odoo_product: models.Model, woocommerce_products_stock_map: dict[int, dict[str, Any]]) -> None:
-        # WooCommerce REST API
-        woocommerce_api = self.woocommerce_api_get()
+    @api.model
+    def odoo_woocommerce_service_product_create_or_retrieve(self: models.Model, default_code: str, name: str) -> models.Model:
+        """Create or retrieve a shared service product used to represent WooCommerce order fee/coupon lines as real 'sale.order.line' rows instead of only raw JSON."""
+        odoo_product = self.env['product.product'].with_context(lang=False).search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('default_code', '=', default_code)], limit=1)
 
-        # Check if WooCommerce REST API connection is successful
-        if not woocommerce_api:
-            error_message = 'WooCommerce REST API connection failed. Sync between WooCommerce and Odoo product stock quantity levels process halted; Please check your connection settings in the WooCommerce Configuration'
-            _logger.error(error_message)
-            return
+        if not odoo_product:
+            odoo_product = self.env['product.product'].create(
+                {
+                    'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                    'name': name,
+                    'default_code': default_code,
+                    'type': 'service',
+                    'sale_ok': True,
+                    'purchase_ok': False,
+                    'list_price': 0.0,
+                },
+            )
 
+        return odoo_product
+
+    def odoo_woocommerce_products_stock_quantity_sync(
+        self: models.Model, odoo_product: models.Model, woocommerce_products_stock_map: dict[int, dict[str, Any]], odoo_quants_by_product_id: dict[int, models.Model] | None = None
+    ) -> dict[str, Any] | None:
+        """Syncs stock for a single Odoo product. If WooCommerce is the most recent source, updates Odoo directly and returns 'None'. If Odoo is the most recent source, returns a payload for the caller to push to WooCommerce in a batch request instead of one REST call per product."""
         product_woocommerce_id = odoo_product.woocommerce_id or odoo_product.product_tmpl_id.woocommerce_id
 
         woocommerce_stock_info = woocommerce_products_stock_map.get(product_woocommerce_id)
 
         if not woocommerce_stock_info:
-            return
+            return None
 
         # WooCommerce product stock quantity
         woocommerce_stock_quantity = woocommerce_stock_info.get('stock_quantity')
@@ -827,31 +1215,24 @@ class WoocommerceSyncConnector(models.Model):
             _logger.warning(f'WooCommerce product {odoo_product.name} (WooCommerce product ID {product_woocommerce_id}) has a None "stock_quantity", defaulting to 0.0')
             woocommerce_stock_quantity = 0.0
 
-        # Odoo product stock quant
-        odoo_product_stock_quant = self.env['stock.quant'].search(
-            [
-                ('product_tmpl_id.woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                ('product_id', '=', odoo_product.id),
-                ('location_id', '=', self.settings_woocommerce_products_warehouse_location.lot_stock_id.id),
-            ],
-            limit=1,
-        )
+        # Odoo product stock quant (prefetched for the whole chunk by the caller to avoid one search per product)
+        odoo_product_stock_quant = (odoo_quants_by_product_id or {}).get(odoo_product.id) or self.env['stock.quant']
 
-        if odoo_product_stock_quant and woocommerce_stock_quantity == odoo_product.qty_available:
-            return
+        if odoo_product_stock_quant and float_compare(woocommerce_stock_quantity, odoo_product.qty_available, precision_rounding=odoo_product.uom_id.rounding) == 0:
+            return None
 
         # Get last update dates
         odoo_stock_quantity_last_update = getattr(odoo_product_stock_quant, 'stock_quantity_last_update', None) if odoo_product_stock_quant else None
         odoo_stock_quantity_last_update = odoo_stock_quantity_last_update if isinstance(odoo_stock_quantity_last_update, datetime) else fields.datetime.min
 
-        shorepos_stock_last_sync = getattr(odoo_product, 'shorepos_stock_last_sync', None)
-        shorepos_stock_last_sync = shorepos_stock_last_sync if isinstance(shorepos_stock_last_sync, datetime) else fields.datetime.min
+        odoo_woocommerce_stock_last_sync = odoo_product.woocommerce_stock_last_sync
+        odoo_woocommerce_stock_last_sync = odoo_woocommerce_stock_last_sync if isinstance(odoo_woocommerce_stock_last_sync, datetime) else fields.datetime.min
 
         woocommerce_date_modified_gmt = self.datetime_convert(woocommerce_stock_info['date_modified_gmt'])
         woocommerce_date_modified_gmt = woocommerce_date_modified_gmt if isinstance(woocommerce_date_modified_gmt, datetime) else fields.datetime.min
 
         # Determine the latest timestamp among all sources
-        latest_timestamp = max(odoo_stock_quantity_last_update, shorepos_stock_last_sync, woocommerce_date_modified_gmt)
+        latest_timestamp = max(odoo_stock_quantity_last_update, odoo_woocommerce_stock_last_sync, woocommerce_date_modified_gmt)
 
         # If WooCommerce is the most recent source of truth, update Odoo
         if latest_timestamp == woocommerce_date_modified_gmt:
@@ -877,33 +1258,86 @@ class WoocommerceSyncConnector(models.Model):
             # Update the stock last sync
             odoo_product.woocommerce_stock_last_sync_update(woocommerce_date_modified_gmt)
 
-        # If Odoo is the most recent source, update WooCommerce
+        # If Odoo is the most recent source, return a payload for the caller to batch-push to WooCommerce (instead of one REST call per product)
         else:
-            woocommerce_product = None
+            return {
+                'odoo_product': odoo_product,
+                'woocommerce_parent_id': odoo_product.woocommerce_parent_id,
+                'woocommerce_id': product_woocommerce_id,
+                'stock_quantity': odoo_product.qty_available,
+            }
 
+        return None
+
+    @api.model
+    def odoo_woocommerce_products_stock_quantity_chunk_sync(self: models.Model, odoo_product_ids: list[int], woocommerce_products_stock_map: dict[int, dict[str, Any]]) -> None:
+        """Processes a chunk of Odoo products' stock quantity sync within a single queue job, batching the Odoo-to-WooCommerce pushes into 'products/batch'/'products/{id}/variations/batch' requests instead of one REST call per product."""
+        self.ensure_one()
+
+        # Prefetch all relevant stock quants for this chunk in a single query instead of one search per product
+        odoo_products = self.env['product.product'].browse(odoo_product_ids).exists()
+        odoo_product_stock_quants = self.env['stock.quant'].search(
+            [
+                ('product_tmpl_id.woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                ('product_id', 'in', odoo_products.ids),
+                ('location_id', '=', self.settings_woocommerce_products_warehouse_location.lot_stock_id.id),
+            ],
+        )
+        odoo_quants_by_product_id = {quant.product_id.id: quant for quant in odoo_product_stock_quants}
+
+        pending_pushes = []
+        for odoo_product in odoo_products:
             try:
-                if odoo_product.woocommerce_parent_id and odoo_product.woocommerce_id:
-                    woocommerce_product = woocommerce_api.put(f'products/{odoo_product.woocommerce_parent_id}/variations/{odoo_product.woocommerce_id}', data={'stock_quantity': odoo_product.qty_available}).json()
+                push_payload = self.odoo_woocommerce_products_stock_quantity_sync(odoo_product, woocommerce_products_stock_map, odoo_quants_by_product_id)
+                if push_payload:
+                    pending_pushes.append(push_payload)
+            except Exception:
+                _logger.exception(f'Error syncing stock quantity for Odoo product ID {odoo_product.id} within chunk job')
 
-                elif product_woocommerce_id:
-                    woocommerce_product = woocommerce_api.put(f'products/{product_woocommerce_id}', data={'stock_quantity': odoo_product.qty_available}).json()
+        if not pending_pushes:
+            return
 
-                _logger.info(
-                    f'Updated Odoo product stock quantity in WooCommerce: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {product_woocommerce_id}) - Stock quantity: {odoo_product.qty_available}'
+        woocommerce_api = self.woocommerce_api_get(validate=False)
+        if not woocommerce_api:
+            _logger.error('WooCommerce REST API connection failed. Cannot push Odoo stock quantities to WooCommerce for this chunk')
+            return
+
+        # Simple products go through 'products/batch'; variations are grouped by parent product and go through 'products/{parent_id}/variations/batch'
+        simple_product_pushes = [push for push in pending_pushes if not push['woocommerce_parent_id']]
+        variation_pushes_by_parent_id: dict[str, list[dict[str, Any]]] = {}
+        for push in pending_pushes:
+            if push['woocommerce_parent_id']:
+                variation_pushes_by_parent_id.setdefault(push['woocommerce_parent_id'], []).append(push)
+
+        synced_by_woocommerce_id: dict[str, dict[str, Any]] = {}
+
+        for push_chunk in self.list_chunks(simple_product_pushes, 100):
+            response = woocommerce_api.batch('products', update=[{'id': push['woocommerce_id'], 'stock_quantity': push['stock_quantity']} for push in push_chunk])
+            for woocommerce_product in response.get('update', []):
+                synced_by_woocommerce_id[str(woocommerce_product.get('id'))] = woocommerce_product
+
+        for parent_id, parent_pushes in variation_pushes_by_parent_id.items():
+            for push_chunk in self.list_chunks(parent_pushes, 100):
+                response = woocommerce_api.batch(f'products/{parent_id}/variations', update=[{'id': push['woocommerce_id'], 'stock_quantity': push['stock_quantity']} for push in push_chunk])
+                for woocommerce_product in response.get('update', []):
+                    synced_by_woocommerce_id[str(woocommerce_product.get('id'))] = woocommerce_product
+
+        for push in pending_pushes:
+            woocommerce_product = synced_by_woocommerce_id.get(str(push['woocommerce_id']))
+            odoo_product = push['odoo_product']
+
+            if not woocommerce_product or woocommerce_product.get('error'):
+                _logger.error(
+                    f'Failed to update Odoo product stock quantity in WooCommerce (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {push["woocommerce_id"]}): '
+                    f'{woocommerce_product.get("error") if woocommerce_product else "no response"}'
                 )
+                continue
 
-            except Exception as error:
-                _logger.error(f'Error updating Odoo product stock quantity in WooCommerce product {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {product_woocommerce_id}): {error}')
-                return
+            _logger.info(
+                f'Updated Odoo product stock quantity in WooCommerce: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {push["woocommerce_id"]}) - Stock quantity: {push["stock_quantity"]}'
+            )
 
-            if woocommerce_product and 'code' in woocommerce_product and woocommerce_product['code'] == 'woocommerce_rest_authentication_error':
-                _logger.warning(
-                    f'Skipped updating Odoo product stock quantity in WooCommerce due to "woocommerce_rest_authentication_error": {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {product_woocommerce_id}): {woocommerce_product["message"]}'
-                )
-                return
-
-            # Update the stock last sync
-            if woocommerce_product and 'date_modified_gmt' in woocommerce_product:
+            if 'date_modified_gmt' in woocommerce_product:
                 odoo_product.woocommerce_stock_last_sync_update(self.datetime_convert(woocommerce_product['date_modified_gmt']))
 
     def woocommerce_product_variations_stock_retrieve(self: models.Model, parent_id: int, temporary_sync_data_record_id: int) -> bool:
@@ -972,8 +1406,12 @@ class WoocommerceSyncConnector(models.Model):
                 )
             )
 
-        for odoo_product in odoo_products_batch:
-            self.with_delay().odoo_woocommerce_products_stock_quantity_sync(odoo_product, woocommerce_products_stock_map)
+        # Schedule a job per chunk of Odoo products instead of one job per product, to reduce per-job overhead
+        for odoo_products_chunk in self.list_chunks(odoo_products_batch.ids, self.settings_job_chunk_size):
+            chunk_identity_key = '-'.join(str(odoo_product_id) for odoo_product_id in odoo_products_chunk)
+            self.with_delay(
+                identity_key=f'odoo_woocommerce_products_stock_quantity_chunk_sync-{self.id}-{chunk_identity_key}', description=self.job_description('odoo_woocommerce_products_stock_quantity_chunk_sync')
+            ).odoo_woocommerce_products_stock_quantity_chunk_sync(odoo_products_chunk, woocommerce_products_stock_map)
 
         temporary_sync_data_record.unlink()
 
@@ -1016,8 +1454,11 @@ class WoocommerceSyncConnector(models.Model):
 
         # Chain the parallel jobs to the final processing job
         chain(
-            *[self.delayable().woocommerce_product_variations_stock_retrieve(parent_id, temporary_sync_data_record.id) for parent_id in woocommerce_variable_product_ids],
-            self.delayable().odoo_woocommerce_products_stock_quantity_process(temporary_sync_data_record.id),
+            *[
+                self.delayable(description=self.job_description('woocommerce_product_variations_stock_retrieve')).woocommerce_product_variations_stock_retrieve(parent_id, temporary_sync_data_record.id)
+                for parent_id in woocommerce_variable_product_ids
+            ],
+            self.delayable(description=self.job_description('odoo_woocommerce_products_stock_quantity_process')).odoo_woocommerce_products_stock_quantity_process(temporary_sync_data_record.id),
         ).delay()
 
     @api.model
@@ -1169,23 +1610,13 @@ class WoocommerceSyncConnector(models.Model):
                 'sync_to_woocommerce': True,
                 'source': 'WooCommerce',
                 'language_code': woocommerce_product.get('lang', None),
-                'woocommerce_service': False,  # woocommerce_product.get('service', False), # Germanized field - https://vendidero.de/doc/woocommerce-germanized/products-rest-api
+                # 'service' is a Germanized plugin field (https://vendidero.de/doc/woocommerce-germanized/products-rest-api); fall back to 'virtual'/'downloadable' since Odoo has no direct equivalent and vanilla WooCommerce doesn't expose 'service'
+                'woocommerce_service': bool(woocommerce_product.get('service', woocommerce_product.get('virtual') or woocommerce_product.get('downloadable'))),
             },
         )
 
-        # Loop through the explicitly defined columns
-        for column in [
-            'woocommerce_date_created',
-            'woocommerce_date_created_gmt',
-            'woocommerce_date_modified',
-            'woocommerce_date_modified_gmt',
-            'woocommerce_date_on_sale_from',
-            'woocommerce_date_on_sale_from_gmt',
-            'woocommerce_date_on_sale_to',
-            'woocommerce_date_on_sale_to_gmt',
-        ]:
-            if product_values.get(column):
-                product_values[column] = self.datetime_convert(product_values[column], tz=timezone.utc if column.endswith('_gmt') else None)
+        # WooCommerce's 'date_created'/'date_modified'/'date_on_sale_from'/'date_on_sale_to' are store-local; use the '_gmt' siblings for both
+        self.datetime_gmt_pairs_convert(product_values, ['woocommerce_date_created', 'woocommerce_date_modified', 'woocommerce_date_on_sale_from', 'woocommerce_date_on_sale_to'])
 
         return product_values
 
@@ -1199,9 +1630,17 @@ class WoocommerceSyncConnector(models.Model):
         woocommerce_weight_unit: str,
         woocommerce_dimension_unit: str,
         odoo_products: dict[str, Any],
-    ) -> None:
+        odoo_brand_cache: dict[str, int] | None = None,
+        odoo_category_cache: dict[str, int] | None = None,
+        odoo_tag_cache: dict[str, int] | None = None,
+        odoo_tax_rate_cache: dict[tuple[float, bool], int] | None = None,
+        odoo_uom_cache: dict[str, int] | None = None,
+    ) -> str:
+        """Returns 'created', 'updated' or 'skipped', so the calling chunk job can tally per-direction sync-summary counts."""
         self.ensure_one()
 
+        # Isolate this record's writes so a failure only rolls back to here, not the whole chunk job's transaction
+        savepoint = self.env.cr.savepoint()
         try:
             # Try to find the corresponding product in Odoo by its WooCommerce product ID
             odoo_product = odoo_products.get(str(woocommerce_product['id']))
@@ -1212,7 +1651,7 @@ class WoocommerceSyncConnector(models.Model):
                 # Skip if not modified and stock setting unchanged
                 if self.datetime_convert(woocommerce_product['date_modified_gmt']) <= odoo_product.write_date and odoo_product.woocommerce_manage_stock == woocommerce_product['manage_stock']:
                     _logger.info(f'Skipped import of WooCommerce product into Odoo: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {odoo_product.woocommerce_id})')
-                    return
+                    return 'skipped'
 
                 # Sync if modified or stock setting changed
                 elif (self.datetime_convert(woocommerce_product['date_modified_gmt']) > odoo_product.write_date) or odoo_product.woocommerce_manage_stock != woocommerce_product['manage_stock']:
@@ -1228,7 +1667,7 @@ class WoocommerceSyncConnector(models.Model):
             if 'product.brand' in self.env:
                 odoo_product_brands_ids = []
                 for brand in woocommerce_product['brands']:
-                    odoo_brand = self.odoo_brand_create_or_retrieve(brand['name'])
+                    odoo_brand = self.odoo_brand_create_or_retrieve(brand['name'], cache=odoo_brand_cache)
                     if odoo_brand:
                         odoo_product_brands_ids.append(odoo_brand.id)
 
@@ -1237,7 +1676,7 @@ class WoocommerceSyncConnector(models.Model):
             # Category
             odoo_product_categories_ids = []
             for category in woocommerce_product['categories']:
-                odoo_product_category = self.odoo_category_create_or_retrieve(category['name'])
+                odoo_product_category = self.odoo_category_create_or_retrieve(category['name'], cache=odoo_category_cache)
                 if odoo_product_category:
                     odoo_product_categories_ids.append(odoo_product_category.id)
 
@@ -1266,14 +1705,14 @@ class WoocommerceSyncConnector(models.Model):
             # Tags
             odoo_product_tags_ids = []
             for tag in woocommerce_product['tags']:
-                odoo_tag = self.odoo_tag_create_or_retrieve(tag['name'])
+                odoo_tag = self.odoo_tag_create_or_retrieve(tag['name'], cache=odoo_tag_cache)
                 if odoo_tag:
                     odoo_product_tags_ids.append(odoo_tag.id)
 
-            # Tax
+            # Tax - a WooCommerce 'tax_status' of 'none'/'shipping' means the product itself is not taxable, regardless of its 'tax_class' rate
             odoo_product_tax_id = []
-            if product_values['woocommerce_tax_rate']:
-                odoo_product_tax = self.odoo_tax_rate_create_or_retrieve(product_values['woocommerce_tax_rate'], woocommerce_prices_include_tax)
+            if product_values['woocommerce_tax_rate'] and woocommerce_product.get('tax_status') == 'taxable':
+                odoo_product_tax = self.odoo_tax_rate_create_or_retrieve(product_values['woocommerce_tax_rate'], cache=odoo_tax_rate_cache)
                 if odoo_product_tax:
                     odoo_product_tax_id = [(6, 0, [odoo_product_tax.id])]
 
@@ -1283,7 +1722,7 @@ class WoocommerceSyncConnector(models.Model):
                 odoo_product_unit_of_measure = self.env.ref('uom.product_uom_unit')
 
             elif product_values['woocommerce_weight_unit']:
-                odoo_product_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(product_values['woocommerce_weight_unit'])
+                odoo_product_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(product_values['woocommerce_weight_unit'], cache=odoo_uom_cache)
 
             # Image featured
             odoo_product_image_featured = None
@@ -1308,9 +1747,8 @@ class WoocommerceSyncConnector(models.Model):
                     'currency_id': odoo_product_currency.id if odoo_product_currency else False,
                     'taxes_id': odoo_product_tax_id,
                     'invoice_policy': 'order',
-                    'list_price': float(product_values['woocommerce_price']) if product_values['woocommerce_price'] else 0.0,
+                    'list_price': self.woocommerce_price_to_odoo_price(product_values['woocommerce_price'], product_values['woocommerce_tax_rate'], woocommerce_prices_include_tax),
                     # Category and tags
-                    'categ_id': odoo_product_categories_ids[0] if odoo_product_categories_ids else False,
                     'product_tag_ids': [(6, 0, odoo_product_tags_ids)],
                     # Dimensions
                     'weight': product_values['woocommerce_weight'],
@@ -1322,6 +1760,10 @@ class WoocommerceSyncConnector(models.Model):
                     ),
                 },
             )
+
+            # Category - only set when WooCommerce provides one, so a product without categories keeps Odoo's own default 'categ_id' instead of an explicit 'False' (which violates the field's not-null constraint)
+            if odoo_product_categories_ids:
+                product_values['categ_id'] = odoo_product_categories_ids[0]
 
             # Product type
             if version_info[0] == 16:
@@ -1337,10 +1779,12 @@ class WoocommerceSyncConnector(models.Model):
 
             if odoo_product:
                 odoo_product.write(product_values)
+                sync_status = 'updated'
                 _logger.info(f'Updated WooCommerce product in Odoo: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {odoo_product["woocommerce_id"]})')
 
             else:
                 odoo_product = self.env['product.template'].create(product_values)
+                sync_status = 'created'
                 _logger.info(f'Imported WooCommerce product into Odoo: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {odoo_product["woocommerce_id"]})')
 
             # Product image gallery
@@ -1348,9 +1792,64 @@ class WoocommerceSyncConnector(models.Model):
                 self.image_process_attachments(woocommerce_product['images'][1:], odoo_product)  # Skips the main image
 
         except Exception:
-            # Roll back changes
-            self.env.cr.rollback()
+            # Roll back only this record's changes, keeping other records already written in this chunk job
+            savepoint.rollback()
             _logger.exception(f'Error syncing WooCommerce product {woocommerce_product["name"]} (WooCommerce product ID: {woocommerce_product["id"]})')
+            raise
+        finally:
+            # Release the savepoint (whether it was rolled back above or the record synced successfully) so it never lingers open for the rest of this chunk job's transaction
+            savepoint.close(rollback=False)
+
+        return sync_status
+
+    @api.model
+    def woocommerce_to_odoo_products_chunk_sync(
+        self: models.Model,
+        woocommerce_products: list[dict[str, Any]],
+        woocommerce_currency: str,
+        woocommerce_tax_rates: dict[str, float],
+        woocommerce_prices_include_tax: bool,
+        woocommerce_weight_unit: str,
+        woocommerce_dimension_unit: str,
+        odoo_products: dict[str, Any],
+        odoo_brand_cache: dict[str, int] | None = None,
+        odoo_category_cache: dict[str, int] | None = None,
+        odoo_tag_cache: dict[str, int] | None = None,
+    ) -> None:
+        """Processes a chunk of WooCommerce products sequentially within a single queue job, sharing the caches passed by the batch job instead of re-fetching them per product."""
+        self.ensure_one()
+
+        # Shared tax rate/unit of measure caches for the products in this chunk
+        odoo_tax_rate_cache: dict[tuple[float, bool], int] = {}
+        odoo_uom_cache: dict[str, int] = {}
+        new_count = updated_count = 0
+        errors: list[str] = []
+
+        for woocommerce_product in woocommerce_products:
+            try:
+                sync_status = self.woocommerce_to_odoo_product_sync(
+                    woocommerce_product,
+                    woocommerce_currency,
+                    woocommerce_tax_rates,
+                    woocommerce_prices_include_tax,
+                    woocommerce_weight_unit,
+                    woocommerce_dimension_unit,
+                    odoo_products,
+                    odoo_brand_cache,
+                    odoo_category_cache,
+                    odoo_tag_cache,
+                    odoo_tax_rate_cache,
+                    odoo_uom_cache,
+                )
+                if sync_status == 'created':
+                    new_count += 1
+                elif sync_status == 'updated':
+                    updated_count += 1
+            except Exception as error:
+                _logger.exception(f'Error syncing WooCommerce product {woocommerce_product.get("id")} within chunk job')
+                errors.append(f'Product {woocommerce_product.get("id")}: {error}')
+
+        self.sync_summary_chunk_completed('products', len(woocommerce_products), new_count, updated_count, errors)
 
     @api.model
     def woocommerce_to_odoo_products_sync_batch(
@@ -1376,7 +1875,7 @@ class WoocommerceSyncConnector(models.Model):
         params = {'status': 'publish'}
 
         if self.settings_woocommerce_modified_records_import:
-            odoo_woocommerce_last_sync = self.odoo_shorepos_last_sync_retrieve()
+            odoo_woocommerce_last_sync = self.odoo_woocommerce_last_sync_retrieve()
             if odoo_woocommerce_last_sync:
                 params['modified_after'] = odoo_woocommerce_last_sync.strftime('%Y-%m-%dT%H:%M:%S')  # ISO 8601 date format
 
@@ -1398,11 +1897,42 @@ class WoocommerceSyncConnector(models.Model):
             # Filter for WooCommerce products that have SKU
             woocommerce_products_batch = [woocommerce_product for woocommerce_product in woocommerce_products_batch if woocommerce_product['sku']]
 
-            # Schedule a separate job for each WooCommerce product in the batch
-            for woocommerce_product in woocommerce_products_batch:
-                self.with_delay().woocommerce_to_odoo_product_sync(
-                    woocommerce_product, woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit, odoo_products
+            if not woocommerce_products_batch:
+                continue
+
+            # Pre-resolve all distinct brands/categories/tags referenced in this page once, instead of letting every per-product job search/create them individually
+            odoo_brand_cache: dict[str, int] = {}
+            odoo_category_cache: dict[str, int] = {}
+            odoo_tag_cache: dict[str, int] = {}
+
+            if 'product.brand' in self.env:
+                for brand_name in {brand['name'] for woocommerce_product in woocommerce_products_batch for brand in woocommerce_product.get('brands', []) if brand.get('name')}:
+                    self.odoo_brand_create_or_retrieve(brand_name, cache=odoo_brand_cache)
+
+            for category_name in {category['name'] for woocommerce_product in woocommerce_products_batch for category in woocommerce_product.get('categories', []) if category.get('name')}:
+                self.odoo_category_create_or_retrieve(category_name, cache=odoo_category_cache)
+
+            for tag_name in {tag['name'] for woocommerce_product in woocommerce_products_batch for tag in woocommerce_product.get('tags', []) if tag.get('name')}:
+                self.odoo_tag_create_or_retrieve(tag_name, cache=odoo_tag_cache)
+
+            # Schedule a job per chunk of WooCommerce products instead of one job per product, to reduce per-job overhead
+            for products_chunk in self.list_chunks(woocommerce_products_batch, self.settings_job_chunk_size):
+                chunk_identity_key = '-'.join(str(woocommerce_product['id']) for woocommerce_product in products_chunk)
+                self.with_delay(
+                    identity_key=f'woocommerce_to_odoo_products_chunk_sync-{self.id}-{chunk_identity_key}', description=self.job_description('woocommerce_to_odoo_products_chunk_sync')
+                ).woocommerce_to_odoo_products_chunk_sync(
+                    products_chunk,
+                    woocommerce_currency,
+                    woocommerce_tax_rates,
+                    woocommerce_prices_include_tax,
+                    woocommerce_weight_unit,
+                    woocommerce_dimension_unit,
+                    odoo_products,
+                    odoo_brand_cache,
+                    odoo_category_cache,
+                    odoo_tag_cache,
                 )
+                self.sync_summary_chunk_dispatched()
 
     @api.model
     def woocommerce_to_odoo_products_related_ids(self: models.Model) -> None:
@@ -1519,23 +2049,13 @@ class WoocommerceSyncConnector(models.Model):
         # Custom fields
         product_variation_values.update(
             {
-                'woocommerce_service': False,  # product.get('service', False), # Germanized field - https://vendidero.de/doc/woocommerce-germanized/products-rest-api
+                # 'service' is a Germanized plugin field (https://vendidero.de/doc/woocommerce-germanized/products-rest-api); fall back to 'virtual'/'downloadable' since Odoo has no direct equivalent and vanilla WooCommerce doesn't expose 'service'
+                'woocommerce_service': bool(woocommerce_variation.get('service', woocommerce_variation.get('virtual') or woocommerce_variation.get('downloadable'))),
             },
         )
 
-        # Loop through the explicitly defined columns
-        for column in [
-            'woocommerce_date_created',
-            'woocommerce_date_created_gmt',
-            'woocommerce_date_modified',
-            'woocommerce_date_modified_gmt',
-            'woocommerce_date_on_sale_from',
-            'woocommerce_date_on_sale_from_gmt',
-            'woocommerce_date_on_sale_to',
-            'woocommerce_date_on_sale_to_gmt',
-        ]:
-            if product_variation_values.get(column):
-                product_variation_values[column] = self.datetime_convert(product_variation_values[column], tz=timezone.utc if column.endswith('_gmt') else None)
+        # WooCommerce's 'date_created'/'date_modified'/'date_on_sale_from'/'date_on_sale_to' are store-local; use the '_gmt' siblings for both
+        self.datetime_gmt_pairs_convert(product_variation_values, ['woocommerce_date_created', 'woocommerce_date_modified', 'woocommerce_date_on_sale_from', 'woocommerce_date_on_sale_to'])
 
         return product_variation_values
 
@@ -1547,18 +2067,33 @@ class WoocommerceSyncConnector(models.Model):
         woocommerce_prices_include_tax: bool,
         woocommerce_weight_unit: str,
         woocommerce_dimension_unit: str,
-    ) -> None:
+        odoo_attribute_cache: dict[str, int] | None = None,
+        odoo_attribute_value_cache: dict[tuple[int, str], int] | None = None,
+        odoo_tax_rate_cache: dict[tuple[float, bool], int] | None = None,
+        odoo_uom_cache: dict[str, int] | None = None,
+    ) -> dict[str, int]:
+        """Returns {'new': <count>, 'updated': <count>} across all of this product's variations, so the calling chunk job can tally per-direction sync-summary counts."""
         self.ensure_one()
 
+        # Caches are local to this call by default (still avoids re-querying the same attribute/value more than once across all of this product's variations); a chunk job may pass in shared dicts to also reuse them across products
+        if odoo_attribute_cache is None:
+            odoo_attribute_cache = {}
+        if odoo_attribute_value_cache is None:
+            odoo_attribute_value_cache = {}
+
+        new_count = updated_count = 0
+
+        # Isolate this record's writes so a failure only rolls back to here, not the whole chunk job's transaction
+        savepoint = self.env.cr.savepoint()
         try:
-            # WooCommerce REST API
-            woocommerce_api = self.woocommerce_api_get()
+            # WooCommerce REST API (connectivity already validated by the batch job that scheduled this per-record job)
+            woocommerce_api = self.woocommerce_api_get(validate=False)
 
             # Check if WooCommerce REST API connection is successful
             if not woocommerce_api:
                 error_message = 'WooCommerce REST API connection failed. WooCommerce to Odoo products variations sync process halted; Please check your connection settings in the WooCommerce Configuration'
                 _logger.error(error_message)
-                return
+                return {'new': new_count, 'updated': updated_count}
 
             # Search for existing product in Odoo
             odoo_product = (
@@ -1571,7 +2106,7 @@ class WoocommerceSyncConnector(models.Model):
             )
             if not odoo_product:
                 _logger.warning(f'Not found Odoo product for WooCommerce product: {woocommerce_product["name"]} (WooCommerce product ID: {woocommerce_product["id"]})')
-                return
+                return {'new': new_count, 'updated': updated_count}
 
             if odoo_product:
                 # Store 'product.template' SKU
@@ -1581,7 +2116,7 @@ class WoocommerceSyncConnector(models.Model):
                 params = {'status': 'publish'}
 
                 if self.settings_woocommerce_modified_records_import:
-                    odoo_woocommerce_last_sync = self.odoo_shorepos_last_sync_retrieve()
+                    odoo_woocommerce_last_sync = self.odoo_woocommerce_last_sync_retrieve()
                     if odoo_woocommerce_last_sync:
                         params['modified_after'] = odoo_woocommerce_last_sync.strftime('%Y-%m-%dT%H:%M:%S')  # ISO 8601 date format
 
@@ -1597,32 +2132,43 @@ class WoocommerceSyncConnector(models.Model):
 
                 # Ensure all attributes and values are created on the product template first
                 for name, option in all_woocommerce_attributes:
-                    # Search for or create the product attribute
-                    odoo_product_attribute = self.env['product.attribute'].with_context(lang=False).search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('name', '=', name)], limit=1)
+                    # Search for or create the product attribute (cached by name, since it is looked up again below for every variation)
+                    if name in odoo_attribute_cache:
+                        odoo_product_attribute = self.env['product.attribute'].browse(odoo_attribute_cache[name])
+                    else:
+                        odoo_product_attribute = self.env['product.attribute'].with_context(lang=False).search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('name', '=', name)], limit=1)
 
-                    if odoo_product_attribute and odoo_product_attribute.create_variant != 'dynamic':
-                        _logger.warning(
-                            f"The 'create_variant' mode for attribute '{odoo_product_attribute.name}' is not 'dynamic'. Odoo prevents changing this setting because the attribute is in use on other products. This may result in unintended product variants being generated"
+                        if odoo_product_attribute and odoo_product_attribute.create_variant != 'dynamic':
+                            _logger.warning(
+                                f"The 'create_variant' mode for attribute '{odoo_product_attribute.name}' is not 'dynamic'. Odoo prevents changing this setting because the attribute is in use on other products. This may result in unintended product variants being generated"
+                            )
+
+                        # Create the attribute if it doesn't exist, with 'dynamic' setting
+                        if not odoo_product_attribute:
+                            odoo_product_attribute = self.env['product.attribute'].create({'woocommerce_site_url': self.settings_woocommerce_connection_url, 'name': name, 'create_variant': 'dynamic'})
+                            _logger.info(f'Created WooCommerce product attribute in Odoo: {odoo_product_attribute.name}')
+
+                        odoo_attribute_cache[name] = odoo_product_attribute.id
+
+                    # Create or retrieve the attribute value for this attribute (cached by (attribute_id, option))
+                    attribute_value_cache_key = (odoo_product_attribute.id, option)
+                    if attribute_value_cache_key in odoo_attribute_value_cache:
+                        odoo_product_attribute_value = self.env['product.attribute.value'].browse(odoo_attribute_value_cache[attribute_value_cache_key])
+                    else:
+                        odoo_product_attribute_value = (
+                            self.env['product.attribute.value']
+                            .with_context(lang=False)
+                            .search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('attribute_id', '=', odoo_product_attribute.id), ('name', '=', option)], limit=1)
                         )
 
-                    # Create the attribute if it doesn't exist, with 'dynamic' setting
-                    if not odoo_product_attribute:
-                        odoo_product_attribute = self.env['product.attribute'].create({'woocommerce_site_url': self.settings_woocommerce_connection_url, 'name': name, 'create_variant': 'dynamic'})
-                        _logger.info(f'Created WooCommerce product attribute in Odoo: {odoo_product_attribute.name}')
+                        if not odoo_product_attribute_value:
+                            with self.env.cr.savepoint():
+                                odoo_product_attribute_value = self.env['product.attribute.value'].create(
+                                    {'woocommerce_site_url': self.settings_woocommerce_connection_url, 'attribute_id': odoo_product_attribute.id, 'name': option}
+                                )
+                                _logger.info(f'Created WooCommerce product attribute value in Odoo: {odoo_product_attribute_value.name}')
 
-                    # Create or retrieve the attribute value for this attribute
-                    odoo_product_attribute_value = (
-                        self.env['product.attribute.value']
-                        .with_context(lang=False)
-                        .search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('attribute_id', '=', odoo_product_attribute.id), ('name', '=', option)], limit=1)
-                    )
-
-                    if not odoo_product_attribute_value:
-                        with self.env.cr.savepoint():
-                            odoo_product_attribute_value = self.env['product.attribute.value'].create(
-                                {'woocommerce_site_url': self.settings_woocommerce_connection_url, 'attribute_id': odoo_product_attribute.id, 'name': option}
-                            )
-                            _logger.info(f'Created WooCommerce product attribute value in Odoo: {odoo_product_attribute_value.name}')
+                        odoo_attribute_value_cache[attribute_value_cache_key] = odoo_product_attribute_value.id
 
                     # Ensure the product template has a matching attribute line and add the value
                     attribute_line = odoo_product.attribute_line_ids.filtered(lambda line, odoo_product_attribute=odoo_product_attribute: line.attribute_id.id == odoo_product_attribute.id)
@@ -1639,8 +2185,34 @@ class WoocommerceSyncConnector(models.Model):
                         if odoo_product_attribute_value.id not in attribute_line.value_ids.ids:
                             attribute_line.write({'value_ids': [(4, odoo_product_attribute_value.id)]})
 
+                # Cache for 'product.template.attribute.value' lookups, keyed by (attribute_id, attribute_value_id), populated once per product instead of once per (variation, attribute) pair
+                odoo_product_template_attribute_value_cache: dict[tuple[int, int], int] = {}
+
+                # Existing variants for all of this product's variations, prefetched once instead of once per variation
+                odoo_existing_variants_by_woocommerce_id = {
+                    variant.woocommerce_id: variant
+                    for variant in self.env['product.product']
+                    .with_context(lang=False)
+                    .search(
+                        [
+                            ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                            ('active', '=', True),
+                            ('woocommerce_id', 'in', [woocommerce_variation['id'] for woocommerce_variation in woocommerce_variations]),
+                        ]
+                    )
+                }
+
                 # Iterate through each WooCommerce variation to process it
                 for woocommerce_variation in woocommerce_variations:
+                    # Skip if not modified since the last sync (mirrors the equivalent check in 'woocommerce_to_odoo_product_sync()') to avoid
+                    # an unconditional 'write()' - and its log line - on every sync run even when nothing about the variation actually changed
+                    odoo_existing_variant = odoo_existing_variants_by_woocommerce_id.get(woocommerce_variation['id']) or self.env['product.product']
+                    if odoo_existing_variant and self.datetime_convert(woocommerce_variation['date_modified_gmt']) <= odoo_existing_variant.write_date:
+                        _logger.info(
+                            f'Skipped import of WooCommerce product variation into Odoo: {odoo_existing_variant.display_name} (Odoo product variant ID: {odoo_existing_variant.id}, WooCommerce product variation ID: {woocommerce_variation["id"]})'
+                        )
+                        continue
+
                     product_variation_values = self.woocommerce_product_variation_fields(
                         woocommerce_variation,
                         woocommerce_currency,
@@ -1659,10 +2231,10 @@ class WoocommerceSyncConnector(models.Model):
                     if self.settings_woocommerce_images_sync and woocommerce_variation['image'] is not None:
                         odoo_product_variant_image_featured = self.image_download_file_to_base64(woocommerce_variation['image'])
 
-                    # Tax
+                    # Tax - a WooCommerce 'tax_status' of 'none'/'shipping' means the variation itself is not taxable, regardless of its 'tax_class' rate
                     odoo_product_variant_tax_id = []
-                    if product_variation_values['woocommerce_tax_rate']:
-                        odoo_product_variant_tax = self.odoo_tax_rate_create_or_retrieve(product_variation_values['woocommerce_tax_rate'], woocommerce_prices_include_tax)
+                    if product_variation_values['woocommerce_tax_rate'] and woocommerce_variation.get('tax_status') == 'taxable':
+                        odoo_product_variant_tax = self.odoo_tax_rate_create_or_retrieve(product_variation_values['woocommerce_tax_rate'], cache=odoo_tax_rate_cache)
                         if odoo_product_variant_tax:
                             odoo_product_variant_tax_id = [(6, 0, [odoo_product_variant_tax.id])]
 
@@ -1672,7 +2244,7 @@ class WoocommerceSyncConnector(models.Model):
                         odoo_product_variant_unit_of_measure = self.env.ref('uom.product_uom_unit')
 
                     elif product_variation_values['woocommerce_weight_unit']:
-                        odoo_product_variant_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(product_variation_values['woocommerce_weight_unit'])
+                        odoo_product_variant_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(product_variation_values['woocommerce_weight_unit'], cache=odoo_uom_cache)
 
                     # Build a list of Odoo attribute value IDs for the specific combination
                     odoo_product_template_attribute_value_ids = []
@@ -1680,25 +2252,39 @@ class WoocommerceSyncConnector(models.Model):
                         if not woocommerce_attribute.get('name') or not woocommerce_attribute.get('option'):
                             continue
 
-                        odoo_product_attribute = self.env['product.attribute'].with_context(lang=False).search([('name', '=', woocommerce_attribute.get('name'))], limit=1)
-                        odoo_product_attribute_value = (
-                            self.env['product.attribute.value'].with_context(lang=False).search([('attribute_id', '=', odoo_product_attribute.id), ('name', '=', woocommerce_attribute.get('option'))], limit=1)
-                        )
+                        # Reuse the attribute/attribute-value caches populated above instead of re-querying the DB for every variation
+                        if woocommerce_attribute['name'] in odoo_attribute_cache:
+                            odoo_product_attribute = self.env['product.attribute'].browse(odoo_attribute_cache[woocommerce_attribute['name']])
+                        else:
+                            odoo_product_attribute = self.env['product.attribute'].with_context(lang=False).search([('name', '=', woocommerce_attribute.get('name'))], limit=1)
 
-                        product_template_attribute_value = (
-                            self.env['product.template.attribute.value']
-                            .with_context(lang=False)
-                            .search(
-                                [
-                                    ('product_tmpl_id', '=', odoo_product.id),
-                                    ('attribute_id', '=', odoo_product_attribute.id),
-                                    ('product_attribute_value_id', '=', odoo_product_attribute_value.id),
-                                ],
-                                limit=1,
+                        attribute_value_cache_key = (odoo_product_attribute.id, woocommerce_attribute['option'])
+                        if attribute_value_cache_key in odoo_attribute_value_cache:
+                            odoo_product_attribute_value = self.env['product.attribute.value'].browse(odoo_attribute_value_cache[attribute_value_cache_key])
+                        else:
+                            odoo_product_attribute_value = (
+                                self.env['product.attribute.value'].with_context(lang=False).search([('attribute_id', '=', odoo_product_attribute.id), ('name', '=', woocommerce_attribute.get('option'))], limit=1)
                             )
-                        )
-                        if product_template_attribute_value:
-                            odoo_product_template_attribute_value_ids.append(product_template_attribute_value.id)
+
+                        product_template_attribute_value_cache_key = (odoo_product_attribute.id, odoo_product_attribute_value.id)
+                        if product_template_attribute_value_cache_key in odoo_product_template_attribute_value_cache:
+                            odoo_product_template_attribute_value_ids.append(odoo_product_template_attribute_value_cache[product_template_attribute_value_cache_key])
+                        else:
+                            product_template_attribute_value = (
+                                self.env['product.template.attribute.value']
+                                .with_context(lang=False)
+                                .search(
+                                    [
+                                        ('product_tmpl_id', '=', odoo_product.id),
+                                        ('attribute_id', '=', odoo_product_attribute.id),
+                                        ('product_attribute_value_id', '=', odoo_product_attribute_value.id),
+                                    ],
+                                    limit=1,
+                                )
+                            )
+                            if product_template_attribute_value:
+                                odoo_product_template_attribute_value_cache[product_template_attribute_value_cache_key] = product_template_attribute_value.id
+                                odoo_product_template_attribute_value_ids.append(product_template_attribute_value.id)
 
                     # Odoo 'product.product' model fields
                     product_variation_values.update(
@@ -1716,7 +2302,7 @@ class WoocommerceSyncConnector(models.Model):
                             'currency_id': odoo_product_variant_currency.id if odoo_product_variant_currency else False,
                             'taxes_id': odoo_product_variant_tax_id,
                             'invoice_policy': 'order',
-                            'list_price': float(product_variation_values['woocommerce_price']) if product_variation_values['woocommerce_price'] else 0.0,
+                            'list_price': self.woocommerce_price_to_odoo_price(product_variation_values['woocommerce_price'], product_variation_values['woocommerce_tax_rate'], woocommerce_prices_include_tax),
                             # Dimensions
                             'weight': product_variation_values['woocommerce_weight'],
                             'uom_id': odoo_product_variant_unit_of_measure.id if odoo_product_variant_unit_of_measure else False,
@@ -1747,9 +2333,12 @@ class WoocommerceSyncConnector(models.Model):
                     attribute_values_recset = self.env['product.template.attribute.value'].with_context(lang=False).browse(odoo_product_template_attribute_value_ids)
                     odoo_product_variant = odoo_product._get_variant_for_combination(attribute_values_recset)
 
-                    if not odoo_product_variant:
+                    if odoo_product_variant:
+                        updated_count += 1
+                    else:
                         # Use the safer Odoo method to create a variant from a specific combination
                         odoo_product_variant = odoo_product._create_product_variant(attribute_values_recset)
+                        new_count += 1
 
                     # Odoo product variant exists or was just created, now update it
                     odoo_product_variant.write(product_variation_values)
@@ -1775,9 +2364,59 @@ class WoocommerceSyncConnector(models.Model):
                 odoo_product.write({'default_code': odoo_product_sku})
 
         except Exception:
-            # Roll back changes
-            self.env.cr.rollback()
+            # Roll back only this record's changes, keeping other records already written in this chunk job
+            savepoint.rollback()
             _logger.exception(f'Error syncing WooCommerce product: {woocommerce_product["name"]} (WooCommerce product ID: {woocommerce_product["id"]})')
+            raise
+        finally:
+            # Release the savepoint (whether it was rolled back above or the record synced successfully) so it never lingers open for the rest of this chunk job's transaction
+            savepoint.close(rollback=False)
+
+        return {'new': new_count, 'updated': updated_count}
+
+    @api.model
+    def woocommerce_to_odoo_products_variations_chunk_sync(
+        self: models.Model,
+        woocommerce_products: list[dict[str, Any]],
+        woocommerce_currency: str,
+        woocommerce_tax_rates: dict[str, float],
+        woocommerce_prices_include_tax: bool,
+        woocommerce_weight_unit: str,
+        woocommerce_dimension_unit: str,
+    ) -> None:
+        """Processes a chunk of WooCommerce products' variations sequentially within a single queue job."""
+        self.ensure_one()
+
+        # Shared attribute/attribute-value/tax-rate/UoM caches for the products in this chunk
+        odoo_attribute_cache: dict[str, int] = {}
+        odoo_attribute_value_cache: dict[tuple[int, str], int] = {}
+        odoo_tax_rate_cache: dict[tuple[float, bool], int] = {}
+        odoo_uom_cache: dict[str, int] = {}
+        errors: list[str] = []
+        new_count = updated_count = 0
+
+        for woocommerce_product in woocommerce_products:
+            try:
+                variation_counts = self.woocommerce_to_odoo_product_variations_sync(
+                    woocommerce_product,
+                    woocommerce_currency,
+                    woocommerce_tax_rates,
+                    woocommerce_prices_include_tax,
+                    woocommerce_weight_unit,
+                    woocommerce_dimension_unit,
+                    odoo_attribute_cache,
+                    odoo_attribute_value_cache,
+                    odoo_tax_rate_cache,
+                    odoo_uom_cache,
+                )
+                new_count += variation_counts['new']
+                updated_count += variation_counts['updated']
+            except Exception as error:
+                _logger.exception(f'Error syncing WooCommerce product variations for product {woocommerce_product.get("id")} within chunk job')
+                errors.append(f'Product variations {woocommerce_product.get("id")}: {error}')
+
+        # 'processed' counts variations (not products, unlike 'len(woocommerce_products)') to match the 'new'/'updated' counts and the summary message's per-direction breakdown
+        self.sync_summary_chunk_completed('variations', new_count + updated_count, new_count, updated_count, errors)
 
     def woocommerce_to_odoo_products_variations_sync_batch(
         self: models.Model,
@@ -1802,7 +2441,7 @@ class WoocommerceSyncConnector(models.Model):
         params = {'status': 'publish', '_fields': 'id,sku,name,variations', 'type': 'variable'}
 
         if self.settings_woocommerce_modified_records_import:
-            odoo_woocommerce_last_sync = self.odoo_shorepos_last_sync_retrieve()
+            odoo_woocommerce_last_sync = self.odoo_woocommerce_last_sync_retrieve()
             if odoo_woocommerce_last_sync:
                 params['modified_after'] = odoo_woocommerce_last_sync.strftime('%Y-%m-%dT%H:%M:%S')  # ISO 8601 date format
 
@@ -1813,13 +2452,18 @@ class WoocommerceSyncConnector(models.Model):
             # Filter for WooCommerce products that have SKU
             woocommerce_products_batch = [woocommerce_product for woocommerce_product in woocommerce_products_batch if woocommerce_product['sku']]
 
-            # Schedule a separate job for each WooCommerce product in the batch
-            for woocommerce_product in woocommerce_products_batch:
-                self.with_delay().woocommerce_to_odoo_product_variations_sync(
-                    woocommerce_product, woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit
-                )
+            # Schedule a job per chunk of WooCommerce products instead of one job per product, to reduce per-job overhead
+            for products_chunk in self.list_chunks(woocommerce_products_batch, self.settings_job_chunk_size):
+                chunk_identity_key = '-'.join(str(woocommerce_product['id']) for woocommerce_product in products_chunk)
+                self.with_delay(
+                    identity_key=f'woocommerce_to_odoo_products_variations_chunk_sync-{self.id}-{chunk_identity_key}', description=self.job_description('woocommerce_to_odoo_products_variations_chunk_sync')
+                ).woocommerce_to_odoo_products_variations_chunk_sync(products_chunk, woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit)
+                self.sync_summary_chunk_dispatched()
 
-    def woocommerce_to_odoo_customer_sync(self: models.Model, woocommerce_customer: dict[str, Any], odoo_customers: dict[str, Any]) -> None:
+    def woocommerce_to_odoo_customer_sync(self: models.Model, woocommerce_customer: dict[str, Any], odoo_customers: dict[str, Any], odoo_country_cache: dict[str, int] | None = None) -> str:
+        """Returns 'created', 'updated' or 'skipped', so the calling chunk job can tally per-direction sync-summary counts."""
+        # Isolate this record's writes so a failure only rolls back to here, not the whole chunk job's transaction
+        savepoint = self.env.cr.savepoint()
         try:
             # Try to find the corresponding partner in Odoo by its WooCommerce customer ID
             odoo_customer = odoo_customers.get(str(woocommerce_customer['id']))
@@ -1830,7 +2474,7 @@ class WoocommerceSyncConnector(models.Model):
                 # Skip if not modified
                 if self.datetime_convert(woocommerce_customer['date_modified_gmt']) <= odoo_customer.write_date:
                     _logger.info(f'Skipped import of WooCommerce customer into Odoo: {odoo_customer.name} (Odoo customer ID: {odoo_customer.id}, WooCommerce customer ID: {odoo_customer.woocommerce_id})')
-                    return
+                    return 'skipped'
 
             # Create new customer in Odoo if it does not yet exist or update customer in Odoo only if WooCommerce version is newer
 
@@ -1895,17 +2539,22 @@ class WoocommerceSyncConnector(models.Model):
 
             ## Brazil (requires 'l10n_br_base' Odoo add-on)
             if self.env['ir.module.module'].with_context(lang=False).search([('name', '=', 'l10n_br_base'), ('state', '=', 'installed')], limit=1):
+                billing = woocommerce_customer['billing']
+
+                # '_billing_persontype' meta: '1' = pessoa física (prefer CPF), '2' = pessoa jurídica (prefer CNPJ)
+                cpf_cnpj = (billing.get('cnpj') or billing.get('cpf')) if str(billing.get('persontype') or '') == '2' else (billing.get('cpf') or billing.get('cnpj'))
+
                 # Check for CPF/CNPJ and update if present
-                if (woocommerce_customer['billing']['cpf'] or woocommerce_customer['billing']['cnpj']) and 'cnpj_cpf' in self.env['res.partner']._fields:
-                    customer_values['cnpj_cpf'] = woocommerce_customer['billing']['cpf'] or woocommerce_customer['billing']['cnpj']
+                if cpf_cnpj and 'cnpj_cpf' in self.env['res.partner']._fields:
+                    customer_values['cnpj_cpf'] = cpf_cnpj
 
                 # Check for RG and update if present
-                if woocommerce_customer['billing']['rg'] and 'l10n_br_rg_code' in self.env['res.partner']._fields:
-                    customer_values['l10n_br_rg_code'] = woocommerce_customer['billing']['rg']
+                if billing.get('rg') and 'l10n_br_rg_code' in self.env['res.partner']._fields:
+                    customer_values['l10n_br_rg_code'] = billing['rg']
 
                 # Check for IE and update if present
-                if woocommerce_customer['billing']['ie'] and 'l10n_br_ie_code' in self.env['res.partner']._fields:
-                    customer_values['l10n_br_ie_code'] = woocommerce_customer['billing']['ie']
+                if billing.get('ie') and 'l10n_br_ie_code' in self.env['res.partner']._fields:
+                    customer_values['l10n_br_ie_code'] = billing['ie']
 
             # Custom fields
             customer_values.update(
@@ -1916,15 +2565,8 @@ class WoocommerceSyncConnector(models.Model):
                 },
             )
 
-            # Loop through the explicitly defined date columns for conversion
-            for column in [
-                'woocommerce_date_created',
-                'woocommerce_date_created_gmt',
-                'woocommerce_date_modified',
-                'woocommerce_date_modified_gmt',
-            ]:
-                if customer_values.get(column):
-                    customer_values[column] = self.datetime_convert(customer_values[column], tz=timezone.utc if column.endswith('_gmt') else None)
+            # WooCommerce's 'date_created'/'date_modified' are store-local; use the '_gmt' siblings for both
+            self.datetime_gmt_pairs_convert(customer_values, ['woocommerce_date_created', 'woocommerce_date_modified'])
 
             # Customer avatar
             if self.settings_woocommerce_images_sync and woocommerce_customer['avatar_url'] != '':
@@ -1953,23 +2595,67 @@ class WoocommerceSyncConnector(models.Model):
                     'street2': customer_values['woocommerce_billing_address_2'],
                     'city': customer_values['woocommerce_billing_city'],
                     'zip': customer_values['woocommerce_billing_postcode'],
-                    'country_id': self.env['res.country'].with_context(lang=False).search([('code', '=', customer_values['woocommerce_billing_country'])], limit=1).id,
+                    'country_id': self.odoo_country_retrieve(customer_values['woocommerce_billing_country'], cache=odoo_country_cache).id,
                 },
             )
 
             if odoo_customer:
                 if customer_values['woocommerce_date_modified_gmt'] > odoo_customer['write_date']:
                     odoo_customer.write(customer_values)
+                    sync_status = 'updated'
                     _logger.info(f'Updated WooCommerce customer in Odoo: {odoo_customer.name} (Odoo customer ID: {odoo_customer.id}, WooCommerce customer ID: {odoo_customer["woocommerce_id"]})')
+                else:
+                    sync_status = 'skipped'
 
             else:
-                odoo_customer = self.env['res.partner'].create(customer_values)
+                try:
+                    with self.env.cr.savepoint():
+                        odoo_customer = self.env['res.partner'].create(customer_values)
+                except Exception:
+                    # A concurrent sync job (e.g. order sync creating the same customer from billing info) already created this customer - reuse it instead of failing
+                    odoo_customer = self.env['res.partner'].search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', customer_values['woocommerce_id'])], limit=1)
+                    if not odoo_customer:
+                        raise
+                    odoo_customer.write(customer_values)
+                sync_status = 'created'
                 _logger.info(f'Imported WooCommerce customer into Odoo: {odoo_customer.name} (Odoo customer ID: {odoo_customer.id}, WooCommerce customer ID: {odoo_customer["woocommerce_id"]})')
 
+            # Shipping address (only creates/updates a child contact when WooCommerce shipping fields are actually set)
+            self.odoo_customer_shipping_address_create_or_update(odoo_customer, customer_values, odoo_country_cache)
+
         except Exception:
-            # Roll back changes
-            self.env.cr.rollback()
+            # Roll back only this record's changes, keeping other records already written in this chunk job
+            savepoint.rollback()
             _logger.exception(f'Error syncing WooCommerce customer: {woocommerce_customer["first_name"]} {woocommerce_customer["last_name"]} (WooCommerce customer ID: {woocommerce_customer["id"]})')
+            raise
+        finally:
+            # Release the savepoint (whether it was rolled back above or the record synced successfully) so it never lingers open for the rest of this chunk job's transaction
+            savepoint.close(rollback=False)
+
+        return sync_status
+
+    @api.model
+    def woocommerce_to_odoo_customers_chunk_sync(self: models.Model, woocommerce_customers: list[dict[str, Any]], odoo_customers: dict[str, Any]) -> None:
+        """Processes a chunk of WooCommerce customers sequentially within a single queue job."""
+        self.ensure_one()
+
+        # Shared country cache for the customers in this chunk
+        odoo_country_cache: dict[str, int] = {}
+        new_count = updated_count = 0
+        errors: list[str] = []
+
+        for woocommerce_customer in woocommerce_customers:
+            try:
+                sync_status = self.woocommerce_to_odoo_customer_sync(woocommerce_customer, odoo_customers, odoo_country_cache)
+                if sync_status == 'created':
+                    new_count += 1
+                elif sync_status == 'updated':
+                    updated_count += 1
+            except Exception as error:
+                _logger.exception(f'Error syncing WooCommerce customer {woocommerce_customer.get("id")} within chunk job')
+                errors.append(f'Customer {woocommerce_customer.get("id")}: {error}')
+
+        self.sync_summary_chunk_completed('customers', len(woocommerce_customers), new_count, updated_count, errors)
 
     def woocommerce_to_odoo_customers_sync_batch(self: models.Model) -> None:
         self.ensure_one()
@@ -1987,7 +2673,7 @@ class WoocommerceSyncConnector(models.Model):
         params = {}
 
         if self.settings_woocommerce_modified_records_import:
-            odoo_woocommerce_last_sync = self.odoo_shorepos_last_sync_retrieve()
+            odoo_woocommerce_last_sync = self.odoo_woocommerce_last_sync_retrieve()
             if odoo_woocommerce_last_sync:
                 params['modified_after'] = odoo_woocommerce_last_sync.strftime('%Y-%m-%dT%H:%M:%S')  # ISO 8601 date format
 
@@ -2003,13 +2689,28 @@ class WoocommerceSyncConnector(models.Model):
         odoo_customers = {odoo_customer['woocommerce_id']: odoo_customer for odoo_customer in odoo_customers}
 
         for woocommerce_customers_batch in self.woocommerce_api_get_items_in_batches(woocommerce_api, endpoint='customers', params=params):
-            # Schedule a separate job for each WooCommerce customer in the batch
-            for woocommerce_customer in woocommerce_customers_batch:
-                self.with_delay().woocommerce_to_odoo_customer_sync(woocommerce_customer, odoo_customers)
+            # Schedule a job per chunk of WooCommerce customers instead of one job per customer, to reduce per-job overhead
+            for customers_chunk in self.list_chunks(woocommerce_customers_batch, self.settings_job_chunk_size):
+                chunk_identity_key = '-'.join(str(woocommerce_customer['id']) for woocommerce_customer in customers_chunk)
+                self.with_delay(
+                    identity_key=f'woocommerce_to_odoo_customers_chunk_sync-{self.id}-{chunk_identity_key}', description=self.job_description('woocommerce_to_odoo_customers_chunk_sync')
+                ).woocommerce_to_odoo_customers_chunk_sync(customers_chunk, odoo_customers)
+                self.sync_summary_chunk_dispatched()
 
     def woocommerce_to_odoo_order_sync(
-        self: models.Model, woocommerce_order: dict[str, Any], woocommerce_tax_rates: dict[str, float], woocommerce_weight_unit: str, woocommerce_shipping_methods: list[dict[str, Any]], odoo_sale_orders: dict[str, Any]
-    ) -> None:
+        self: models.Model,
+        woocommerce_order: dict[str, Any],
+        woocommerce_tax_rates: dict[str, float],
+        woocommerce_weight_unit: str,
+        woocommerce_shipping_methods: list[dict[str, Any]],
+        odoo_sale_orders: dict[str, Any],
+        odoo_tax_rate_cache: dict[tuple[float, bool], int] | None = None,
+        odoo_uom_cache: dict[str, int] | None = None,
+        odoo_country_cache: dict[str, int] | None = None,
+    ) -> str:
+        """Returns 'created', 'updated' or 'skipped', so the calling chunk job can tally per-direction sync-summary counts."""
+        # Isolate this record's writes so a failure only rolls back to here, not the whole chunk job's transaction
+        savepoint = self.env.cr.savepoint()
         try:
             # Try to find the corresponding sale order in Odoo by its WooCommerce order ID
             odoo_sale_order = odoo_sale_orders.get(str(woocommerce_order['id']))
@@ -2020,7 +2721,7 @@ class WoocommerceSyncConnector(models.Model):
                 # Skip if not modified
                 if self.datetime_convert(woocommerce_order['date_modified_gmt']) <= odoo_sale_order.write_date:
                     _logger.info(f'Skipped import of WooCommerce order into Odoo: {odoo_sale_order.name} (Odoo sale order ID: {odoo_sale_order.id}, WooCommerce order ID: {odoo_sale_order.woocommerce_number})')
-                    return
+                    return 'skipped'
 
             # Create new sale order in Odoo if it does not yet exist or update sale order in Odoo only if WooCommerce version is newer
 
@@ -2132,19 +2833,8 @@ class WoocommerceSyncConnector(models.Model):
                 },
             )
 
-            # Loop through the explicitly defined date columns for conversion
-            for column in [
-                'woocommerce_date_created',
-                'woocommerce_date_created_gmt',
-                'woocommerce_date_modified',
-                'woocommerce_date_modified_gmt',
-                'woocommerce_date_paid',
-                'woocommerce_date_paid_gmt',
-                'woocommerce_date_completed',
-                'woocommerce_date_completed_gmt',
-            ]:
-                if order_values.get(column):
-                    order_values[column] = self.datetime_convert(order_values[column], tz=timezone.utc if column.endswith('_gmt') else None)
+            # WooCommerce's 'date_created'/'date_modified'/'date_paid'/'date_completed' are store-local; use the '_gmt' siblings for both
+            self.datetime_gmt_pairs_convert(order_values, ['woocommerce_date_created', 'woocommerce_date_modified', 'woocommerce_date_paid', 'woocommerce_date_completed'])
 
             # Currency
             odoo_order_currency = None
@@ -2207,17 +2897,22 @@ class WoocommerceSyncConnector(models.Model):
 
                     ## Brazil (requires 'l10n_br_base' Odoo add-on)
                     if self.env['ir.module.module'].with_context(lang=False).search([('name', '=', 'l10n_br_base'), ('state', '=', 'installed')], limit=1):
+                        billing = woocommerce_order['billing']
+
+                        # '_billing_persontype' meta: '1' = pessoa física (prefer CPF), '2' = pessoa jurídica (prefer CNPJ)
+                        cpf_cnpj = (billing.get('cnpj') or billing.get('cpf')) if str(billing.get('persontype') or '') == '2' else (billing.get('cpf') or billing.get('cnpj'))
+
                         # Check for CPF/CNPJ and update if present
-                        if (woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']) and 'cnpj_cpf' in self.env['res.partner']._fields:
-                            customer_values['cnpj_cpf'] = woocommerce_order['billing']['cpf'] or woocommerce_order['billing']['cnpj']
+                        if cpf_cnpj and 'cnpj_cpf' in self.env['res.partner']._fields:
+                            customer_values['cnpj_cpf'] = cpf_cnpj
 
                         # Check for RG and update if present
-                        if woocommerce_order['billing']['rg'] and 'l10n_br_rg_code' in self.env['res.partner']._fields:
-                            customer_values['l10n_br_rg_code'] = woocommerce_order['billing']['rg']
+                        if billing.get('rg') and 'l10n_br_rg_code' in self.env['res.partner']._fields:
+                            customer_values['l10n_br_rg_code'] = billing['rg']
 
                         # Check for IE and update if present
-                        if woocommerce_order['billing']['ie'] and 'l10n_br_ie_code' in self.env['res.partner']._fields:
-                            customer_values['l10n_br_ie_code'] = woocommerce_order['billing']['ie']
+                        if billing.get('ie') and 'l10n_br_ie_code' in self.env['res.partner']._fields:
+                            customer_values['l10n_br_ie_code'] = billing['ie']
 
                     # Odoo 'res.partner' model fields
                     customer_name = f'{customer_values["woocommerce_billing_first_name"]} {customer_values["woocommerce_billing_last_name"]}'.strip()
@@ -2237,7 +2932,7 @@ class WoocommerceSyncConnector(models.Model):
                             'street2': customer_values['woocommerce_billing_address_2'],
                             'city': customer_values['woocommerce_billing_city'],
                             'zip': customer_values['woocommerce_billing_postcode'],
-                            'country_id': self.env['res.country'].with_context(lang=False).search([('code', '=', customer_values['woocommerce_billing_country'])], limit=1).id,
+                            'country_id': self.odoo_country_retrieve(customer_values['woocommerce_billing_country'], cache=odoo_country_cache).id,
                         },
                     )
 
@@ -2253,11 +2948,23 @@ class WoocommerceSyncConnector(models.Model):
                         )
 
                         if not odoo_customer:
-                            odoo_customer = self.env['res.partner'].create(customer_values)
+                            try:
+                                with self.env.cr.savepoint():
+                                    odoo_customer = self.env['res.partner'].create(customer_values)
+                            except Exception:
+                                # A concurrent sync job (e.g. the dedicated customer sync) already created this customer - reuse it instead of failing
+                                odoo_customer = self.env['res.partner'].search(
+                                    [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', customer_values['woocommerce_id'])], limit=1
+                                )
+                                if not odoo_customer:
+                                    raise
 
                 else:
                     # Create/retrieve customer placeholder
                     odoo_customer = self.odoo_customer_placeholder_create_or_retrieve()
+
+            # Shipping address - only differs from 'odoo_customer' (billing) when WooCommerce shipping fields are actually set on the order
+            odoo_customer_shipping_address = self.odoo_customer_shipping_address_create_or_update(odoo_customer, order_values, odoo_country_cache)
 
             # Odoo 'sale.order' model fields
             order_values.update(
@@ -2274,7 +2981,7 @@ class WoocommerceSyncConnector(models.Model):
                     # Customer
                     'partner_id': odoo_customer.id,
                     'partner_invoice_id': odoo_customer.id,
-                    'partner_shipping_id': odoo_customer.id,
+                    'partner_shipping_id': odoo_customer_shipping_address.id,
                     # Shipping and stock
                     'picking_policy': 'direct',
                     # 'warehouse_id': self.settings_woocommerce_products_warehouse_location.id,
@@ -2288,10 +2995,12 @@ class WoocommerceSyncConnector(models.Model):
 
             if odoo_sale_order:
                 odoo_sale_order.write(order_values)
+                sync_status = 'updated'
                 _logger.info(f'Updated WooCommerce order in Odoo: {odoo_sale_order.name} (Odoo sale order ID: {odoo_sale_order.id}, WooCommerce order ID: {odoo_sale_order["woocommerce_number"]})')
 
             else:
                 odoo_sale_order = self.env['sale.order'].create(order_values)
+                sync_status = 'created'
                 _logger.info(f'Imported WooCommerce order into Odoo: {odoo_sale_order.name} (Odoo sale order ID: {odoo_sale_order.id}, WooCommerce order ID: {odoo_sale_order["woocommerce_number"]})')
 
             # Order line items
@@ -2380,7 +3089,7 @@ class WoocommerceSyncConnector(models.Model):
                 # Tax
                 odoo_order_line_item_tax_id = []
                 if order_line_values['woocommerce_tax_class']:
-                    odoo_order_line_item_tax = self.odoo_tax_rate_create_or_retrieve(order_line_values['woocommerce_tax_class'], order_values['woocommerce_prices_include_tax'])
+                    odoo_order_line_item_tax = self.odoo_tax_rate_create_or_retrieve(order_line_values['woocommerce_tax_class'], cache=odoo_tax_rate_cache)
                     if odoo_order_line_item_tax:
                         odoo_order_line_item_tax_id = [(6, 0, [odoo_order_line_item_tax.id])]
 
@@ -2390,7 +3099,7 @@ class WoocommerceSyncConnector(models.Model):
                     odoo_order_line_item_unit_of_measure = self.env.ref('uom.product_uom_unit')
 
                 elif order_line_values['woocommerce_weight_unit']:
-                    odoo_order_line_item_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(order_line_values['woocommerce_weight_unit'])
+                    odoo_order_line_item_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(order_line_values['woocommerce_weight_unit'], cache=odoo_uom_cache)
 
                 # Localization
 
@@ -2413,9 +3122,12 @@ class WoocommerceSyncConnector(models.Model):
                     # Payment
                     'currency_id': odoo_order_currency.id if odoo_order_currency else False,
                     'product_uom_qty': order_line_values['woocommerce_quantity'],
+                    # WooCommerce order line items always report 'price' as the tax-excluded (net) per-unit amount, regardless of
+                    # the store's 'Prices entered with tax' setting (unlike product/variation prices) - grossed up to match the
+                    # attached Odoo tax when 'settings_odoo_tax_calculation' resolves to tax-included
                     'price_unit': (
-                        order_line_values['woocommerce_price'] + (float(order_line_values['woocommerce_subtotal_tax']) / order_line_values['woocommerce_quantity'])
-                        if order_values['woocommerce_prices_include_tax'] and order_line_values['woocommerce_quantity']
+                        round(float(order_line_values['woocommerce_price']) * (1 + (order_line_values['woocommerce_tax_class'] or 0) / 100), 2)
+                        if order_line_values['woocommerce_tax_class'] and self.odoo_tax_calculation_price_include()
                         else order_line_values['woocommerce_price']
                     ),
                     # 'discount'
@@ -2458,6 +3170,48 @@ class WoocommerceSyncConnector(models.Model):
                 else:
                     self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(order_line_values)
 
+            # Fee lines (e.g. payment gateway surcharges) - represented as real order lines instead of only the raw 'woocommerce_fee_lines' JSON
+            if woocommerce_order['fee_lines']:
+                odoo_fee_product = self.odoo_woocommerce_service_product_create_or_retrieve('woocommerce_fee', 'WooCommerce Fee')
+                for fee_line in woocommerce_order['fee_lines']:
+                    odoo_fee_order_line = self.env['sale.order.line'].search(
+                        [('order_id', '=', odoo_sale_order.id), ('woocommerce_id', '=', fee_line['id']), ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url)], limit=1
+                    )
+                    fee_line_values = {
+                        'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                        'woocommerce_id': fee_line['id'],
+                        'order_id': odoo_sale_order.id,
+                        'name': fee_line.get('name') or 'WooCommerce Fee',
+                        'product_id': odoo_fee_product.id,
+                        'product_uom_qty': 1,
+                        'price_unit': float(fee_line['total']),
+                    }
+                    if odoo_fee_order_line:
+                        odoo_fee_order_line.write(fee_line_values)
+                    else:
+                        self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(fee_line_values)
+
+            # Coupon lines (discounts) - represented as negative-amount order lines instead of only the raw 'woocommerce_coupon_lines' JSON
+            if woocommerce_order['coupon_lines']:
+                odoo_coupon_product = self.odoo_woocommerce_service_product_create_or_retrieve('woocommerce_coupon', 'WooCommerce Discount')
+                for coupon_line in woocommerce_order['coupon_lines']:
+                    odoo_coupon_order_line = self.env['sale.order.line'].search(
+                        [('order_id', '=', odoo_sale_order.id), ('woocommerce_id', '=', coupon_line['id']), ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url)], limit=1
+                    )
+                    coupon_line_values = {
+                        'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                        'woocommerce_id': coupon_line['id'],
+                        'order_id': odoo_sale_order.id,
+                        'name': f'Coupon: {coupon_line.get("code", "")}',
+                        'product_id': odoo_coupon_product.id,
+                        'product_uom_qty': 1,
+                        'price_unit': -abs(float(coupon_line.get('discount') or 0.0)),
+                    }
+                    if odoo_coupon_order_line:
+                        odoo_coupon_order_line.write(coupon_line_values)
+                    else:
+                        self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(coupon_line_values)
+
             # Confirm order if WooCommerce status is 'processing', 'on-hold' or 'completed' (move order 'state' to 'sale')
             if order_values['woocommerce_status'] in ('processing', 'on-hold', 'completed') and odoo_sale_order.state in ('draft', 'sent'):
                 odoo_sale_order.action_confirm()
@@ -2466,17 +3220,186 @@ class WoocommerceSyncConnector(models.Model):
             elif order_values['woocommerce_status'] in ('cancelled', 'refunded', 'failed', 'trash') and odoo_sale_order.state not in ('cancel', 'done'):
                 odoo_sale_order.action_cancel()
 
-            # Delivery carrier
+            # Lock the order once WooCommerce marks it 'completed' (fulfilled/shipped), unlock it if it moves back to an earlier status
+            if odoo_sale_order.state == 'sale' and version_info[0] == 16:
+                if order_values['woocommerce_status'] == 'completed':
+                    odoo_sale_order.action_lock()
+            elif odoo_sale_order.state == 'done' and version_info[0] == 16:
+                if order_values['woocommerce_status'] != 'completed':
+                    odoo_sale_order.action_unlock()
+            elif odoo_sale_order.state == 'sale' and version_info[0] in (18, 19):
+                odoo_sale_order.locked = order_values['woocommerce_status'] == 'completed'
+
+            # Delivery carrier(s) - the first shipping line uses the native 'set_delivery_line' (one carrier per order); any additional shipping lines are added as extra order lines on the same carrier's product, instead of silently dropping them
             if woocommerce_order['shipping_lines']:
-                odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_shipping_methods, woocommerce_order['shipping_lines'][0])
+                first_shipping_line, *extra_shipping_lines = woocommerce_order['shipping_lines']
+
+                odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_shipping_methods, first_shipping_line)
 
                 if odoo_delivery_carrier:
-                    odoo_sale_order.set_delivery_line(odoo_delivery_carrier, woocommerce_order['shipping_lines'][0]['total'])
+                    odoo_sale_order.set_delivery_line(odoo_delivery_carrier, first_shipping_line['total'])
+
+                for shipping_line in extra_shipping_lines:
+                    extra_odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_shipping_methods, shipping_line)
+                    if not extra_odoo_delivery_carrier:
+                        continue
+
+                    # Keyed by 'woocommerce_id' so resyncing the same order updates this line instead of duplicating it
+                    odoo_extra_shipping_order_line = self.env['sale.order.line'].search(
+                        [('order_id', '=', odoo_sale_order.id), ('woocommerce_id', '=', shipping_line['id']), ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url)], limit=1
+                    )
+                    extra_shipping_line_values = {
+                        'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                        'woocommerce_id': shipping_line['id'],
+                        'order_id': odoo_sale_order.id,
+                        'name': shipping_line['method_title'],
+                        'product_id': extra_odoo_delivery_carrier.product_id.id,
+                        'product_uom_qty': 1,
+                        'price_unit': float(shipping_line['total']),
+                    }
+                    if odoo_extra_shipping_order_line:
+                        odoo_extra_shipping_order_line.write(extra_shipping_line_values)
+                    else:
+                        self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(extra_shipping_line_values)
+
+            # Refunds
+            self.woocommerce_to_odoo_order_refunds_sync(odoo_sale_order, woocommerce_order)
 
         except Exception:
-            # Roll back changes
-            self.env.cr.rollback()
+            # Roll back only this record's changes, keeping other records already written in this chunk job
+            savepoint.rollback()
             _logger.exception(f'Error syncing WooCommerce order {woocommerce_order["id"]}')
+            raise
+        finally:
+            # Release the savepoint (whether it was rolled back above or the record synced successfully) so it never lingers open for the rest of this chunk job's transaction
+            savepoint.close(rollback=False)
+
+        return sync_status
+
+    def woocommerce_to_odoo_order_refunds_sync(self: models.Model, odoo_sale_order: models.Model, woocommerce_order: dict[str, Any]) -> None:
+        """Converts WooCommerce order refunds into real Odoo credit notes (instead of only storing the raw refund JSON on 'woocommerce_refunds').
+
+        Only full refunds of a single posted customer invoice are auto-converted, since WooCommerce's order-level 'refunds' summary (id/reason/total) does not include a reliable per-line breakdown to build an accurate partial credit note. Partial refunds, or orders with zero/multiple posted invoices, are left for manual handling in Odoo; they remain visible in the 'woocommerce_refunds' JSON field.
+        """
+        woocommerce_refunds = woocommerce_order.get('refunds') or []
+
+        if not woocommerce_refunds:
+            return
+
+        account_move = self.env['account.move']
+
+        # Refunds already converted into Odoo credit notes for this WooCommerce site
+        woocommerce_refund_ids = [str(woocommerce_refund['id']) for woocommerce_refund in woocommerce_refunds]
+        already_processed_refund_ids = set(
+            account_move.with_context(lang=False)
+            .search(
+                [
+                    ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                    ('woocommerce_refund_id', 'in', woocommerce_refund_ids),
+                ],
+            )
+            .mapped('woocommerce_refund_id'),
+        )
+
+        # Posted customer invoices linked to this sale order
+        odoo_invoices = odoo_sale_order.invoice_ids.filtered(lambda move: move.move_type == 'out_invoice' and move.state == 'posted')
+
+        for woocommerce_refund in woocommerce_refunds:
+            woocommerce_refund_id = str(woocommerce_refund['id'])
+
+            if woocommerce_refund_id in already_processed_refund_ids:
+                continue
+
+            refund_total = abs(float(woocommerce_refund.get('total') or 0.0))
+
+            if refund_total == 0.0:
+                continue
+
+            if len(odoo_invoices) != 1:
+                _logger.info(
+                    f'Skipped automatic credit note creation for WooCommerce refund {woocommerce_refund_id} on order {odoo_sale_order.name}: '
+                    f'expected exactly 1 posted customer invoice, found {len(odoo_invoices)}. Please create the credit note manually.',
+                )
+                continue
+
+            odoo_invoice = odoo_invoices
+
+            # Only auto-convert full refunds of the invoice; partial refunds cannot be reliably reconstructed from the order-level refund summary
+            if abs(refund_total - odoo_invoice.amount_total) > 0.01:
+                _logger.info(
+                    f'Skipped automatic credit note creation for WooCommerce refund {woocommerce_refund_id} on order {odoo_sale_order.name}: '
+                    f'refund total ({refund_total}) does not match the invoice total ({odoo_invoice.amount_total}). Please create the credit note manually.',
+                )
+                continue
+
+            reversal_wizard = (
+                self.env['account.move.reversal']
+                .with_context(active_model='account.move', active_ids=odoo_invoice.ids)
+                .create(
+                    {
+                        'move_ids': [(6, 0, odoo_invoice.ids)],
+                        'reason': woocommerce_refund.get('reason') or f'WooCommerce refund {woocommerce_refund_id}',
+                        'journal_id': odoo_invoice.journal_id.id,
+                    },
+                )
+            )
+            reversal_result = reversal_wizard.reverse_moves()
+
+            credit_note = (
+                account_move.browse(reversal_result['res_id'])
+                if isinstance(reversal_result, dict) and reversal_result.get('res_id')
+                else account_move.search([('reversed_entry_id', '=', odoo_invoice.id)], order='id desc', limit=1)
+            )
+
+            if not credit_note:
+                _logger.error(f'Failed to create Odoo credit note for WooCommerce refund {woocommerce_refund_id} on order {odoo_sale_order.name}')
+                continue
+
+            credit_note.write(
+                {
+                    'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                    'woocommerce_refund_id': woocommerce_refund_id,
+                },
+            )
+
+            if credit_note.state != 'posted':
+                credit_note.action_post()
+
+            _logger.info(f'Created Odoo credit note {credit_note.name} for WooCommerce refund {woocommerce_refund_id} (Odoo sale order: {odoo_sale_order.name})')
+
+    @api.model
+    def woocommerce_to_odoo_orders_chunk_sync(
+        self: models.Model,
+        woocommerce_orders: list[dict[str, Any]],
+        woocommerce_tax_rates: dict[str, float],
+        woocommerce_weight_unit: str,
+        woocommerce_shipping_methods: list[dict[str, Any]],
+        odoo_sale_orders: dict[str, Any],
+    ) -> None:
+        """Processes a chunk of WooCommerce orders sequentially within a single queue job."""
+        self.ensure_one()
+
+        # Shared tax-rate/UoM/country caches for the orders in this chunk
+        odoo_tax_rate_cache: dict[tuple[float, bool], int] = {}
+        odoo_uom_cache: dict[str, int] = {}
+        odoo_country_cache: dict[str, int] = {}
+        errors: list[str] = []
+        new_count = updated_count = 0
+
+        for woocommerce_order in woocommerce_orders:
+            try:
+                sync_status = self.woocommerce_to_odoo_order_sync(
+                    woocommerce_order, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods, odoo_sale_orders, odoo_tax_rate_cache, odoo_uom_cache, odoo_country_cache
+                )
+                if sync_status == 'created':
+                    new_count += 1
+                elif sync_status == 'updated':
+                    updated_count += 1
+            except Exception as error:
+                _logger.exception(f'Error syncing WooCommerce order {woocommerce_order.get("id")} within chunk job')
+                errors.append(f'Order {woocommerce_order.get("id")}: {error}')
+
+        self.sync_summary_chunk_completed('orders', len(woocommerce_orders), new_count, updated_count, errors)
 
     def woocommerce_to_odoo_orders_sync_batch(self: models.Model, woocommerce_tax_rates: dict[str, float], woocommerce_weight_unit: str, woocommerce_shipping_methods: list[dict[str, Any]]) -> bool:
         # WooCommerce REST API
@@ -2492,7 +3415,7 @@ class WoocommerceSyncConnector(models.Model):
         params = {'status': ','.join(self.settings_woocommerce_order_status.mapped('status')) or 'any'}
 
         if self.settings_woocommerce_modified_records_import:
-            odoo_woocommerce_last_sync = self.odoo_shorepos_last_sync_retrieve()
+            odoo_woocommerce_last_sync = self.odoo_woocommerce_last_sync_retrieve()
             if odoo_woocommerce_last_sync:
                 params['modified_after'] = odoo_woocommerce_last_sync.strftime('%Y-%m-%dT%H:%M:%S')  # ISO 8601 date format
 
@@ -2504,11 +3427,15 @@ class WoocommerceSyncConnector(models.Model):
         odoo_sale_orders = {odoo_sale_order['woocommerce_id']: odoo_sale_order for odoo_sale_order in odoo_sale_orders}
 
         for woocommerce_orders_batch in self.woocommerce_api_get_items_in_batches(woocommerce_api, endpoint='orders', params=params):
-            # Schedule a separate job for each WooCommerce order in the batch
-            for woocommerce_order in woocommerce_orders_batch:
-                self.with_delay().woocommerce_to_odoo_order_sync(woocommerce_order, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods, odoo_sale_orders)
+            # Schedule a job per chunk of WooCommerce orders instead of one job per order, to reduce per-job overhead
+            for orders_chunk in self.list_chunks(woocommerce_orders_batch, self.settings_job_chunk_size):
+                chunk_identity_key = '-'.join(str(woocommerce_order['id']) for woocommerce_order in orders_chunk)
+                self.with_delay(
+                    identity_key=f'woocommerce_to_odoo_orders_chunk_sync-{self.id}-{chunk_identity_key}', description=self.job_description('woocommerce_to_odoo_orders_chunk_sync')
+                ).woocommerce_to_odoo_orders_chunk_sync(orders_chunk, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods, odoo_sale_orders)
+                self.sync_summary_chunk_dispatched()
 
-    def woocommerce_attribute_create_or_retrieve(self: models.Model, woocommerce_api: API, attribute_type: str, attribute_name: str, language_code: str | None = None) -> dict[str, Any] | None:
+    def woocommerce_attribute_create_or_retrieve(self: models.Model, woocommerce_api: WooCommerceClient, attribute_type: str, attribute_name: str, language_code: str | None = None) -> dict[str, Any] | None:
         """Create or retrieve a WooCommerce attribute, brand, category or tag."""
         if not attribute_type and not attribute_name:
             return None
@@ -2648,19 +3575,51 @@ class WoocommerceSyncConnector(models.Model):
         odoo_products = self.env['product.template'].with_context(lang=False).search(search_conditions) | self.env['product.product'].with_context(lang=False).search(
             search_conditions + [('product_tmpl_id.default_code', '!=', False)]
         ).mapped('product_tmpl_id')
+
+        # Schedule a job per chunk of Odoo products instead of syncing everything in a single synchronous loop, mirroring the WooCommerce to Odoo direction
+        odoo_product_ids = odoo_products.ids
+        for products_chunk in self.list_chunks(odoo_product_ids, self.settings_job_chunk_size):
+            chunk_identity_key = '-'.join(str(product_id) for product_id in products_chunk)
+            self.with_delay(
+                identity_key=f'odoo_to_woocommerce_products_chunk_sync-{self.id}-{chunk_identity_key}', description=self.job_description('odoo_to_woocommerce_products_chunk_sync')
+            ).odoo_to_woocommerce_products_chunk_sync(products_chunk, woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit)
+
+    def odoo_to_woocommerce_products_chunk_sync(
+        self: models.Model,
+        odoo_product_ids: list[int],
+        woocommerce_currency: str,
+        woocommerce_tax_rates: dict[str, float],
+        woocommerce_prices_include_tax: bool,
+        woocommerce_weight_unit: str,
+        woocommerce_dimension_unit: str,
+    ) -> None:
+        """Processes a chunk of Odoo products, using the WooCommerce REST API 'products/batch' endpoint to create/update them in a single request instead of one request per product."""
+        self.ensure_one()
+
+        # WooCommerce REST API
+        woocommerce_api = self.woocommerce_api_get(validate=False)
+
+        if not woocommerce_api:
+            _logger.error('WooCommerce REST API connection failed. Odoo to WooCommerce products chunk sync halted')
+            return
+
+        odoo_products = self.env['product.template'].with_context(lang=False).browse(odoo_product_ids).exists()
+
+        # Get the matching WooCommerce products by SKU, in bounded-size sub-requests to avoid overly long query strings
         odoo_products_default_code = odoo_products.mapped('default_code')
+        woocommerce_products = {}
+        for sku_chunk in self.list_chunks(odoo_products_default_code, 100):
+            params = {'status': 'publish', 'sku': ','.join(sku_chunk)}
+            if self.settings_woocommerce_to_odoo_products_language_code:
+                params['lang'] = self.settings_woocommerce_to_odoo_products_language_code
 
-        # Get all WooCommerce products with Odoo default code
-        params = {'status': 'publish'}
+            for woocommerce_product in self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', params=params):
+                woocommerce_products[woocommerce_product['sku']] = woocommerce_product
 
-        if self.settings_woocommerce_to_odoo_products_language_code:
-            params['lang'] = self.settings_woocommerce_to_odoo_products_language_code
-
-        if odoo_products_default_code:
-            params['sku'] = ','.join(odoo_products_default_code)
-
-        woocommerce_products = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', params=params)
-        woocommerce_products = {woocommerce_product['sku']: woocommerce_product for woocommerce_product in woocommerce_products}
+        # Build the create/update payloads for this chunk
+        odoo_products_by_sku: dict[str, models.Model] = {}
+        create_payloads = []
+        update_payloads = []
 
         for odoo_product in odoo_products:
             try:
@@ -2671,253 +3630,479 @@ class WoocommerceSyncConnector(models.Model):
                     _logger.info(f'Skipped import of Odoo product into WooCommerce: {odoo_product["name"]} (Odoo product ID: {odoo_product.id})')
                     continue
 
-                # Create new product in WooCommerce if it does not yet exist or update product in WooCommerce only if Odoo version is newer
+                product_values = self.odoo_to_woocommerce_product_values(odoo_product, woocommerce_api, woocommerce_tax_rates, woocommerce_product)
+                odoo_products_by_sku[odoo_product.default_code] = odoo_product
+
+                if woocommerce_product:
+                    product_values['id'] = woocommerce_product['id']
+                    update_payloads.append(product_values)
                 else:
-                    product_values = {
-                        'name': odoo_product.name,
-                        'sku': odoo_product.default_code or '',
-                        'date_created_gmt': odoo_product.create_date.strftime('%Y-%m-%dT%H:%M:%S') if odoo_product.create_date else None,
-                        'description': odoo_product.description_sale if odoo_product.description_sale else None,
-                        'status': 'publish' if odoo_product.active else 'draft',
-                        'purchasable': odoo_product.sale_ok,
-                        'tax_class': next((tax_class for tax_class, tax_amount in woocommerce_tax_rates.items() if odoo_product.taxes_id and odoo_product.taxes_id[0].amount == tax_amount), 'standard'),
-                        'regular_price': f'{odoo_product.list_price:.2f}',
-                        'type': 'simple',
-                        'weight': odoo_product.weight if odoo_product.weight != 0.0 else '',
-                    }
+                    create_payloads.append(product_values)
 
-                    # Product meta data "odoo_id"
-                    woocommerce_product_meta_data = []
+            except Exception:
+                _logger.exception(f'Error preparing Odoo product {odoo_product.id} for WooCommerce sync')
 
-                    if woocommerce_product and woocommerce_product.get('meta_data'):
-                        # If updating, merge with existing metadata
-                        woocommerce_product_meta_data = woocommerce_product['meta_data'][:]
-                        found = False
-                        for meta in woocommerce_product_meta_data:
-                            if meta.get('key') == 'odoo_id':
-                                meta['value'] = odoo_product.id
-                                found = True
-                                break
-                        if not found:
-                            woocommerce_product_meta_data.append({'key': 'odoo_id', 'value': odoo_product.id})
+        # Send the create/update payloads to WooCommerce in batches of at most 100 items (the WooCommerce REST API batch endpoint limit)
+        woocommerce_products_synced = []
+        for create_chunk in self.list_chunks(create_payloads, 100):
+            response = woocommerce_api.batch('products', create=create_chunk)
+            woocommerce_products_synced.extend(response.get('create', []))
 
-                    else:
-                        # If creating or no existing metadata, just add the new metadata
-                        woocommerce_product_meta_data = [{'key': 'odoo_id', 'value': odoo_product.id}]
+        for update_chunk in self.list_chunks(update_payloads, 100):
+            response = woocommerce_api.batch('products', update=update_chunk)
+            woocommerce_products_synced.extend(response.get('update', []))
 
-                    product_values['meta_data'] = woocommerce_product_meta_data
+        # Write WooCommerce-assigned fields back to Odoo and handle variations for variable products
+        for woocommerce_product in woocommerce_products_synced:
+            if woocommerce_product.get('error'):
+                _logger.error(f'WooCommerce REST API batch error for product SKU {woocommerce_product.get("sku")}: {woocommerce_product["error"]}')
+                continue
 
-                    # Manage stock
-                    if version_info[0] == 16:
-                        product_values['manage_stock'] = odoo_product.detailed_type == 'product'
+            odoo_product = odoo_products_by_sku.get(woocommerce_product.get('sku'))
+            if not odoo_product:
+                continue
 
-                    elif version_info[0] in [18, 19]:
-                        product_values['manage_stock'] = bool(odoo_product.is_storable)
+            try:
+                woocommerce_product_fields = self.woocommerce_product_fields(woocommerce_product, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates)
+                woocommerce_product_fields.update({'odoo_to_woocommerce_last_sync': fields.Datetime.now()})
+                odoo_product.write(woocommerce_product_fields)
 
-                    # Check if product has multiple variants
-                    if len(odoo_product.product_variant_ids) > 1:
-                        product_values['type'] = 'variable'
+                _logger.info(f'Synced Odoo product into WooCommerce: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {odoo_product["woocommerce_id"]})')
 
-                        woocommerce_attributes = []
-                        for line in odoo_product.attribute_line_ids:
-                            odoo_attributes = [value.name for value in line.value_ids]
-
-                            for attribute in odoo_attributes:
-                                woocommerce_attribute = self.woocommerce_attribute_create_or_retrieve(
-                                    woocommerce_api,
-                                    'attributes',
-                                    attribute,
-                                    odoo_product.language_code if odoo_product.language_code else None,
-                                )
-                                if woocommerce_attribute:
-                                    woocommerce_attributes.append({'id': woocommerce_attribute['id'], 'name': line.attribute_id.name, 'variation': True, 'visible': True, 'options': odoo_attributes})
-
-                            if woocommerce_attributes:
-                                product_values['attributes'] = woocommerce_attributes
-
-                    # Brand (requires 'product_brand' Odoo add-on)
-                    if 'product.brand' in self.env and len(odoo_product.product_brand_id) > 0:
-                        woocommerce_brands = []
-                        woocommerce_brand = self.woocommerce_attribute_create_or_retrieve(
-                            woocommerce_api,
-                            'brands',
-                            odoo_product.product_brand_id.name,
-                            odoo_product.language_code if odoo_product.language_code else None,
-                        )
-                        if woocommerce_brand:
-                            woocommerce_brands.append({'id': woocommerce_brand['id']})
-
-                        if len(woocommerce_brands) > 0:
-                            product_values.update({'brands': woocommerce_brands})
-
-                    # Categories
-                    woocommerce_categories = []
-
-                    ## 'categ_ids' (requires 'product_multi_category' Odoo add-on)
-                    if 'categ_ids' in self.env['product.template']._fields and len(odoo_product.categ_ids) > 0:
-                        for odoo_category in odoo_product.categ_ids:
-                            woocommerce_category = self.woocommerce_attribute_create_or_retrieve(
-                                woocommerce_api,
-                                'categories',
-                                odoo_category.name,
-                                odoo_product.language_code if odoo_product.language_code else None,
-                            )
-                            if woocommerce_category:
-                                woocommerce_categories.append({'id': woocommerce_category['id']})
-
-                    ## 'categ_id'
-                    if odoo_product.categ_id:
-                        woocommerce_category = self.woocommerce_attribute_create_or_retrieve(
-                            woocommerce_api,
-                            'categories',
-                            odoo_product.categ_id.name,
-                            odoo_product.language_code if odoo_product.language_code else None,
-                        )
-                        if woocommerce_category:
-                            woocommerce_categories.append({'id': woocommerce_category['id']})
-
-                    woocommerce_categories = sorted({category['id'] for category in woocommerce_categories})
-
-                    if len(woocommerce_categories) > 0:
-                        product_values.update({'categories': [{'id': category_id} for category_id in woocommerce_categories]})
-
-                    # Dimensions (requires 'product_dimension' Odoo add-on)
-                    if 'product_length' in self.env['product.template']._fields:
-                        product_values.update(
-                            {
-                                'dimensions': {
-                                    'length': odoo_product.product_length if odoo_product.product_length != 0.0 else '',
-                                    'width': odoo_product.product_width if odoo_product.product_width != 0.0 else '',
-                                    'height': odoo_product.product_height if odoo_product.product_height != 0.0 else '',
-                                }
-                            }
-                        )
-
-                    # Images
-                    if self.settings_woocommerce_images_sync and self.settings_wordpress_username and self.settings_wordpress_user_application_password and (odoo_product.image_1920 or odoo_product.get_gallery_images()):
-                        wordpress_image_ids = self.wordpress_upload_product_images(odoo_product)
-                        if wordpress_image_ids:
-                            product_values['images'] = [{'id': image_id} for image_id in wordpress_image_ids]
-
-                    # Language
-                    if odoo_product.language_code:
-                        product_values.update({'lang': odoo_product.language_code})
-
-                    # Tags
-                    woocommerce_tags = []
-
-                    if len(odoo_product.product_tag_ids) > 0:
-                        for odoo_tag in odoo_product.product_tag_ids:
-                            woocommerce_tag = self.woocommerce_attribute_create_or_retrieve(woocommerce_api, 'tags', odoo_tag.name, odoo_product.language_code if odoo_product.language_code else None)
-                            if woocommerce_tag:
-                                woocommerce_tags.append({'id': woocommerce_tag['id']})
-
-                        if len(woocommerce_tags) > 0:
-                            product_values.update({'tags': woocommerce_tags})
-
-                    # Update product in WooCommerce only if Odoo version is newer
-                    if woocommerce_product:
-                        woocommerce_product = woocommerce_api.put(f'products/{woocommerce_product["id"]}', data=product_values).json()
-
-                    # Create new product in WooCommerce if it does not yet exist
-                    else:
-                        woocommerce_product = woocommerce_api.post('products', data=product_values).json()
-
-                        if woocommerce_product['id']:
-                            woocommerce_product_fields = self.woocommerce_product_fields(woocommerce_product, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates)
-                            woocommerce_product_fields.update({'odoo_to_woocommerce_last_sync': fields.Datetime.now()})
-                            odoo_product.write(woocommerce_product_fields)
-
-                            _logger.info(f'Imported Odoo product into WooCommerce: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {odoo_product["woocommerce_id"]})')
-
-                    # For variable products, handle variations
-                    if product_values.get('type') == 'variable':
-                        # Retrieve existing variations from WooCommerce
-                        woocommerce_variations = self.woocommerce_api_get_all_items(woocommerce_api, endpoint=f'products/{woocommerce_product["id"]}/variations', params={'status': 'publish'})
-
-                        # Build a mapping by SKU for easier lookup
-                        variations_by_sku = {variation.get('sku'): variation for variation in woocommerce_variations if variation.get('sku')}
-
-                        for odoo_product_variant in odoo_product.product_variant_ids:
-                            variation_attributes = []
-                            for variant_attribute_value in odoo_product_variant.product_template_attribute_value_ids:
-                                variation_attributes.append(
-                                    {
-                                        'name': variant_attribute_value.product_attribute_value_id.attribute_id.name,
-                                        'option': variant_attribute_value.product_attribute_value_id.name,
-                                    },
-                                )
-
-                            variation_data = {
-                                'sku': odoo_product_variant.default_code or '',
-                                'regular_price': str(odoo_product_variant.list_price or 0.0),
-                                'attributes': variation_attributes,
-                            }
-
-                            # Dimensions (requires 'product_dimension' Odoo add-on)
-                            if 'product_length' in self.env['product.template']._fields:
-                                variation_data.update(
-                                    {
-                                        'dimensions': {
-                                            'length': odoo_product_variant.product_length if odoo_product_variant.product_length != 0.0 else '',
-                                            'width': odoo_product_variant.product_width if odoo_product_variant.product_width != 0.0 else '',
-                                            'height': odoo_product_variant.product_height if odoo_product_variant.product_height != 0.0 else '',
-                                        }
-                                    }
-                                )
-
-                            # Product variation meta data "odoo_id"
-                            woocommerce_product_variation_meta_data = []
-
-                            variation_existing = variations_by_sku.get(odoo_product_variant.default_code)
-                            if variation_existing and variation_existing.get('meta_data'):
-                                # If updating, merge with existing metadata
-                                woocommerce_product_variation_meta_data = variation_existing['meta_data'][:]
-                                found = False
-                                for meta in woocommerce_product_variation_meta_data:
-                                    if meta.get('key') == 'odoo_id':
-                                        meta['value'] = odoo_product_variant.id
-                                        found = True
-                                        break
-                                if not found:
-                                    woocommerce_product_variation_meta_data.append({'key': 'odoo_id', 'value': odoo_product_variant.id})
-                            else:
-                                # If creating or no existing metadata, just add the new metadata
-                                woocommerce_product_variation_meta_data = [{'key': 'odoo_id', 'value': odoo_product_variant.id}]
-
-                            variation_data['meta_data'] = woocommerce_product_variation_meta_data
-
-                            # Manage stock
-                            if version_info[0] == 16:
-                                variation_data['manage_stock'] = odoo_product.detailed_type == 'product'
-
-                            elif version_info[0] in [18, 19]:
-                                variation_data['manage_stock'] = bool(odoo_product.is_storable)
-
-                            # Check if a variation with this SKU already exists
-                            variation_existing = variations_by_sku.get(odoo_product_variant.default_code)
-                            if variation_existing:
-                                if odoo_product_variant['write_date'] > self.datetime_convert(variation_existing['date_modified_gmt']):
-                                    # Update product variation in WooCommerce only if Odoo version is newer
-                                    woocommerce_variant = woocommerce_api.put(f'products/{woocommerce_product["id"]}/variations/{variation_existing["id"]}', data=variation_data).json()
-
-                                else:
-                                    _logger.info(f'Odoo product variant in WooCommerce is up-to-date: {odoo_product_variant.display_name} (Odoo product variant ID: {odoo_product_variant.id})')
-
-                            else:
-                                # Create the product variation if it doesn't exist
-                                woocommerce_variant = woocommerce_api.post(f'products/{woocommerce_product["id"]}/variations', data=variation_data).json()
-
-                                if woocommerce_variant['id']:
-                                    woocommerce_product_variation_fields = self.woocommerce_product_variation_fields(
-                                        woocommerce_variant, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates
-                                    )
-                                    woocommerce_product_variation_fields.update({'odoo_to_woocommerce_last_sync': fields.Datetime.now()})
-                                    odoo_product_variant.write(woocommerce_product_variation_fields)
-
-                                    _logger.info(
-                                        f'Imported Odoo product variant into WooCommerce: {odoo_product_variant.name} (Odoo product variant ID: {odoo_product_variant.id}, WooCommerce product variation ID: {woocommerce_variant["id"]})'
-                                    )
+                if woocommerce_product.get('type') == 'variable':
+                    self.odoo_to_woocommerce_product_variations_batch_sync(odoo_product, woocommerce_product['id'], woocommerce_currency, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_dimension_unit)
 
             except Exception:
                 _logger.exception(f'Error syncing Odoo product {odoo_product.id} into WooCommerce')
+
+    def odoo_to_woocommerce_product_values(
+        self: models.Model, odoo_product: models.Model, woocommerce_api: WooCommerceClient, woocommerce_tax_rates: dict[str, float], woocommerce_product: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Builds the WooCommerce product payload for a single Odoo product, for use with the 'products' single-record or 'products/batch' endpoints."""
+        product_values = {
+            'name': odoo_product.name,
+            'sku': odoo_product.default_code or '',
+            'date_created_gmt': odoo_product.create_date.strftime('%Y-%m-%dT%H:%M:%S') if odoo_product.create_date else None,
+            'description': odoo_product.description_sale if odoo_product.description_sale else None,
+            'status': 'publish' if odoo_product.active else 'draft',
+            'purchasable': odoo_product.sale_ok,
+            'tax_class': next((tax_class for tax_class, tax_amount in woocommerce_tax_rates.items() if odoo_product.taxes_id and odoo_product.taxes_id[0].amount == tax_amount), 'standard'),
+            'regular_price': f'{odoo_product.list_price:.2f}',
+            'type': 'simple',
+            'weight': odoo_product.weight if odoo_product.weight != 0.0 else '',
+        }
+
+        # Product meta data "odoo_id"
+        woocommerce_product_meta_data = []
+
+        if woocommerce_product and woocommerce_product.get('meta_data'):
+            # If updating, merge with existing metadata
+            woocommerce_product_meta_data = woocommerce_product['meta_data'][:]
+            found = False
+            for meta in woocommerce_product_meta_data:
+                if meta.get('key') == 'odoo_id':
+                    meta['value'] = odoo_product.id
+                    found = True
+                    break
+            if not found:
+                woocommerce_product_meta_data.append({'key': 'odoo_id', 'value': odoo_product.id})
+
+        else:
+            # If creating or no existing metadata, just add the new metadata
+            woocommerce_product_meta_data = [{'key': 'odoo_id', 'value': odoo_product.id}]
+
+        product_values['meta_data'] = woocommerce_product_meta_data
+
+        # Manage stock
+        if version_info[0] == 16:
+            product_values['manage_stock'] = odoo_product.detailed_type == 'product'
+
+        elif version_info[0] in [18, 19]:
+            product_values['manage_stock'] = bool(odoo_product.is_storable)
+
+        # Check if product has multiple variants
+        if len(odoo_product.product_variant_ids) > 1:
+            product_values['type'] = 'variable'
+
+            woocommerce_attributes = []
+            for line in odoo_product.attribute_line_ids:
+                odoo_attributes = [value.name for value in line.value_ids]
+
+                for attribute in odoo_attributes:
+                    woocommerce_attribute = self.woocommerce_attribute_create_or_retrieve(
+                        woocommerce_api,
+                        'attributes',
+                        attribute,
+                        odoo_product.language_code if odoo_product.language_code else None,
+                    )
+                    if woocommerce_attribute:
+                        woocommerce_attributes.append({'id': woocommerce_attribute['id'], 'name': line.attribute_id.name, 'variation': True, 'visible': True, 'options': odoo_attributes})
+
+                if woocommerce_attributes:
+                    product_values['attributes'] = woocommerce_attributes
+
+        # Brand (requires 'product_brand' Odoo add-on)
+        if 'product.brand' in self.env and len(odoo_product.product_brand_id) > 0:
+            woocommerce_brands = []
+            woocommerce_brand = self.woocommerce_attribute_create_or_retrieve(
+                woocommerce_api,
+                'brands',
+                odoo_product.product_brand_id.name,
+                odoo_product.language_code if odoo_product.language_code else None,
+            )
+            if woocommerce_brand:
+                woocommerce_brands.append({'id': woocommerce_brand['id']})
+
+            if len(woocommerce_brands) > 0:
+                product_values.update({'brands': woocommerce_brands})
+
+        # Categories
+        woocommerce_categories = []
+
+        ## 'categ_ids' (requires 'product_multi_category' Odoo add-on)
+        if 'categ_ids' in self.env['product.template']._fields and len(odoo_product.categ_ids) > 0:
+            for odoo_category in odoo_product.categ_ids:
+                woocommerce_category = self.woocommerce_attribute_create_or_retrieve(
+                    woocommerce_api,
+                    'categories',
+                    odoo_category.name,
+                    odoo_product.language_code if odoo_product.language_code else None,
+                )
+                if woocommerce_category:
+                    woocommerce_categories.append({'id': woocommerce_category['id']})
+
+        ## 'categ_id'
+        if odoo_product.categ_id:
+            woocommerce_category = self.woocommerce_attribute_create_or_retrieve(
+                woocommerce_api,
+                'categories',
+                odoo_product.categ_id.name,
+                odoo_product.language_code if odoo_product.language_code else None,
+            )
+            if woocommerce_category:
+                woocommerce_categories.append({'id': woocommerce_category['id']})
+
+        woocommerce_categories = sorted({category['id'] for category in woocommerce_categories})
+
+        if len(woocommerce_categories) > 0:
+            product_values.update({'categories': [{'id': category_id} for category_id in woocommerce_categories]})
+
+        # Dimensions (requires 'product_dimension' Odoo add-on)
+        if 'product_length' in self.env['product.template']._fields:
+            product_values.update(
+                {
+                    'dimensions': {
+                        'length': odoo_product.product_length if odoo_product.product_length != 0.0 else '',
+                        'width': odoo_product.product_width if odoo_product.product_width != 0.0 else '',
+                        'height': odoo_product.product_height if odoo_product.product_height != 0.0 else '',
+                    }
+                }
+            )
+
+        # Images
+        if self.settings_woocommerce_images_sync and self.settings_wordpress_username and self.settings_wordpress_user_application_password and (odoo_product.image_1920 or odoo_product.get_gallery_images()):
+            wordpress_image_ids = self.wordpress_upload_product_images(odoo_product)
+            if wordpress_image_ids:
+                product_values['images'] = [{'id': image_id} for image_id in wordpress_image_ids]
+
+        # Language
+        if odoo_product.language_code:
+            product_values.update({'lang': odoo_product.language_code})
+
+        # Tags
+        woocommerce_tags = []
+
+        if len(odoo_product.product_tag_ids) > 0:
+            for odoo_tag in odoo_product.product_tag_ids:
+                woocommerce_tag = self.woocommerce_attribute_create_or_retrieve(woocommerce_api, 'tags', odoo_tag.name, odoo_product.language_code if odoo_product.language_code else None)
+                if woocommerce_tag:
+                    woocommerce_tags.append({'id': woocommerce_tag['id']})
+
+            if len(woocommerce_tags) > 0:
+                product_values.update({'tags': woocommerce_tags})
+
+        return product_values
+
+    def odoo_to_woocommerce_product_variations_batch_sync(
+        self: models.Model,
+        odoo_product: models.Model,
+        woocommerce_product_id: int,
+        woocommerce_currency: str,
+        woocommerce_tax_rates: dict[str, float],
+        woocommerce_weight_unit: str,
+        woocommerce_dimension_unit: str,
+    ) -> None:
+        """Creates/updates all variations of a variable product in a single WooCommerce REST API 'products/{id}/variations/batch' request instead of one request per variation."""
+        woocommerce_api = self.woocommerce_api_get(validate=False)
+
+        # Retrieve existing variations from WooCommerce
+        woocommerce_variations = self.woocommerce_api_get_all_items(woocommerce_api, endpoint=f'products/{woocommerce_product_id}/variations', params={'status': 'publish'})
+
+        # Build a mapping by SKU for easier lookup
+        variations_by_sku = {variation.get('sku'): variation for variation in woocommerce_variations if variation.get('sku')}
+
+        odoo_variants_by_sku: dict[str, models.Model] = {}
+        create_payloads = []
+        update_payloads = []
+
+        for odoo_product_variant in odoo_product.product_variant_ids:
+            variation_attributes = []
+            for variant_attribute_value in odoo_product_variant.product_template_attribute_value_ids:
+                variation_attributes.append(
+                    {
+                        'name': variant_attribute_value.product_attribute_value_id.attribute_id.name,
+                        'option': variant_attribute_value.product_attribute_value_id.name,
+                    },
+                )
+
+            variation_data = {
+                'sku': odoo_product_variant.default_code or '',
+                'regular_price': str(odoo_product_variant.list_price or 0.0),
+                'attributes': variation_attributes,
+            }
+
+            # Dimensions (requires 'product_dimension' Odoo add-on)
+            if 'product_length' in self.env['product.template']._fields:
+                variation_data.update(
+                    {
+                        'dimensions': {
+                            'length': odoo_product_variant.product_length if odoo_product_variant.product_length != 0.0 else '',
+                            'width': odoo_product_variant.product_width if odoo_product_variant.product_width != 0.0 else '',
+                            'height': odoo_product_variant.product_height if odoo_product_variant.product_height != 0.0 else '',
+                        }
+                    }
+                )
+
+            variation_existing = variations_by_sku.get(odoo_product_variant.default_code)
+
+            # Product variation meta data "odoo_id"
+            if variation_existing and variation_existing.get('meta_data'):
+                # If updating, merge with existing metadata
+                woocommerce_product_variation_meta_data = variation_existing['meta_data'][:]
+                found = False
+                for meta in woocommerce_product_variation_meta_data:
+                    if meta.get('key') == 'odoo_id':
+                        meta['value'] = odoo_product_variant.id
+                        found = True
+                        break
+                if not found:
+                    woocommerce_product_variation_meta_data.append({'key': 'odoo_id', 'value': odoo_product_variant.id})
+            else:
+                # If creating or no existing metadata, just add the new metadata
+                woocommerce_product_variation_meta_data = [{'key': 'odoo_id', 'value': odoo_product_variant.id}]
+
+            variation_data['meta_data'] = woocommerce_product_variation_meta_data
+
+            # Manage stock
+            if version_info[0] == 16:
+                variation_data['manage_stock'] = odoo_product.detailed_type == 'product'
+
+            elif version_info[0] in [18, 19]:
+                variation_data['manage_stock'] = bool(odoo_product.is_storable)
+
+            odoo_variants_by_sku[odoo_product_variant.default_code] = odoo_product_variant
+
+            if variation_existing:
+                if odoo_product_variant['write_date'] > self.datetime_convert(variation_existing['date_modified_gmt']):
+                    variation_data['id'] = variation_existing['id']
+                    update_payloads.append(variation_data)
+                else:
+                    _logger.info(f'Odoo product variant in WooCommerce is up-to-date: {odoo_product_variant.display_name} (Odoo product variant ID: {odoo_product_variant.id})')
+            else:
+                create_payloads.append(variation_data)
+
+        # Send the create/update payloads to WooCommerce in batches of at most 100 items (the WooCommerce REST API batch endpoint limit)
+        woocommerce_variants_synced = []
+        for create_chunk in self.list_chunks(create_payloads, 100):
+            response = woocommerce_api.batch(f'products/{woocommerce_product_id}/variations', create=create_chunk)
+            woocommerce_variants_synced.extend(response.get('create', []))
+
+        for update_chunk in self.list_chunks(update_payloads, 100):
+            response = woocommerce_api.batch(f'products/{woocommerce_product_id}/variations', update=update_chunk)
+            woocommerce_variants_synced.extend(response.get('update', []))
+
+        for woocommerce_variant in woocommerce_variants_synced:
+            if woocommerce_variant.get('error'):
+                _logger.error(f'WooCommerce REST API batch error for product variation SKU {woocommerce_variant.get("sku")}: {woocommerce_variant["error"]}')
+                continue
+
+            odoo_product_variant = odoo_variants_by_sku.get(woocommerce_variant.get('sku'))
+            if not odoo_product_variant:
+                continue
+
+            try:
+                woocommerce_product_variation_fields = self.woocommerce_product_variation_fields(woocommerce_variant, woocommerce_currency, woocommerce_weight_unit, woocommerce_dimension_unit, woocommerce_tax_rates)
+                woocommerce_product_variation_fields.update({'odoo_to_woocommerce_last_sync': fields.Datetime.now()})
+                odoo_product_variant.write(woocommerce_product_variation_fields)
+
+                _logger.info(
+                    f'Synced Odoo product variant into WooCommerce: {odoo_product_variant.name} (Odoo product variant ID: {odoo_product_variant.id}, WooCommerce product variation ID: {woocommerce_variant["id"]})'
+                )
+            except Exception:
+                _logger.exception(f'Error syncing Odoo product variant {odoo_product_variant.id} into WooCommerce')
+
+    # WooCommerce webhooks
+
+    WEBHOOK_TOPICS: ClassVar[list[str]] = ['order.created', 'order.updated', 'product.created', 'product.updated', 'customer.created', 'customer.updated']
+
+    def woocommerce_webhooks_register(self: models.Model) -> None:
+        """Registers (or re-registers) the WooCommerce webhooks used for near-real-time sync, pointing them at this Odoo instance's webhook controller route."""
+        self.ensure_one()
+
+        woocommerce_api = self.woocommerce_api_get()
+
+        if not woocommerce_api:
+            raise UserError(_('WooCommerce REST API connection failed. Please check your connection settings in the WooCommerce Configuration'))
+
+        if not self.settings_woocommerce_webhooks_secret:
+            self.settings_woocommerce_webhooks_secret = secrets.token_hex(32)
+
+        base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url')
+        delivery_url = f'{base_url}/woocommerce_sync/webhook/{self.id}'
+
+        existing_webhooks = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='webhooks', params={'status': 'active'})
+        existing_topics = {webhook['topic'] for webhook in existing_webhooks if webhook.get('delivery_url') == delivery_url}
+
+        for topic in self.WEBHOOK_TOPICS:
+            if topic in existing_topics:
+                continue
+
+            response = woocommerce_api.post(
+                'webhooks',
+                data={
+                    'name': f'Odoo sync - {topic}',
+                    'topic': topic,
+                    'delivery_url': delivery_url,
+                    'secret': self.settings_woocommerce_webhooks_secret,
+                },
+            )
+
+            if response.status_code == 201:
+                _logger.info(f'Registered WooCommerce webhook for topic {topic} -> {delivery_url}')
+            else:
+                _logger.error(f'Failed to register WooCommerce webhook for topic {topic}: {response.text}')
+
+        self.settings_woocommerce_webhooks_enable = True
+
+    def woocommerce_webhook_settings_retrieve(self: models.Model, woocommerce_api: WooCommerceClient) -> dict[str, Any]:
+        """Retrieves the small set of WooCommerce store settings needed to process a single webhook-triggered record, mirroring 'woocommerce_sync()'."""
+        return {
+            'woocommerce_currency': woocommerce_api.get(endpoint='settings/general/woocommerce_currency').json()['value'],
+            'woocommerce_weight_unit': woocommerce_api.get(endpoint='settings/products/woocommerce_weight_unit').json()['value'],
+            'woocommerce_dimension_unit': woocommerce_api.get(endpoint='settings/products/woocommerce_dimension_unit').json()['value'],
+            'woocommerce_prices_include_tax': woocommerce_api.get(endpoint='settings/tax/woocommerce_prices_include_tax').json()['value'].lower() == 'yes',
+            'woocommerce_tax_rates': {tax_rate['class']: float(tax_rate['rate']) for tax_rate in woocommerce_api.get(endpoint='taxes').json()},
+            'woocommerce_shipping_methods': woocommerce_api.get(endpoint='shipping_methods').json(),
+        }
+
+    def woocommerce_webhook_process(self: models.Model, topic: str, resource_id: int) -> None:
+        """Handles an incoming WooCommerce webhook by delaying a single-record sync job, reusing the same per-record sync methods used by the polling-based sync."""
+        self.ensure_one()
+
+        if not resource_id:
+            return
+
+        if topic.startswith('order.'):
+            self.with_delay(identity_key=f'woocommerce_webhook_order_sync-{self.id}-{resource_id}', description=self.job_description('woocommerce_webhook_order_sync')).woocommerce_webhook_order_sync(resource_id)
+        elif topic.startswith('product.'):
+            self.with_delay(identity_key=f'woocommerce_webhook_product_sync-{self.id}-{resource_id}', description=self.job_description('woocommerce_webhook_product_sync')).woocommerce_webhook_product_sync(resource_id)
+        elif topic.startswith('customer.'):
+            self.with_delay(identity_key=f'woocommerce_webhook_customer_sync-{self.id}-{resource_id}', description=self.job_description('woocommerce_webhook_customer_sync')).woocommerce_webhook_customer_sync(resource_id)
+        else:
+            _logger.info(f'Ignored WooCommerce webhook with unsupported topic: {topic}')
+
+    def woocommerce_webhook_order_sync(self: models.Model, woocommerce_order_id: int) -> None:
+        self.ensure_one()
+
+        woocommerce_api = self.woocommerce_api_get(validate=False)
+        if not woocommerce_api:
+            _logger.error('WooCommerce REST API connection failed. Webhook order sync halted')
+            return
+
+        woocommerce_order = woocommerce_api.get(f'orders/{woocommerce_order_id}').json()
+        if not isinstance(woocommerce_order, dict) or not woocommerce_order.get('id'):
+            _logger.error(f'Failed to fetch WooCommerce order {woocommerce_order_id} for webhook sync: {woocommerce_order}')
+            return
+
+        settings = self.woocommerce_webhook_settings_retrieve(woocommerce_api)
+
+        odoo_sale_order = self.env['sale.order'].search_read(
+            [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_order_id))],
+            fields=['id', 'name', 'write_date', 'woocommerce_id'],
+            limit=1,
+        )
+        odoo_sale_orders = {odoo_sale_order[0]['woocommerce_id']: odoo_sale_order[0]} if odoo_sale_order else {}
+
+        self.woocommerce_to_odoo_order_sync(woocommerce_order, settings['woocommerce_tax_rates'], settings['woocommerce_weight_unit'], settings['woocommerce_shipping_methods'], odoo_sale_orders)
+
+    def woocommerce_webhook_product_sync(self: models.Model, woocommerce_product_id: int) -> None:
+        self.ensure_one()
+
+        woocommerce_api = self.woocommerce_api_get(validate=False)
+        if not woocommerce_api:
+            _logger.error('WooCommerce REST API connection failed. Webhook product sync halted')
+            return
+
+        woocommerce_product = woocommerce_api.get(f'products/{woocommerce_product_id}').json()
+        if not isinstance(woocommerce_product, dict) or not woocommerce_product.get('id'):
+            _logger.error(f'Failed to fetch WooCommerce product {woocommerce_product_id} for webhook sync: {woocommerce_product}')
+            return
+
+        settings = self.woocommerce_webhook_settings_retrieve(woocommerce_api)
+
+        odoo_product = (
+            self.env['product.template']
+            .with_context(lang=False)
+            .search_read(
+                [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_product_id))],
+                fields=['id', 'name', 'write_date', 'woocommerce_id'],
+                limit=1,
+            )
+        )
+        odoo_products = {odoo_product[0]['woocommerce_id']: odoo_product[0]} if odoo_product else {}
+
+        self.woocommerce_to_odoo_product_sync(
+            woocommerce_product,
+            settings['woocommerce_currency'],
+            settings['woocommerce_tax_rates'],
+            settings['woocommerce_prices_include_tax'],
+            settings['woocommerce_weight_unit'],
+            settings['woocommerce_dimension_unit'],
+            odoo_products,
+        )
+
+        if woocommerce_product.get('type') == 'variable' and self.settings_woocommerce_to_odoo_products_variations_sync:
+            self.woocommerce_to_odoo_product_variations_sync(
+                woocommerce_product,
+                settings['woocommerce_currency'],
+                settings['woocommerce_tax_rates'],
+                settings['woocommerce_prices_include_tax'],
+                settings['woocommerce_weight_unit'],
+                settings['woocommerce_dimension_unit'],
+            )
+
+    def woocommerce_webhook_customer_sync(self: models.Model, woocommerce_customer_id: int) -> None:
+        self.ensure_one()
+
+        woocommerce_api = self.woocommerce_api_get(validate=False)
+        if not woocommerce_api:
+            _logger.error('WooCommerce REST API connection failed. Webhook customer sync halted')
+            return
+
+        woocommerce_customer = woocommerce_api.get(f'customers/{woocommerce_customer_id}').json()
+        if not isinstance(woocommerce_customer, dict) or not woocommerce_customer.get('id'):
+            _logger.error(f'Failed to fetch WooCommerce customer {woocommerce_customer_id} for webhook sync: {woocommerce_customer}')
+            return
+
+        odoo_customer = (
+            self.env['res.partner']
+            .with_context(lang=False)
+            .search_read(
+                [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_customer_id))],
+                fields=['id', 'name', 'active', 'write_date', 'woocommerce_id'],
+                limit=1,
+            )
+        )
+        odoo_customers = {odoo_customer[0]['woocommerce_id']: odoo_customer[0]} if odoo_customer else {}
+
+        self.woocommerce_to_odoo_customer_sync(woocommerce_customer, odoo_customers)

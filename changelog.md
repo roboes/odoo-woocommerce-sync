@@ -1,5 +1,39 @@
 # Changelog
 
+## v16.0.5.0 / v18.0.5.0 / v19.0.5.0 - 2026-08-27
+
+### Features
+
+- Performance: Odoo↔WooCommerce sync (products, product variations, customers, orders, stock quantities) now dispatches chunked queue jobs and uses the WooCommerce REST API batch endpoints (`products/batch`, `products/{id}/variations/batch`) instead of one job/request per record. Lookups (brands, categories, tags, tax rates, units of measure, countries) are cached per batch/chunk to avoid repeated searches.
+- WooCommerce webhooks: optional near-real-time sync via `order.created`/`order.updated`/`product.created`/`product.updated`/`customer.created`/`customer.updated` webhooks, validated with an HMAC-SHA256 signature, in addition to the regular polling sync.
+- WooCommerce refunds are now converted into real Odoo credit notes (full refunds against a single posted invoice only; partial/ambiguous refunds are left for manual handling).
+- WooCommerce order fee lines and coupon lines are now synced as real `sale.order.line` rows instead of only raw JSON.
+- Customer/order shipping addresses are now synced to a dedicated `res.partner` delivery contact instead of reusing the billing address.
+- Orders with multiple WooCommerce shipping lines now get an order line for each additional shipping method instead of only the first one.
+- The queue job chunk size (previously a fixed constant) is now configurable via the `Queue Job Chunk Size` setting (default: 10).
+- The HTTP `User-Agent` header sent with WooCommerce REST API requests is now configurable via the `User Agent` setting (default: `Odoo-Woocommerce Sync`).
+- After a full sync run finishes, a summary message is posted to the WooCommerce Configuration record's chatter (and optionally also as a Discuss chat - see below), showing a per-direction breakdown (products, product variations, customers, orders) of records processed/new/updated/errors, plus when the run started and, if "Only Sync Modified/New Records" is enabled, the previous sync's timestamp ("since last sync"). Controlled by the `Post Sync Summary to Chatter` setting (enabled by default); shows a Test Mode warning when Test mode is active. Not triggered by webhook-based syncs.
+- The sync summary is now also sent as a direct-message Discuss chat from a dedicated "WooCommerce Sync" contact (like the built-in OdooBot conversation), in addition to the chatter message. Controlled by the new `Post Sync Summary to Discuss Chat` setting (enabled by default).
+- Sale orders are now locked in Odoo when the WooCommerce order status is `completed` (unlocked again if it moves back to an earlier status).
+- Added a `Tax Calculation` setting (`Match Odoo Company Settings` (default), `Tax Included`, `Tax Excluded`) to control whether Odoo taxes/prices created by the sync are tax-included or tax-excluded, independent of WooCommerce's own `Prices entered with tax` setting.
+- The WooCommerce Configuration form now opens at a friendly URL (`/odoo/woocommerce-sync/<id>`) instead of `/odoo/action-<id>/<id>` (v18/v19 only; not supported in v16).
+- Added automated tests covering per-record savepoint isolation, order fee/coupon lines, order shipping lines, and webhook queue job dispatch.
+
+### Fixes
+
+- Fixed a bug where a single failing record in a sync batch could roll back and discard other records already synced in the same batch; each record's sync is now isolated in its own savepoint.
+- `woocommerce_service` is now derived from WooCommerce's `virtual`/`downloadable` flags instead of always being `False`.
+- WooCommerce tax is no longer applied to products/variations whose `tax_status` is `none`/`shipping`.
+- Added a partial unique index on WooCommerce ID fields (products, variations, customers, orders, refunds) to prevent duplicate records from concurrent sync jobs.
+- Added retry/backoff to image downloads, matching the existing WooCommerce REST API resilience.
+- Fixed a `NotNullViolation` on `product.template.categ_id` when a synced WooCommerce product has no assigned category; Odoo's own default category is now used instead of forcing an empty value.
+- Queue jobs dispatched via `with_delay()`/`delayable()` now show the function name (e.g. `woocommerce.sync.connector.woocommerce_to_odoo_orders_chunk_sync`) in the Job Queue view instead of the function's docstring.
+- Fixed `Datetime field expects a naive datetime` error on manual "Synchronize Now" sync (https://github.com/roboes/odoo-woocommerce-sync/issues/12).
+- The Brazil CPF/CNPJ/RG/IE billing fields are now read via `.get()` instead of direct key access, preventing a `KeyError` when a plugin doesn't expose one of these fields; CPF vs. CNPJ is now also preferred based on the `_billing_persontype` billing field (pessoa física vs. pessoa jurídica) when available.
+- Fixed newly-created tax rates being named e.g. `19.0%`/`7.0%` instead of `19%`/`7%`, causing duplicate taxes instead of reusing an existing, identically-rated tax; whole-number rates no longer get a trailing `.0`.
+- WooCommerce product variations are now skipped when not modified since the last sync, matching the existing behavior for products; previously every variation was unconditionally re-written (and logged as updated) on every sync run even when nothing about it had changed.
+- Fixed each record's isolated per-record savepoint (product, product variation, customer, order sync) never being released after use, leaking an open savepoint on every record for the rest of the chunk job's transaction; the savepoint is now always released, whether the record synced successfully or was rolled back.
+
 ## v16.0.4.2 / v18.0.4.2 / v19.0.4.2 - 2026-07-09
 
 ### Features

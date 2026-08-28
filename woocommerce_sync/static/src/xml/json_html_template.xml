@@ -2,5 +2,5 @@
 <templates xml:space="preserve">
     <t t-name="woocommerce_sync.JsonHtmlField" owl="1">
         <div t-raw="formattedValue"/>
-	</t>
+    </t>
 </templates>
