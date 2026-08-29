@@ -1,5 +1,7 @@
 """Thin WooCommerce REST API adapter: connection handling, pagination and rate-limit/backoff retry. Contains no Odoo ORM logic, so it can be unit-tested and reused independently of the connector model."""
 
+from __future__ import annotations
+
 import logging
 import time
 from collections.abc import Generator

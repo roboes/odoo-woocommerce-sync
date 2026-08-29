@@ -30,6 +30,7 @@ class TestSavepointIsolation(WoocommerceSyncCommon):
         with (
             patch.object(type(self.connector), 'image_download', make_fake_image_download()),
             patch.object(type(self.connector), 'image_process_attachments', side_effect=RuntimeError('Simulated failure to test savepoint isolation')),
+            self.assertLogs('odoo.addons.woocommerce_sync.models.connector', level='ERROR') as expected_logs,
         ):
             self.connector.woocommerce_to_odoo_products_chunk_sync(
                 [good_product, bad_product],
@@ -40,6 +41,11 @@ class TestSavepointIsolation(WoocommerceSyncCommon):
                 woocommerce_dimension_unit='cm',
                 odoo_products={},
             )
+
+        log_output = '\n'.join(expected_logs.output)
+        self.assertIn('Error syncing WooCommerce product Bad Product (WooCommerce product ID: 90002)', log_output)
+        self.assertIn('Error syncing WooCommerce product 90002 within chunk job', log_output)
+        self.assertIn('Simulated failure to test savepoint isolation', log_output)
 
         good_odoo_product = self.env['product.template'].search([('default_code', '=', 'TEST-GOOD-1')])
         bad_odoo_product = self.env['product.template'].search([('default_code', '=', 'TEST-BAD-1')])
