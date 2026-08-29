@@ -78,11 +78,5 @@ repos:
       - id: rst-inline-touching-normal
       - id: text-unicode-replacement-char
 
-  - repo: https://github.com/asottile/pyupgrade
-    rev: v3.21.2
-    hooks:
-      - id: pyupgrade
-        args: ['--py314-plus']
-
 default_language_version:
   python: python3

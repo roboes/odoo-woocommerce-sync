@@ -1,7 +1,7 @@
 """Shared test fixtures/helpers, kept in one place so every test builds WooCommerce-shaped payloads the same way."""
 
 import base64
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from unittest.mock import Mock
 
@@ -52,7 +52,7 @@ def storable_product_values(is_storable: bool = True) -> dict[str, Any]:
 
 def make_woocommerce_product_payload(**overrides: Any) -> dict[str, Any]:
     """Builds a minimal-but-complete WooCommerce 'products' REST API payload (all keys read by 'woocommerce_product_fields()'/'woocommerce_to_odoo_product_sync()'), so tests don't have to know every field the connector reads."""
-    now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+    now = datetime.now(tz=UTC).strftime('%Y-%m-%dT%H:%M:%S')
 
     payload = {
         'id': 1000,
@@ -129,7 +129,7 @@ def make_woocommerce_product_payload(**overrides: Any) -> dict[str, Any]:
 
 def make_woocommerce_order_payload(**overrides: Any) -> dict[str, Any]:
     """Builds a minimal-but-complete WooCommerce 'orders' REST API payload (all keys read by 'woocommerce_to_odoo_order_sync()'), so tests don't have to know every field the connector reads."""
-    now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+    now = datetime.now(tz=UTC).strftime('%Y-%m-%dT%H:%M:%S')
 
     empty_address = {
         'first_name': '',

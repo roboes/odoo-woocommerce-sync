@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any, ClassVar
 
@@ -34,21 +36,21 @@ class AccountMove(models.Model):
 class AccountMoveLine(models.Model):
     _inherit = 'account.move.line'
 
-    # Override the existing 'product_id' field to add the ondelete cascade
-    product_id = fields.Many2one(
-        comodel_name='product.product',
-        string='Product',
-        inverse='_inverse_product_id',
-        ondelete='cascade',
-    )
+    # Disabled: Cascading product deletion into accounting lines can erase accounting history
+    # product_id = fields.Many2one(
+    #     comodel_name='product.product',
+    #     string='Product',
+    #     inverse='_inverse_product_id',
+    #     ondelete='cascade',
+    # )
 
 
 # Delivery Carrier
 class DeliveryCarrier(models.Model):
     _inherit = 'delivery.carrier'
 
-    # Override the existing 'product_id' field to add the ondelete cascade
-    product_id = fields.Many2one(comodel_name='product.product', string='Delivery Product', required=True, ondelete='cascade')
+    # Disabled: Preserve Odoo's native deletion policy for carrier products
+    # product_id = fields.Many2one(comodel_name='product.product', string='Delivery Product', required=True, ondelete='cascade')
 
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
 
@@ -57,8 +59,8 @@ class DeliveryCarrier(models.Model):
 class StockQuant(models.Model):
     _inherit = 'stock.quant'
 
-    # Override the existing 'product_id' field to add the ondelete cascade
-    product_id = fields.Many2one(comodel_name='product.product', string='Product', domain=lambda self: self._domain_product_id(), required=True, index=True, check_company=True, ondelete='cascade')
+    # Disabled: Cascading product deletion into stock quants can erase stock history
+    # product_id = fields.Many2one(comodel_name='product.product', string='Product', domain=lambda self: self._domain_product_id(), required=True, index=True, check_company=True, ondelete='cascade')
 
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
 
@@ -75,29 +77,28 @@ class StockQuant(models.Model):
 class StockMove(models.Model):
     _inherit = 'stock.move'
 
-    # Override the existing 'product_id' field to add the ondelete cascade
-    if version_info[0] == 16:
-        product_id = fields.Many2one(
-            comodel_name='product.product',
-            string='Product',
-            check_company=True,
-            domain="[('type', 'in', ['product', 'consu']), '|', ('company_id', '=', False), ('company_id', '=', company_id)]",
-            required=True,
-            index=True,
-            states={'done': [('readonly', True)]},
-            ondelete='cascade',
-        )
-
-    elif version_info[0] in [18, 19]:
-        product_id = fields.Many2one(
-            comodel_name='product.product',
-            string='Product',
-            check_company=True,
-            domain="[('type', '=', 'consu')]",
-            required=True,
-            index=True,
-            ondelete='cascade',
-        )
+    # Disabled: Preserve Odoo's native deletion policy and version-specific stock move field
+    # if version_info[0] == 16:
+    #     product_id = fields.Many2one(
+    #         comodel_name='product.product',
+    #         string='Product',
+    #         check_company=True,
+    #         domain="[('type', 'in', ['product', 'consu']), '|', ('company_id', '=', False), ('company_id', '=', company_id)]",
+    #         required=True,
+    #         index=True,
+    #         states={'done': [('readonly', True)]},
+    #         ondelete='cascade',
+    #     )
+    # elif version_info[0] in [18, 19]:
+    #     product_id = fields.Many2one(
+    #         comodel_name='product.product',
+    #         string='Product',
+    #         check_company=True,
+    #         domain="[('type', '=', 'consu')]",
+    #         required=True,
+    #         index=True,
+    #         ondelete='cascade',
+    #     )
 
 
 if version_info[0] in [16, 18]:
@@ -105,8 +106,8 @@ if version_info[0] in [16, 18]:
     class StockValuationLayer(models.Model):
         _inherit = 'stock.valuation.layer'
 
-        # Override the existing 'product_id' field to add the ondelete cascade
-        product_id = fields.Many2one(comodel_name='product.product', string='Product', index=True, domain=lambda self: self._domain_product_id(), required=True, check_company=True, ondelete='cascade')
+        # Disabled: Cascading product deletion into valuation layers can erase valuation history
+        # product_id = fields.Many2one(comodel_name='product.product', string='Product', index=True, domain=lambda self: self._domain_product_id(), required=True, check_company=True, ondelete='cascade')
 
 
 # Product
