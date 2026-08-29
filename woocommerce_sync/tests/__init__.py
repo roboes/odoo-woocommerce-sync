@@ -19,6 +19,7 @@ from . import (
     test_odoo_to_woocommerce_values,
     test_refund_credit_note,
     test_savepoint_isolation,
+    test_variation_sync_status,
     test_webhook_signature,
     test_woocommerce_client,
 )
@@ -27,6 +28,7 @@ __all__ = [
     'test_odoo_to_woocommerce_values',
     'test_refund_credit_note',
     'test_savepoint_isolation',
+    'test_variation_sync_status',
     'test_webhook_signature',
     'test_woocommerce_client',
 ]

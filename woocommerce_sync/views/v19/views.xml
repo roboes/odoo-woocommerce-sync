@@ -44,7 +44,7 @@
                   <field name="settings_woocommerce_modified_records_import"/>
                   <field name="settings_woocommerce_images_sync"/>
                   <field name="settings_odoo_tax_calculation"/>
-                  <field name="settings_job_chunk_size"/>
+                  <field name="settings_job_chunk_size" options="{'min': 1}"/>
                   <field name="settings_sync_summary_chatter_enable"/>
                   <field name="settings_sync_summary_discuss_chat_enable"/>
                 </group>

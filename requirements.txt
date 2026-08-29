@@ -1,3 +1,4 @@
 filetype
 phonenumbers
+Pillow>=11.3.0
 woocommerce
