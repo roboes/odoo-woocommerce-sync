@@ -1,5 +1,27 @@
 # Changelog
 
+## v16.0.5.1 / v18.0.5.1 / v19.0.5.1 - 2026-08-29
+
+### Improvements
+
+- Queue job chunk size must now be greater than zero, preventing invalid settings from breaking chunk generation.
+- Retryable queue job and PostgreSQL serialization/deadlock errors are now re-raised by all product, variation, customer, and order chunk jobs so OCA `queue_job` can retry them instead of recording them as ordinary per-record errors.
+- Existing core Odoo deletion policies are preserved for accounting lines, delivery carriers, stock quants, stock moves, and stock valuation layers; the previous custom `ondelete='cascade'` overrides have been disabled to protect accounting and stock history.
+
+### Fixes
+
+- Fixed WooCommerce variation IDs being compared as integers against Odoo `Char` values, which caused unchanged variations to be treated as updates on every sync. Variation summary counts now include all processed variations while correctly distinguishing new, updated, and skipped records.
+- Missing parent products now produce a variation sync-summary error instead of silently reporting zero processed variations or exhausting queue job retries.
+- Test mode continues to import the first 10 records from each WooCommerce endpoint, but now skips the product deletion check because its intentionally incomplete catalog response cannot safely identify deleted products.
+- Test-mode variation import now uses variable products from the same first 10-product sample as product import, preventing variation jobs from targeting parent products outside the test sample.
+- Sync cursors and product deletion searches are now scoped to the current WooCommerce connector, preventing one configured store from affecting another store's imports or products.
+- Products are no longer deleted and recreated when WooCommerce stock-management mode changes.
+- Legacy sync-summary rows with no direction are excluded from the per-direction aggregation.
+- Customers created while importing orders are now assigned to the current WooCommerce site; guest orders without a usable mapped customer fall back to the placeholder customer.
+- Fixed a possible division by zero while allocating Brazilian freight values across zero-total order lines.
+- Fixed Odoo-to-WooCommerce product attribute export creating/searching global attributes by option name instead of by the actual attribute name.
+- Added regression tests for variation status aggregation across repeated syncs and for non-destructive product deletion behavior in test mode.
+
 ## v16.0.5.0 / v18.0.5.0 / v19.0.5.0 - 2026-08-27
 
 ### Features
