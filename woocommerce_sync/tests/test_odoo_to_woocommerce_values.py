@@ -31,6 +31,7 @@ class TestOdooToWooCommerceProductValues(WoocommerceSyncCommon):
         self.assertEqual(product_values['type'], 'simple')
         self.assertEqual(product_values['tax_class'], 'standard')
         self.assertTrue(product_values['manage_stock'])
+        self.assertTrue(product_values['date_created_gmt'].endswith('Z'))
 
     def test_non_storable_product_has_manage_stock_false(self):
         odoo_product = self.env['product.template'].create(
