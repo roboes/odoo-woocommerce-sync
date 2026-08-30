@@ -6,6 +6,7 @@
     <field name="inherit_id" ref="product.product_template_tree_view"/>
     <field name="arch" type="xml">
       <xpath expr="//tree" position="inside">
+        <field name="woocommerce_connector_id" optional="show"/>
         <field name="woocommerce_site_url" optional="show"/>
         <field name="woocommerce_id" optional="show"/>
         <field name="woocommerce_type" optional="show"/>
