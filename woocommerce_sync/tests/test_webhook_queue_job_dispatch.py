@@ -41,3 +41,9 @@ class TestWebhookQueueJobDispatch(WoocommerceSyncCommon):
             self.connector.woocommerce_webhook_process('coupon.created', 555)
 
         mocked_with_delay.assert_not_called()
+
+    def test_delivery_id_distinguishes_newer_webhook_jobs(self):
+        with patch.object(type(self.connector), 'with_delay', return_value=MagicMock()) as mocked_with_delay:
+            self.connector.woocommerce_webhook_process('product.updated', 777, delivery_id='delivery-2')
+
+        mocked_with_delay.assert_called_once_with(identity_key=f'woocommerce_webhook_product_sync-{self.connector.id}-777-delivery-2', description='woocommerce.sync.connector.woocommerce_webhook_product_sync')

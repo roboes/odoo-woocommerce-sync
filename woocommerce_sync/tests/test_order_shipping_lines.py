@@ -62,3 +62,20 @@ class TestOrderMultipleShippingLines(WoocommerceSyncCommon):
         extra_shipping_lines = odoo_sale_order.order_line.filtered(lambda line: line.woocommerce_id == '902')
         self.assertEqual(len(extra_shipping_lines), 1, 'Resyncing the same order must not duplicate the extra shipping line')
         self.assertEqual(extra_shipping_lines.price_unit, 12.50)
+
+    def test_resyncing_order_removes_shipping_lines_missing_from_woocommerce(self):
+        woocommerce_order = make_woocommerce_order_payload(
+            id=94003,
+            number='94003',
+            shipping_lines=[
+                {'id': 1001, 'method_title': 'Flat Rate', 'total': '5.00'},
+                {'id': 1002, 'method_title': 'Express', 'total': '10.00'},
+            ],
+        )
+        first_sale_order = self._sync_order(woocommerce_order)
+
+        woocommerce_order['shipping_lines'] = []
+        woocommerce_order['date_modified_gmt'] = bump_iso_datetime(woocommerce_order['date_modified_gmt'])
+        odoo_sale_order = self._sync_order(woocommerce_order, odoo_sale_orders={str(woocommerce_order['id']): {'id': first_sale_order.id}})
+
+        self.assertFalse(odoo_sale_order.order_line.filtered(lambda line: line.is_delivery or line.woocommerce_id == '1002'))

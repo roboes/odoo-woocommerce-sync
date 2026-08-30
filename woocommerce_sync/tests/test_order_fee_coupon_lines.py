@@ -54,3 +54,13 @@ class TestOrderFeeCouponLines(WoocommerceSyncCommon):
         fee_order_lines = odoo_sale_order.order_line.filtered(lambda line: line.woocommerce_id == '701')
         self.assertEqual(len(fee_order_lines), 1, 'Resyncing the same order must not duplicate the fee line')
         self.assertEqual(fee_order_lines.price_unit, 3.75)
+
+    def test_resyncing_order_removes_missing_fee_line(self):
+        woocommerce_order = make_woocommerce_order_payload(id=93004, number='93004', fee_lines=[{'id': 801, 'name': 'Temporary fee', 'total': '2.50'}])
+        first_sale_order = self._sync_order(woocommerce_order)
+
+        woocommerce_order['fee_lines'] = []
+        woocommerce_order['date_modified_gmt'] = bump_iso_datetime(woocommerce_order['date_modified_gmt'])
+        odoo_sale_order = self._sync_order(woocommerce_order, odoo_sale_orders={str(woocommerce_order['id']): {'id': first_sale_order.id}})
+
+        self.assertFalse(odoo_sale_order.order_line.filtered(lambda line: line.woocommerce_id == '801'))

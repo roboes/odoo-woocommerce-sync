@@ -20,7 +20,13 @@ class WoocommerceSyncWebhookController(http.Controller):
         if not connector or not connector.settings_woocommerce_webhooks_enable:
             return request.make_json_response({'error': 'Webhook not found or not enabled'}, status=404)
 
-        raw_body = request.httprequest.get_data()
+        maximum_payload_bytes = 2 * 1024 * 1024
+        if request.httprequest.content_length and request.httprequest.content_length > maximum_payload_bytes:
+            return request.make_json_response({'error': 'Payload too large'}, status=413)
+
+        raw_body = request.httprequest.stream.read(maximum_payload_bytes + 1)
+        if len(raw_body) > maximum_payload_bytes:
+            return request.make_json_response({'error': 'Payload too large'}, status=413)
         signature = request.httprequest.headers.get('X-WC-Webhook-Signature', '')
 
         if not connector.settings_woocommerce_webhooks_secret or not self._signature_valid(raw_body, signature, connector.settings_woocommerce_webhooks_secret):
@@ -28,6 +34,8 @@ class WoocommerceSyncWebhookController(http.Controller):
             return request.make_json_response({'error': 'Invalid signature'}, status=401)
 
         topic = request.httprequest.headers.get('X-WC-Webhook-Topic', '')
+        if topic not in connector.WEBHOOK_TOPICS:
+            return request.make_json_response({'error': 'Unsupported webhook topic'}, status=400)
 
         # WooCommerce sends an empty body as a "ping" when a webhook is first created; just acknowledge it
         if not raw_body:
@@ -40,8 +48,11 @@ class WoocommerceSyncWebhookController(http.Controller):
 
         resource_id = payload.get('id') if isinstance(payload, dict) else None
 
-        if resource_id:
-            connector.woocommerce_webhook_process(topic, resource_id)
+        if not isinstance(resource_id, int) or isinstance(resource_id, bool) or resource_id <= 0:
+            return request.make_json_response({'error': 'Invalid resource ID'}, status=400)
+
+        delivery_id = request.httprequest.headers.get('X-WC-Webhook-Delivery-ID')
+        connector.woocommerce_webhook_process(topic, resource_id, delivery_id=delivery_id)
 
         return request.make_json_response({'status': 'ok'})
 
