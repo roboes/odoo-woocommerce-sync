@@ -12,6 +12,7 @@
         </span>
       </xpath>
       <xpath expr="//page[@name='general_information']//group[@name='group_general']" position="inside">
+        <field name="woocommerce_connector_id" attrs="{'invisible': [('sync_to_woocommerce', '=', False)]}"/>
         <field name="language_code" attrs="{'invisible': ['|', ('language_code', '=', False), ('language_code', '=', '')]}"/>
         <field name="woocommerce_stock_last_sync" attrs="{'invisible': [('woocommerce_stock_last_sync', '=', False)]}"/>
       </xpath>
@@ -26,6 +27,7 @@
       <xpath expr="//notebook" position="inside">
         <page string="WooCommerce" attrs="{'invisible': ['|', ('woocommerce_id', '=', False), ('woocommerce_id', '=', '')]}">
           <group string="General Information">
+            <field name="woocommerce_connector_id"/>
             <field name="woocommerce_site_url"/>
             <field name="woocommerce_to_odoo_last_sync"/>
             <field name="woocommerce_name"/>

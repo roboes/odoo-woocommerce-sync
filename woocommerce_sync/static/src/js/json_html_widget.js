@@ -31,6 +31,8 @@ export class JsonHtmlField extends Field {
   }
 
   formatJsonToTable(data) {
+    const escapeHtml = (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+
     const tableStyle = `
             border-collapse: collapse;
             width: 100%;
@@ -53,7 +55,7 @@ export class JsonHtmlField extends Field {
     const renderTable = (headers, rows) => `
         <table style="${tableStyle}">
             <thead>
-                <tr>${headers.map((h) => `<th style="${thStyle}">${h}</th>`).join('')}</tr>
+                <tr>${headers.map((header) => `<th style="${thStyle}">${escapeHtml(header)}</th>`).join('')}</tr>
         </thead>
         <tbody>
         ${rows
@@ -91,7 +93,7 @@ export class JsonHtmlField extends Field {
 
     if (data === null) return 'null';
     if (typeof data === 'boolean') return data ? 'true' : 'false';
-    return String(data);
+    return escapeHtml(data);
   }
 }
 
