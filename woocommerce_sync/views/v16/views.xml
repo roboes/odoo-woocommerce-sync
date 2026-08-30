@@ -4,13 +4,11 @@
     <record model="ir.ui.view" id="tree_view_woocommerce">
       <field name="name">WooCommerce Configuration List</field>
       <field name="model">woocommerce.sync.connector</field>
+      <field name="groups_id" eval="[(4, ref('woocommerce_sync.group_woocommerce_sync_manager'))]"/>
       <field name="arch" type="xml">
         <tree string="WooCommerce Configurations">
           <field name="settings_woocommerce_connection_name"/>
           <field name="settings_woocommerce_connection_url"/>
-          <field name="settings_woocommerce_consumer_key"/>
-          <field name="settings_woocommerce_consumer_secret" password="True"/>
-          <!-- <field name="settings_woocommerce_timeout"/> -->
           <field name="odoo_woocommerce_last_sync"/>
           <button type="object" name="woocommerce_sync_action" string="Sync Now" icon="fa-refresh"/>
         </tree>
@@ -19,6 +17,7 @@
     <record model="ir.ui.view" id="form_view_woocommerce">
       <field name="name">WooCommerce Configuration Form</field>
       <field name="model">woocommerce.sync.connector</field>
+      <field name="groups_id" eval="[(4, ref('woocommerce_sync.group_woocommerce_sync_manager'))]"/>
       <field name="arch" type="xml">
         <form string="WooCommerce Configuration Form">
           <sheet>
@@ -36,6 +35,12 @@
                   <p>Optional: The WordPress REST API is only required when uploading images from Odoo to WooCommerce. This functionality relies on the core WordPress REST API, which operates separately from the WooCommerce REST API.</p>
                   <field name="settings_wordpress_username"/>
                   <field name="settings_wordpress_user_application_password" password="True"/>
+                </group>
+                <group string="WooCommerce Webhooks">
+                  <p>Optional: Registers WooCommerce webhooks (order/product/customer changes) so they are synced to Odoo near-real-time, in addition to the regular polling sync. Requires this Odoo instance to be reachable from WooCommerce.</p>
+                  <field name="settings_woocommerce_webhooks_enable"/>
+                  <field name="settings_woocommerce_webhooks_secret" password="True"/>
+                  <button type="object" name="woocommerce_webhooks_register" string="Register Webhooks" icon="fa-plug"/>
                 </group>
               </page>
               <page string="Sync Items">
@@ -142,10 +147,32 @@
       </field>
     </record>
     <!-- Actions opening views on models -->
+    <record model="ir.ui.view" id="tree_view_woocommerce_operator">
+      <field name="name">WooCommerce Sync Operator List</field>
+      <field name="model">woocommerce.sync.connector</field>
+      <field name="groups_id" eval="[(4, ref('woocommerce_sync.group_woocommerce_sync_operator'))]"/>
+      <field name="arch" type="xml">
+        <tree string="Run WooCommerce Sync" create="0" edit="0" delete="0">
+          <field name="settings_woocommerce_connection_name"/>
+          <field name="odoo_woocommerce_last_sync"/>
+          <button type="object" name="woocommerce_sync_action" string="Sync Now" icon="fa-refresh"/>
+        </tree>
+      </field>
+    </record>
+    <record model="ir.actions.act_window" id="action_woocommerce_sync_operator">
+      <field name="name">Run Sync</field>
+      <field name="res_model">woocommerce.sync.connector</field>
+      <field name="view_mode">tree</field>
+      <field name="view_id" ref="tree_view_woocommerce_operator"/>
+      <field name="groups_id" eval="[(4, ref('woocommerce_sync.group_woocommerce_sync_operator'))]"/>
+    </record>
     <record model="ir.actions.act_window" id="action_woocommerce_configuration">
       <field name="name">WooCommerce Configuration</field>
       <field name="res_model">woocommerce.sync.connector</field>
       <field name="view_mode">tree,form</field>
+      <field name="view_id" ref="tree_view_woocommerce"/>
+      <field name="view_ids" eval="[(5, 0, 0), (0, 0, {'view_mode': 'tree', 'view_id': ref('tree_view_woocommerce')}), (0, 0, {'view_mode': 'form', 'view_id': ref('form_view_woocommerce')}),]"/>
+      <field name="groups_id" eval="[(4, ref('woocommerce_sync.group_woocommerce_sync_manager'))]"/>
     </record>
     <!-- Button on module form -->
     <record id="view_module_form_inherit_woo" model="ir.ui.view">
@@ -154,15 +181,16 @@
       <field name="inherit_id" ref="base.module_form"/>
       <field name="arch" type="xml">
         <xpath expr="//sheet" position="inside">
-          <div class="oe_button_box" name="button_box">
+          <div class="oe_button_box" name="button_box" groups="base.group_no_one" attrs="{'invisible': [('name', '!=', 'woocommerce_sync')]}">
             <button name="%(action_woocommerce_configuration)d" string="Sync Settings" type="action" class="oe_stat_button" icon="fa-gears"/>
           </div>
         </xpath>
       </field>
     </record>
     <!-- Top menu item -->
-    <menuitem name="WooCommerce Sync" id="woocommerce_menu_root" sequence="50" web_icon="woocommerce_sync,static/description/icon.png"/>
+    <menuitem name="WooCommerce Sync" id="woocommerce_menu_root" sequence="50" web_icon="woocommerce_sync,static/description/icon.png" groups="woocommerce_sync.group_woocommerce_sync_operator"/>
     <!-- Menu categories -->
-    <menuitem name="Configuration" id="woocommerce_configuration_menu" parent="woocommerce_menu_root" action="action_woocommerce_configuration"/>
+    <menuitem name="Run Sync" id="woocommerce_sync_operator_menu" parent="woocommerce_menu_root" action="action_woocommerce_sync_operator" sequence="1" groups="woocommerce_sync.group_woocommerce_sync_operator"/>
+    <menuitem name="Configuration" id="woocommerce_configuration_menu" parent="woocommerce_menu_root" action="action_woocommerce_configuration" sequence="10" groups="woocommerce_sync.group_woocommerce_sync_manager"/>
   </data>
 </odoo>

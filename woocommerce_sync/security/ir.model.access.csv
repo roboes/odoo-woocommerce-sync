@@ -1,7 +1,8 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
-access_woocommerce_sync_connector,woocommerce.sync.connector access,model_woocommerce_sync_connector,base.group_user,1,1,1,1
+access_woocommerce_sync_connector_operator,woocommerce.sync.connector operator access,model_woocommerce_sync_connector,woocommerce_sync.group_woocommerce_sync_operator,1,0,0,0
+access_woocommerce_sync_connector,woocommerce.sync.connector access,model_woocommerce_sync_connector,woocommerce_sync.group_woocommerce_sync_manager,1,1,1,1
 access_woocommerce_sync_order_status,access.woocommerce.sync.order.status access,model_woocommerce_sync_order_status,base.group_user,1,0,0,0
-access_woocommerce_sync_log,woocommerce.sync.log access,model_woocommerce_sync_log,base.group_user,1,1,1,1
-access_woocommerce_sync_stock_log,woocommerce.sync.stock.log access,model_woocommerce_sync_stock_log,base.group_user,1,1,1,1
-access_woocommerce_sync_data_temp,woocommerce.sync.data.temp access,model_woocommerce_sync_data_temp,base.group_user,1,1,1,1
-access_woocommerce_sync_summary_event,woocommerce.sync.summary.event access,model_woocommerce_sync_summary_event,base.group_user,1,1,1,1
+access_woocommerce_sync_log,woocommerce.sync.log access,model_woocommerce_sync_log,woocommerce_sync.group_woocommerce_sync_manager,1,1,1,1
+access_woocommerce_sync_stock_log,woocommerce.sync.stock.log access,model_woocommerce_sync_stock_log,woocommerce_sync.group_woocommerce_sync_manager,1,1,1,1
+access_woocommerce_sync_data_temp,woocommerce.sync.data.temp access,model_woocommerce_sync_data_temp,woocommerce_sync.group_woocommerce_sync_manager,1,1,1,1
+access_woocommerce_sync_summary_event,woocommerce.sync.summary.event access,model_woocommerce_sync_summary_event,woocommerce_sync.group_woocommerce_sync_manager,1,1,1,1
