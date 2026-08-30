@@ -1,5 +1,46 @@
 # Changelog
 
+## v16.0.5.2 / v18.0.5.2 / v19.0.5.2 - 2026-08-30
+
+### Improvements
+
+- Products exported to WooCommerce now have an explicit connector assignment, preventing one connector from exporting another store's products while retaining existing URL-based mappings.
+- Incremental import watermarks are tracked separately for products, variations, customers, and orders, so enabling a direction later cannot skip records covered only by another direction's prior run.
+- Stock synchronization now computes quantities in the configured warehouse, groups all matching quants, rejects unsafe automatic adjustments for lot/serial-tracked products, and advances its watermark only after every stock chunk completes.
+- Webhook registration refreshes existing hooks and only enables webhook processing after every required topic succeeds. Delivery IDs now distinguish successive webhook jobs for the same resource.
+- Full variation imports archive mapped variants that are no longer published remotely. Order resync removes stale integration-owned lines unless invoicing or delivery history makes removal unsafe.
+- The test runner now executes the add-on suite with explicit Odoo test flags against a configurable database, without deleting global queue jobs or truncating container logs.
+- Full sync runs now use an idempotent per-chunk event ledger and completion barrier. The incremental-import watermark advances only after every inbound chunk finishes without record errors, and uses the run's start time so changes made in WooCommerce during a run remain eligible for the next sync.
+- Overlapping full sync runs are deferred instead of mixing their events, and inbound queue-job identity keys now include the run timestamp so an older failed job cannot suppress a later retry run.
+- Sync summaries now report skipped records alongside new, updated, and errored records; legacy event rows without a sync direction are included under `Legacy/Unknown`.
+- Standard WooCommerce REST API page size was increased from 10 to 100 records to reduce API round trips; Test mode remains limited to the first 10 records.
+- Connector configuration, credentials, temporary sync data, logs, and summary events are now restricted to the new `WooCommerce Sync Manager` group, which is automatically inherited by Odoo Settings administrators.
+- Odoo's standard sale-order deletion safeguards are restored instead of being globally bypassed for all sale orders.
+
+### Fixes
+
+- Fixed WooCommerce batch calls targeting collection endpoints instead of the required `/batch` endpoints. Ambiguous create failures are no longer retried automatically, avoiding duplicate remote products.
+- All non-success WooCommerce responses and malformed pagination payloads now raise errors instead of being interpreted as an empty catalog, preventing failed requests from triggering mass product deletion or cursor advancement.
+- Fixed sync-summary event collisions between product, variation, customer, and order chunks that happened to contain identical remote ID sequences.
+- Escaped all WooCommerce-controlled JSON keys and values in the backend table widget, preventing stored HTML/script injection in authenticated Odoo sessions.
+- Tax lookup, creation, and caching are now company-scoped.
+- Inbound product, customer, and order freshness checks now compare the last imported WooCommerce timestamp instead of generic Odoo `write_date` changes.
+- Delivery lines are synchronized before completed orders are confirmed and locked; existing completed orders are temporarily unlocked for safe resynchronization.
+- Restored Python 3.10 compatibility for Odoo 16 by replacing `datetime.UTC` with `timezone.utc`, and added the missing Odoo 16 webhook controls and module-button visibility condition.
+- Removed WooCommerce credentials from v16/v18 connector list views, corrected the active gallery SCSS selector, and relaxed the Pillow requirement so it can follow each Odoo release's supported dependency version.
+- Variation batch jobs now wait until all product chunks finish before dispatching variation work, fixing the queue-ordering race that could report a missing parent; a genuinely missing parent still produces a deterministic sync-summary error.
+- Product deletion detection now requests IDs for all WooCommerce statuses, preventing draft, pending, or private products from being mistaken for deleted products merely because they are not published.
+- Archived WooCommerce-linked products, variations, and customers are now found and updated/reactivated instead of being treated as missing and conflicting with their unique WooCommerce ID.
+- Per-record rollback now clears shared chunk caches so IDs of records rolled back with a failed product or variation cannot be reused by later records in the same chunk.
+- First-import variations are now counted as new even when Odoo automatically materializes their variant rows while attribute lines are created; only variations that already had a WooCommerce ID mapping before the sync are counted as updated.
+- Unchanged variations now compare WooCommerce's incoming modification timestamp with the last imported WooCommerce timestamp instead of Odoo's transaction-level `write_date`, preventing unnecessary updates during long-running transactions.
+- Dedicated customer import now links an existing unbound top-level contact with the same site/email instead of creating a duplicate. Guest contacts receive a normalized per-site email key with a database uniqueness constraint to prevent concurrent order chunks from creating duplicates.
+- WooCommerce `modified_after` and outbound `date_created_gmt` values now include an explicit UTC `Z` suffix instead of relying on interpretation of a timezone-less timestamp.
+- Webhook requests now reject unsupported topics and payloads larger than 2 MB while retaining HMAC-SHA256 validation over the exact request body.
+- WooCommerce-provided image URLs now reject credentials and non-HTTP(S) schemes, restrict access to non-public network addresses, revalidate redirects, and enforce a 25 MB download limit.
+- SQL identifiers used for partial unique indexes are now composed with `psycopg2.sql.Identifier`; sync-log rows and per-run chunk events also have database uniqueness constraints.
+- Fixed test discovery so all existing add-on test modules are loaded, and added regression coverage for customer identity linking, UTC serialization, REST page sizing, variation status aggregation, and non-destructive product deletion in Test mode.
+
 ## v16.0.5.1 / v18.0.5.1 / v19.0.5.1 - 2026-08-29
 
 ### Improvements

@@ -6,9 +6,9 @@
     'author': 'roboes',
     'website': 'https://github.com/roboes/odoo-woocommerce-sync',
     'category': 'Connectors',
-    # 'version': '16.0.5.1',
-    #'version': '18.0.5.1',
-    'version': '19.0.5.1',
+    # 'version': '16.0.5.2',
+    #'version': '18.0.5.2',
+    'version': '19.0.5.2',
     'external_dependencies': {
         'python': ['filetype', 'phonenumbers', 'woocommerce'],
     },
@@ -17,6 +17,7 @@
     'data': [
         'data/res_partner.xml',
         'data/woocommerce.sync.order.status.xml',
+        'security/groups.xml',
         'security/ir.model.access.csv',
         # 'views/v16/product_product_form.xml',
         # 'views/v16/product_product_tree.xml',
@@ -52,7 +53,6 @@
     'assets': {
         'web.assets_backend': [
             'woocommerce_sync/static/src/js/json_html_widget.js',
-            'woocommerce_sync/static/src/scss/product_gallery_kanban.scss',
             'woocommerce_sync/static/src/xml/json_html_template.xml',
         ],
     },

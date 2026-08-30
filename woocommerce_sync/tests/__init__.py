@@ -16,19 +16,31 @@ To run only one file/class:
 """
 
 from . import (
+    test_customer_identity,
+    test_customer_shipping_address,
     test_odoo_to_woocommerce_values,
+    test_order_fee_coupon_lines,
+    test_order_shipping_lines,
     test_refund_credit_note,
     test_savepoint_isolation,
     test_variation_sync_status,
+    test_webhook_queue_job_dispatch,
     test_webhook_signature,
     test_woocommerce_client,
+    test_woocommerce_to_odoo_product_sync,
 )
 
 __all__ = [
+    'test_customer_identity',
+    'test_customer_shipping_address',
     'test_odoo_to_woocommerce_values',
+    'test_order_fee_coupon_lines',
+    'test_order_shipping_lines',
     'test_refund_credit_note',
     'test_savepoint_isolation',
     'test_variation_sync_status',
+    'test_webhook_queue_job_dispatch',
     'test_webhook_signature',
     'test_woocommerce_client',
+    'test_woocommerce_to_odoo_product_sync',
 ]

@@ -1,21 +1,26 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from odoo import api, fields, models
 from odoo.release import version_info
+from psycopg2 import sql
+
+_WOOCOMMERCE_STALE_LINE_UNLINK_TOKEN = object()
 
 
 def woocommerce_id_unique_index_create(cursor, table: str, column: str = 'woocommerce_id') -> None:
     """Creates a partial unique index on (woocommerce_site_url, column) to prevent duplicate records being created for the same WooCommerce record by concurrent queue jobs."""
     index_name = f'{table}_woocommerce_site_url_id_uniq' if column == 'woocommerce_id' else f'{table}_woocommerce_site_url_{column}_uniq'
     cursor.execute(
-        f"""
-        CREATE UNIQUE INDEX IF NOT EXISTS {index_name}
-        ON {table} (woocommerce_site_url, {column})
-        WHERE {column} IS NOT NULL AND {column} != ''
-        """
+        sql.SQL(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS {index_name}
+            ON {table} (woocommerce_site_url, {column})
+            WHERE {column} IS NOT NULL AND {column} != ''
+            """
+        ).format(index_name=sql.Identifier(index_name), table=sql.Identifier(table), column=sql.Identifier(column))
     )
 
 
@@ -200,6 +205,7 @@ class ProductTemplate(models.Model):
     woocommerce_tax_rate = fields.Integer(string='Tax Rate', readonly=True)
 
     # Custom fields
+    woocommerce_connector_id = fields.Many2one('woocommerce.sync.connector', string='WooCommerce Connector', index=True, ondelete='set null')
     sync_to_woocommerce = fields.Boolean(string='Sync to WooCommerce', default=False)
     woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Last Sync', readonly=True)
     odoo_to_woocommerce_last_sync = fields.Datetime(string='Odoo to WooCommerce Last Sync', readonly=True)
@@ -386,10 +392,12 @@ class ResPartner(models.Model):
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
     woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Last Sync', readonly=True)
     woocommerce_last_login_date = fields.Datetime(string='Last Login Date', readonly=True)  # Wordfence fields
+    woocommerce_guest_key = fields.Char(string='WooCommerce Guest Key', readonly=True, index=True)
 
     def init(self) -> None:
         super().init()
         woocommerce_id_unique_index_create(self.env.cr, self._table)
+        woocommerce_id_unique_index_create(self.env.cr, self._table, column='woocommerce_guest_key')
 
 
 # Orders
@@ -510,6 +518,17 @@ class SaleOrder(models.Model):
 class SaleOrderLine(models.Model):
     _inherit = 'sale.order.line'
 
+    def _check_line_unlink(self: models.Model) -> models.Model:
+        blocked_lines = super()._check_line_unlink()
+        if self.env.context.get('woocommerce_sync_remove_stale_line') is not _WOOCOMMERCE_STALE_LINE_UNLINK_TOKEN:
+            return blocked_lines
+        return blocked_lines.filtered(
+            lambda line: not (((line.woocommerce_id and line.woocommerce_site_url) or (line.is_delivery and line.order_id.woocommerce_site_url)) and not line.qty_invoiced and not line.qty_delivered)
+        )
+
+    def _woocommerce_sync_unlink_stale(self: models.Model) -> bool:
+        return self.with_context(woocommerce_sync_remove_stale_line=_WOOCOMMERCE_STALE_LINE_UNLINK_TOKEN).unlink()
+
     # WooCommerce REST API - Order line items properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-line-items-properties
     woocommerce_id = fields.Char(string='WooCommerce Order Line Item ID', readonly=True, index=True)
     woocommerce_name = fields.Char(string='Product Name', readonly=True)
@@ -549,7 +568,21 @@ class WoocommerceSyncLog(models.Model):
     _description = 'WooCommerce Sync Log'
 
     woocommerce_connection_id = fields.Integer(string='Connection ID', required=True, index=True)
+    sync_direction = fields.Selection([('products', 'Products'), ('variations', 'Product Variations'), ('customers', 'Customers'), ('orders', 'Orders')], required=True, default='products', index=True)
     odoo_woocommerce_last_sync = fields.Datetime(string='Sync Date', readonly=True)
+
+    if hasattr(models, 'Constraint'):
+        # Odoo >= 19: _sql_constraints is no longer supported, use models.Constraint() instead
+        _woocommerce_connection_direction_unique = models.Constraint('unique(woocommerce_connection_id, sync_direction)', 'Only one sync log is allowed per WooCommerce connector and direction.')
+    else:
+        # Odoo <= 18
+        _sql_constraints: ClassVar[list[tuple[str, str, str]]] = [
+            ('woocommerce_connection_direction_unique', 'unique(woocommerce_connection_id, sync_direction)', 'Only one sync log is allowed per WooCommerce connector and direction.')
+        ]
+
+    def init(self) -> None:
+        super().init()
+        self.env.cr.execute('ALTER TABLE woocommerce_sync_log DROP CONSTRAINT IF EXISTS woocommerce_sync_log_woocommerce_connection_unique')
 
 
 class WoocommerceSyncStockLog(models.Model):
@@ -558,6 +591,13 @@ class WoocommerceSyncStockLog(models.Model):
 
     woocommerce_connection_id = fields.Integer(string='Connection ID', required=True, index=True)
     odoo_woocommerce_last_sync = fields.Datetime(string='Sync Date', readonly=True)
+
+    if hasattr(models, 'Constraint'):
+        # Odoo >= 19: _sql_constraints is no longer supported, use models.Constraint() instead
+        _woocommerce_connection_unique = models.Constraint('unique(woocommerce_connection_id)', 'Only one stock sync log is allowed per WooCommerce connector.')
+    else:
+        # Odoo <= 18
+        _sql_constraints: ClassVar[list[tuple[str, str, str]]] = [('woocommerce_connection_unique', 'unique(woocommerce_connection_id)', 'Only one stock sync log is allowed per WooCommerce connector.')]
 
 
 class WoocommerceSyncDataTemp(models.Model):
@@ -580,8 +620,19 @@ class WoocommerceSyncSummaryEvent(models.Model):
     run_started_at = fields.Datetime(required=True, index=True)
     event_type = fields.Selection([('dispatched', 'Dispatched'), ('completed', 'Completed')], required=True)
     sync_direction = fields.Selection([('products', 'Products'), ('variations', 'Product Variations'), ('customers', 'Customers'), ('orders', 'Orders')], index=True)
+    chunk_key = fields.Char(index=True)
     processed = fields.Integer(default=0)
     new_count = fields.Integer(default=0)
     updated_count = fields.Integer(default=0)
+    skipped_count = fields.Integer(default=0)
     errors_count = fields.Integer(default=0)
     errors_text = fields.Text()
+
+    if hasattr(models, 'Constraint'):
+        # Odoo >= 19: _sql_constraints is no longer supported, use models.Constraint() instead
+        _run_event_chunk_unique = models.Constraint('unique(connector_id, run_started_at, event_type, sync_direction, chunk_key)', 'A sync chunk event can only be registered once per direction and run.')
+    else:
+        # Odoo <= 18
+        _sql_constraints: ClassVar[list[tuple[str, str, str]]] = [
+            ('run_event_chunk_unique', 'unique(connector_id, run_started_at, event_type, sync_direction, chunk_key)', 'A sync chunk event can only be registered once per direction and run.'),
+        ]

@@ -46,11 +46,16 @@ class WooCommerceClient:
         if not data:
             return {}
 
+        endpoint = endpoint if endpoint.endswith('/batch') else f'{endpoint}/batch'
+        retry_allowed = not create
         attempt = 0
         while True:
             try:
                 response = self.api.post(endpoint=endpoint, data=data)
             except requests.RequestException as error:
+                if not retry_allowed:
+                    logger.error(f'WooCommerce REST API create batch request failed ambiguously for {endpoint}; not retrying to avoid duplicate records: {error}')
+                    raise
                 attempt += 1
                 if attempt > max_retries:
                     logger.error(f'WooCommerce REST API batch request failed for {endpoint} after {attempt} attempts: {error}')
@@ -61,6 +66,9 @@ class WooCommerceClient:
                 continue
 
             if response.status_code == 429 or response.status_code >= 500:
+                if not retry_allowed:
+                    logger.error(f'WooCommerce REST API create batch request failed ambiguously for {endpoint} (HTTP {response.status_code}); not retrying to avoid duplicate records.')
+                    response.raise_for_status()
                 attempt += 1
                 if attempt > max_retries:
                     logger.error(f'WooCommerce REST API batch request for {endpoint} still failing (HTTP {response.status_code}) after {attempt} attempts. Giving up.')
@@ -72,6 +80,7 @@ class WooCommerceClient:
                 time.sleep(wait_seconds)
                 continue
 
+            response.raise_for_status()
             return response.json()
 
     @staticmethod
@@ -121,6 +130,7 @@ class WooCommerceClient:
                 time.sleep(wait_seconds)
                 continue
 
+            response.raise_for_status()
             return response.json()
 
     def get_all_items(self, endpoint: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -139,8 +149,7 @@ class WooCommerceClient:
             records = self.request(endpoint=endpoint, params=params)
 
             if not isinstance(records, list):
-                logger.error(f'WooCommerce REST API error for {endpoint}: {records}')
-                break
+                raise TypeError(f'WooCommerce REST API returned non-list data for {endpoint}: {records}')
 
             records_all.extend(records)
 
@@ -151,7 +160,7 @@ class WooCommerceClient:
 
         return records_all
 
-    def get_items_in_batches(self, endpoint: str, params: dict[str, Any] | None = None, batch_size: int = 10) -> Generator[list[dict[str, Any]], Any, None]:
+    def get_items_in_batches(self, endpoint: str, params: dict[str, Any] | None = None, batch_size: int = 100) -> Generator[list[dict[str, Any]], Any, None]:
         """Fetches 'endpoint' page by page, yielding each page as soon as it is retrieved instead of materializing the whole result set in memory."""
         if params is None:
             params = {}
@@ -166,8 +175,7 @@ class WooCommerceClient:
             records = self.request(endpoint=endpoint, params=params)
 
             if not isinstance(records, list):
-                logger.error(f'WooCommerce REST API error for {endpoint}: {records}')
-                break
+                raise TypeError(f'WooCommerce REST API returned non-list data for {endpoint}: {records}')
 
             if records:
                 yield records
