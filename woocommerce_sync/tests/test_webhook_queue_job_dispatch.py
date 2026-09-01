@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+from odoo.addons.queue_job.exception import RetryableJobError
 from odoo.tests.common import tagged
 
 from .common import WoocommerceSyncCommon
@@ -47,3 +48,14 @@ class TestWebhookQueueJobDispatch(WoocommerceSyncCommon):
             self.connector.woocommerce_webhook_process('product.updated', 777, delivery_id='delivery-2')
 
         mocked_with_delay.assert_called_once_with(identity_key=f'woocommerce_webhook_product_sync-{self.connector.id}-777-delivery-2', description='woocommerce.sync.connector.woocommerce_webhook_product_sync')
+
+    def test_webhook_job_retries_when_api_configuration_is_unavailable(self):
+        with patch.object(type(self.connector), 'woocommerce_api_get', return_value=False), self.assertRaises(RetryableJobError):
+            self.connector.woocommerce_webhook_order_sync(555)
+
+    def test_webhook_job_retries_invalid_resource_payload(self):
+        woocommerce_api = MagicMock()
+        woocommerce_api.request.return_value = {}
+
+        with patch.object(type(self.connector), 'woocommerce_api_get', return_value=woocommerce_api), self.assertRaises(RetryableJobError):
+            self.connector.woocommerce_webhook_product_sync(777)

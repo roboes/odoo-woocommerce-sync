@@ -15,6 +15,7 @@ class TestOdooToWooCommerceProductValues(WoocommerceSyncCommon):
                 'name': 'Test Odoo Product',
                 'default_code': 'ODOO-TEST-1',
                 'list_price': 42.5,
+                'categ_id': self.env.ref('product.product_category_all').id,
                 **storable_product_values(is_storable=True),
             },
         )

@@ -1,5 +1,16 @@
 # Changelog
 
+## v16.0.5.3 / v18.0.5.3 / v19.0.5.3 - 2026-09-01
+
+### Fixes
+
+- Confirmed WooCommerce orders can now remove stale, integration-owned delivery, fee, coupon, and order lines when they have not been invoiced or delivered.
+- Customer shipping-address changes now update the existing per-store delivery contact instead of creating a duplicate child contact.
+- Refund reversal creation, WooCommerce refund identity assignment, and credit-note posting now share one savepoint, preventing concurrent sync jobs from leaving duplicate or partially tagged credit notes.
+- Webhook jobs now use the retrying WooCommerce REST client and raise retryable job errors when configuration, resource retrieval, settings retrieval, or response validation fails.
+- Concurrent customer creation now recovers only from database uniqueness conflicts instead of treating unrelated exceptions as duplicate-record races.
+- Corrected product-category and malformed-pagination regression tests, and added coverage for webhook retry signaling and concurrent refund uniqueness conflicts.
+
 ## v16.0.5.2 / v18.0.5.2 / v19.0.5.2 - 2026-08-30
 
 ### Improvements
