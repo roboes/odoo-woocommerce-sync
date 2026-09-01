@@ -111,7 +111,7 @@ class TestRequest(unittest.TestCase):
         client = _make_client()
         client.api.get.return_value = _make_response(200, {'code': 'unexpected'})
 
-        with self.assertRaises(ValueError):
+        with self.assertRaises(TypeError):
             client.get_all_items('products')
 
 

@@ -518,6 +518,13 @@ class SaleOrder(models.Model):
 class SaleOrderLine(models.Model):
     _inherit = 'sale.order.line'
 
+    @api.ondelete(at_uninstall=False)
+    def _unlink_except_confirmed(self: models.Model) -> None:
+        records = self
+        if self.env.context.get('woocommerce_sync_remove_stale_line') is _WOOCOMMERCE_STALE_LINE_UNLINK_TOKEN:
+            records = self.filtered(lambda line: line.qty_invoiced or line.qty_delivered or not ((line.woocommerce_id and line.woocommerce_site_url) or (line.is_delivery and line.order_id.woocommerce_site_url)))
+        return super(SaleOrderLine, records)._unlink_except_confirmed()
+
     def _check_line_unlink(self: models.Model) -> models.Model:
         blocked_lines = super()._check_line_unlink()
         if self.env.context.get('woocommerce_sync_remove_stale_line') is not _WOOCOMMERCE_STALE_LINE_UNLINK_TOKEN:

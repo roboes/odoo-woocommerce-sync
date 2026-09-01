@@ -1259,7 +1259,7 @@ class WoocommerceSyncConnector(models.Model):
 
     @api.model
     def odoo_customer_shipping_address_create_or_update(self: models.Model, odoo_customer: models.Model, shipping_values: dict[str, Any], odoo_country_cache: dict[str, int] | None = None) -> models.Model:
-        """Create or update a 'delivery' type child contact under 'odoo_customer' from WooCommerce shipping address fields (works for both 'customer_values' and 'order_values', which share the same 'woocommerce_shipping_*' keys), so 'partner_shipping_id' can point to the real shipping address instead of always reusing the billing partner. Matches existing delivery children by address (not just type), so a customer with several distinct shipping addresses across orders accumulates one child contact per address instead of the latest order's address overwriting all previous ones. Returns 'odoo_customer' unchanged if no shipping address data is present, or if the shipping address matches 'odoo_customer's own (billing) address - Odoo already falls back to the parent contact for delivery when no dedicated child exists, so creating one in that case would just be a redundant, identically-named child contact."""
+        """Create or update the WooCommerce delivery child under 'odoo_customer', returning the billing customer when no distinct shipping address is present."""
         if not odoo_customer or not any(shipping_values.get(key) for key in ('woocommerce_shipping_address_1', 'woocommerce_shipping_city', 'woocommerce_shipping_postcode')):
             return odoo_customer
 
@@ -1292,11 +1292,6 @@ class WoocommerceSyncConnector(models.Model):
             'country_id': shipping_country_id,
         }
 
-        def _field_match_domain(field: str, value: str | None) -> list[Any]:
-            """Build a domain condition that matches 'field' against 'value', correctly treating a missing/empty 'value' as matching Odoo's stored representation of "no value" (an empty Char field is 'False', not ''), since 'ILIKE' never matches a NULL column."""
-            normalized_value = (value or '').strip()
-            return [(field, '=ilike', normalized_value)] if normalized_value else [(field, 'in', [False, ''])]
-
         odoo_shipping_partner = (
             self.env['res.partner']
             .with_context(lang=False)
@@ -1305,11 +1300,6 @@ class WoocommerceSyncConnector(models.Model):
                     ('parent_id', '=', odoo_customer.id),
                     ('type', '=', 'delivery'),
                     ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                    *_field_match_domain('street', shipping_values.get('woocommerce_shipping_address_1')),
-                    *_field_match_domain('street2', shipping_values.get('woocommerce_shipping_address_2')),
-                    *_field_match_domain('city', shipping_values.get('woocommerce_shipping_city')),
-                    *_field_match_domain('zip', shipping_values.get('woocommerce_shipping_postcode')),
-                    ('country_id', '=', shipping_country_id),
                 ],
                 limit=1,
             )
@@ -3283,7 +3273,7 @@ class WoocommerceSyncConnector(models.Model):
                         try:
                             with self.env.cr.savepoint():
                                 odoo_customer = self.env['res.partner'].create(customer_values)
-                        except Exception:
+                        except psycopg2.errors.UniqueViolation:
                             # A concurrent sync job (e.g. the dedicated customer sync) already created this customer - reuse it instead of failing
                             odoo_customer = (
                                 self.env['res.partner']
@@ -3599,7 +3589,7 @@ class WoocommerceSyncConnector(models.Model):
                 protected_delivery_lines = stale_delivery_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
                 if protected_delivery_lines:
                     raise ValidationError('Cannot remove the WooCommerce delivery line because it has already been invoiced or delivered.')
-                stale_delivery_lines.unlink()
+                stale_delivery_lines._woocommerce_sync_unlink_stale()
 
             incoming_managed_line_ids = {
                 str(line['id']) for line in woocommerce_order['line_items'] + woocommerce_order['fee_lines'] + woocommerce_order['coupon_lines'] + woocommerce_order['shipping_lines'][1:] if line.get('id')
@@ -3615,7 +3605,7 @@ class WoocommerceSyncConnector(models.Model):
             protected_stale_lines = stale_order_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
             if protected_stale_lines:
                 raise ValidationError(f'Cannot remove WooCommerce order lines {protected_stale_lines.mapped("woocommerce_id")} because they have already been invoiced or delivered.')
-            stale_order_lines.unlink()
+            stale_order_lines._woocommerce_sync_unlink_stale()
 
             # Apply the order state only after all line and delivery mutations have completed.
             if order_values['woocommerce_status'] in ('processing', 'on-hold', 'completed') and odoo_sale_order.state in ('draft', 'sent'):
@@ -3698,38 +3688,43 @@ class WoocommerceSyncConnector(models.Model):
                 )
                 continue
 
-            reversal_wizard = (
-                self.env['account.move.reversal']
-                .with_context(active_model='account.move', active_ids=odoo_invoice.ids)
-                .create(
-                    {
-                        'move_ids': [(6, 0, odoo_invoice.ids)],
-                        'reason': woocommerce_refund.get('reason') or f'WooCommerce refund {woocommerce_refund_id}',
-                        'journal_id': odoo_invoice.journal_id.id,
-                    },
-                )
-            )
-            reversal_result = reversal_wizard.reverse_moves()
+            try:
+                with self.env.cr.savepoint():
+                    reversal_wizard = (
+                        self.env['account.move.reversal']
+                        .with_context(active_model='account.move', active_ids=odoo_invoice.ids)
+                        .create(
+                            {
+                                'move_ids': [(6, 0, odoo_invoice.ids)],
+                                'reason': woocommerce_refund.get('reason') or f'WooCommerce refund {woocommerce_refund_id}',
+                                'journal_id': odoo_invoice.journal_id.id,
+                            },
+                        )
+                    )
+                    reversal_result = reversal_wizard.reverse_moves()
 
-            credit_note = (
-                account_move.browse(reversal_result['res_id'])
-                if isinstance(reversal_result, dict) and reversal_result.get('res_id')
-                else account_move.search([('reversed_entry_id', '=', odoo_invoice.id)], order='id desc', limit=1)
-            )
+                    credit_note = (
+                        account_move.browse(reversal_result['res_id'])
+                        if isinstance(reversal_result, dict) and reversal_result.get('res_id')
+                        else account_move.search([('reversed_entry_id', '=', odoo_invoice.id)], order='id desc', limit=1)
+                    )
 
-            if not credit_note:
-                _logger.error(f'Failed to create Odoo credit note for WooCommerce refund {woocommerce_refund_id} on order {odoo_sale_order.name}')
+                    if not credit_note:
+                        _logger.error(f'Failed to create Odoo credit note for WooCommerce refund {woocommerce_refund_id} on order {odoo_sale_order.name}')
+                        continue
+
+                    credit_note.write(
+                        {
+                            'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                            'woocommerce_refund_id': woocommerce_refund_id,
+                        },
+                    )
+
+                    if credit_note.state != 'posted':
+                        credit_note.action_post()
+            except psycopg2.errors.UniqueViolation:
+                _logger.info(f'Skipped WooCommerce refund {woocommerce_refund_id}; another sync job converted it concurrently.')
                 continue
-
-            credit_note.write(
-                {
-                    'woocommerce_site_url': self.settings_woocommerce_connection_url,
-                    'woocommerce_refund_id': woocommerce_refund_id,
-                },
-            )
-
-            if credit_note.state != 'posted':
-                credit_note.action_post()
 
             _logger.info(f'Created Odoo credit note {credit_note.name} for WooCommerce refund {woocommerce_refund_id} (Odoo sale order: {odoo_sale_order.name})')
 
@@ -4409,15 +4404,19 @@ class WoocommerceSyncConnector(models.Model):
 
         woocommerce_api = self.woocommerce_api_get(validate=False)
         if not woocommerce_api:
-            _logger.error('WooCommerce REST API connection failed. Webhook order sync halted')
-            return
+            raise RetryableJobError('WooCommerce REST API connection failed during webhook order sync', seconds=30)
 
-        woocommerce_order = woocommerce_api.get(f'orders/{woocommerce_order_id}').json()
+        try:
+            woocommerce_order = woocommerce_api.request(f'orders/{woocommerce_order_id}')
+        except (requests.RequestException, ValueError, TypeError) as error:
+            raise RetryableJobError(f'Failed to retrieve WooCommerce order {woocommerce_order_id}: {error}', seconds=30) from error
         if not isinstance(woocommerce_order, dict) or not woocommerce_order.get('id'):
-            _logger.error(f'Failed to fetch WooCommerce order {woocommerce_order_id} for webhook sync: {woocommerce_order}')
-            return
+            raise RetryableJobError(f'WooCommerce returned an invalid order payload for {woocommerce_order_id}', seconds=30)
 
-        settings = self.woocommerce_webhook_settings_retrieve(woocommerce_api)
+        try:
+            settings = self.woocommerce_webhook_settings_retrieve(woocommerce_api)
+        except (requests.RequestException, ValueError, KeyError, TypeError) as error:
+            raise RetryableJobError(f'Failed to retrieve WooCommerce settings for order {woocommerce_order_id}: {error}', seconds=30) from error
 
         odoo_sale_order = self.env['sale.order'].search_read(
             [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_order_id))],
@@ -4433,15 +4432,19 @@ class WoocommerceSyncConnector(models.Model):
 
         woocommerce_api = self.woocommerce_api_get(validate=False)
         if not woocommerce_api:
-            _logger.error('WooCommerce REST API connection failed. Webhook product sync halted')
-            return
+            raise RetryableJobError('WooCommerce REST API connection failed during webhook product sync', seconds=30)
 
-        woocommerce_product = woocommerce_api.get(f'products/{woocommerce_product_id}').json()
+        try:
+            woocommerce_product = woocommerce_api.request(f'products/{woocommerce_product_id}')
+        except (requests.RequestException, ValueError, TypeError) as error:
+            raise RetryableJobError(f'Failed to retrieve WooCommerce product {woocommerce_product_id}: {error}', seconds=30) from error
         if not isinstance(woocommerce_product, dict) or not woocommerce_product.get('id'):
-            _logger.error(f'Failed to fetch WooCommerce product {woocommerce_product_id} for webhook sync: {woocommerce_product}')
-            return
+            raise RetryableJobError(f'WooCommerce returned an invalid product payload for {woocommerce_product_id}', seconds=30)
 
-        settings = self.woocommerce_webhook_settings_retrieve(woocommerce_api)
+        try:
+            settings = self.woocommerce_webhook_settings_retrieve(woocommerce_api)
+        except (requests.RequestException, ValueError, KeyError, TypeError) as error:
+            raise RetryableJobError(f'Failed to retrieve WooCommerce settings for product {woocommerce_product_id}: {error}', seconds=30) from error
 
         odoo_product = (
             self.env['product.template']
@@ -4479,13 +4482,14 @@ class WoocommerceSyncConnector(models.Model):
 
         woocommerce_api = self.woocommerce_api_get(validate=False)
         if not woocommerce_api:
-            _logger.error('WooCommerce REST API connection failed. Webhook customer sync halted')
-            return
+            raise RetryableJobError('WooCommerce REST API connection failed during webhook customer sync', seconds=30)
 
-        woocommerce_customer = woocommerce_api.get(f'customers/{woocommerce_customer_id}').json()
+        try:
+            woocommerce_customer = woocommerce_api.request(f'customers/{woocommerce_customer_id}')
+        except (requests.RequestException, ValueError, TypeError) as error:
+            raise RetryableJobError(f'Failed to retrieve WooCommerce customer {woocommerce_customer_id}: {error}', seconds=30) from error
         if not isinstance(woocommerce_customer, dict) or not woocommerce_customer.get('id'):
-            _logger.error(f'Failed to fetch WooCommerce customer {woocommerce_customer_id} for webhook sync: {woocommerce_customer}')
-            return
+            raise RetryableJobError(f'WooCommerce returned an invalid customer payload for {woocommerce_customer_id}', seconds=30)
 
         odoo_customer = (
             self.env['res.partner']
