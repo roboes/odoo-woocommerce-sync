@@ -60,12 +60,12 @@ python -m pip install filetype phonenumbers woocommerce
   - Enable full accounting features:
     - `Home Menu` → `Settings` → `Users & Company` → `Groups` → Select the `Technical / Show Full Accounting Features` group → `Add a line` → Select the user.
 - **Sales** (`sale_management`)
-  - Enable [Product Variants](https://www.odoo.com/documentation/18.0/applications/sales/sales/products_prices/products/variants.html):
+  - Enable [Product Variants](https://www.odoo.com/documentation/16.0/applications/sales/sales/products_prices/products/variants.html):
     - `Home Menu` → `Settings` → `Sales` → `Product Catalog` → Enable `Variants`.
 - **Inventory** (`stock`)
   - Enable Delivery Methods:
     - `Home Menu` → `Settings` → `Inventory` → `Shipping` → Enable `Delivery Methods`.
-  - (Optional) Enable [Product Packagings](https://www.odoo.com/documentation/18.0/applications/inventory_and_mrp/inventory/product_management/configure/packaging.html):
+  - (Optional) Enable [Product Packagings](https://www.odoo.com/documentation/16.0/applications/inventory_and_mrp/inventory/product_management/configure/packaging.html):
     - `Home Menu` → `Settings` → `Inventory` → `Products` → Enable `Product Packagings`.
   - Enable Units of Measure:
     - `Home Menu` → `Settings` → `Inventory` → `Products` → Enable `Units of Measure`.
@@ -73,37 +73,37 @@ python -m pip install filetype phonenumbers woocommerce
     - `Home Menu` → `Settings` → `Inventory` → `Warehouse` → Enable `Storage Locations` and configure under `Locations` the warehouse accordingly.
 - **Contacts** (`contacts`)
 - **Job Queue** (`queue_job`)
-  - [GitHub](https://github.com/OCA/queue/tree/18.0/queue_job) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/queue_job) (requires additional [configuration instructions](https://github.com/OCA/queue/tree/18.0/queue_job#configuration)).
+  - [GitHub](https://github.com/OCA/queue/tree/16.0/queue_job) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/queue_job) (requires additional [configuration instructions](https://github.com/OCA/queue/tree/16.0/queue_job#configuration)).
 - **Multiple Images Base** (`base_multi_image`): Extends the functionality of any model to support multiple attached images (a gallery) and enables full management of them.
-  - [GitHub](https://github.com/OCA/server-tools/tree/18.0/base_multi_image) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/base_multi_image)
+  - [GitHub](https://github.com/OCA/server-tools/tree/16.0/base_multi_image) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/base_multi_image)
 
 #### Taxes and Prices
 
 Odoo taxes created by this add-on match the `Tax Calculation` setting on the WooCommerce Configuration record's `Sync Items` tab (`Match Odoo Company Settings` by default, `Tax Included`, or `Tax Excluded`) - not WooCommerce's own `Prices entered with tax` setting. `Match Odoo Company Settings` (the default) uses whatever convention is already configured for the Odoo company (`Home Menu` → `Settings` → `Invoicing` → `Taxes` → `Purchase Tax Prices`). Product, variation and order line prices synced from WooCommerce are automatically converted (grossed up or stripped of tax) to match this same convention before being stored on `list_price`/`price_unit`, so no manual price adjustment is needed regardless of how the two systems differ.
 
-This mirrors Odoo's own [B2B (tax excluded) vs. B2C (tax included) pricing](https://www.odoo.com/documentation/18.0/applications/finance/accounting/taxes/B2B_B2C.html) guidance: register product prices with taxes excluded or included, but not both together - if all prices are managed with tax included (or excluded) only, Odoo can still easily do a sale order with a price having taxes excluded (or included) instead.
+This mirrors Odoo's own [B2B (tax excluded) vs. B2C (tax included) pricing](https://www.odoo.com/documentation/16.0/applications/finance/accounting/taxes/B2B_B2C.html) guidance: register product prices with taxes excluded or included, but not both together - if all prices are managed with tax included (or excluded) only, Odoo can still easily do a sale order with a price having taxes excluded (or included) instead.
 
 #### Odoo Add-ons (Optional)
 
 While not mandatory, the following Odoo Community Association (OCA) add-ons are recommended to enhance functionality:
 
 - **Module Auto Update** (`module_auto_update`): Automatically updates installed modules to their latest versions, ensuring the system remains current with minimal manual intervention.
-  - [GitHub](https://github.com/OCA/server-tools/tree/18.0/module_auto_update) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/module_auto_update)
+  - [GitHub](https://github.com/OCA/server-tools/tree/16.0/module_auto_update) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/module_auto_update)
 - **Scheduled Actions as Queue Jobs** (`queue_job_cron`): Extends the functionality of `queue_job` and allows to run an Odoo cron as a queue job.
-  - [GitHub](https://github.com/OCA/queue/tree/18.0/queue_job_cron) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/queue_job_cron)
+  - [GitHub](https://github.com/OCA/queue/tree/16.0/queue_job_cron) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/queue_job_cron)
 - **Product Dimension** (`product_dimension`): Adds fields for length, width, height, and unit of measure, enabling detailed management of product dimensions.
-  - [GitHub](https://github.com/OCA/product-attribute/tree/18.0/product_dimension) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/product_dimension)
+  - [GitHub](https://github.com/OCA/product-attribute/tree/16.0/product_dimension) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/product_dimension)
 - **Product - Many Categories** (`product_multi_category`): Enhances the standard single-category assignment (`categ_id`) by introducing a `categ_ids` field, allowing products to be organized into multiple categories.
-  - [GitHub](https://github.com/OCA/product-attribute/tree/18.0/product_multi_category) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/product_multi_category)
+  - [GitHub](https://github.com/OCA/product-attribute/tree/16.0/product_multi_category) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/product_multi_category)
 - **Product Brand Manager** (`product_brand`): Adds a `product_brand_id` field to facilitate the import and management of product brands from WooCommerce (requires WooCommerce 9.6+) (only one brand per product allowed).
-  - [GitHub](https://github.com/OCA/brand/tree/18.0/product_brand) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/18.0/product_brand)
+  - [GitHub](https://github.com/OCA/brand/tree/16.0/product_brand) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/product_brand)
 
 ##### Odoo Localization (Optional)
 
 Brazil:
 
 - **Módulo Fiscal Brasileiro** (`l10n_br_base`, `l10n_br_sale`): Supports Cadastro de Pessoa Física (CPF), Cadastro Nacional da Pessoa Jurídica (CNPJ), local taxes, shipping costs, and electronic fiscal documents.
-  - [GitHub](https://github.com/OCA/l10n-brazil/tree/18.0) | [Odoo Apps Store](https://odoo-community.org/shop/brazilian-localization-base-1252)
+  - [GitHub](https://github.com/OCA/l10n-brazil/tree/16.0) | [Odoo Apps Store](https://odoo-community.org/shop/brazilian-localization-base-1252)
 
 ### WordPress
 
@@ -131,7 +131,7 @@ Follow these steps to install the Odoo-WooCommerce Sync add-on:
 2. **Enable Odoo Add-ons:** Install and activate all [required](#odoo-add-ons-required) and, if applicable, [optional](#odoo-add-ons-optional) Odoo add-ons.
 3. **Configure WordPress (if applicable):** Install and set up the [optional plugins](#wordpress-plugins-optional) for WordPress. Retrieve the WooCommerce REST API `consumer key` and `consumer secret` from `WooCommerce` → `Settings` → `Advanced` → `REST API`.
 4. **Add the Add-on:** Download and place the [`woocommerce_sync`](./woocommerce_sync) directory into the Odoo `addons` directory.
-5. **Activate Debug Mode:** Log in to Odoo and enable [Debug Mode](https://www.odoo.com/documentation/18.0/applications/general/developer_mode.html).
+5. **Activate Debug Mode:** Log in to Odoo and enable [Debug Mode](https://www.odoo.com/documentation/16.0/applications/general/developer_mode.html).
 6. **Update the Apps List:** Navigate to `Home Menu` → `Apps` and click **Update Apps List**.
 7. **Activate the Add-on:** Use the filter to search for `woocommerce_sync` and activate the add-on.
 

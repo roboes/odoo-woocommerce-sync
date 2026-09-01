@@ -1,5 +1,8 @@
 """Tests for converting WooCommerce order refunds into real Odoo credit notes (connector.py's 'woocommerce_to_odoo_order_refunds_sync'). Covers the full-refund happy path, idempotency (a refund must not create a duplicate credit note if processed twice, e.g. via a retried queue job), and the safety behavior for partial refunds / multi-invoice orders, which are intentionally left for manual handling rather than risking an inaccurate credit note."""
 
+from unittest.mock import patch
+
+import psycopg2
 from odoo.tests.common import tagged
 
 from .common import WoocommerceSyncCommon
@@ -50,6 +53,15 @@ class TestRefundCreditNoteSync(WoocommerceSyncCommon):
         credit_notes = self.env['account.move'].search([('woocommerce_refund_id', '=', '555002')])
 
         self.assertEqual(len(credit_notes), 1, 'Reprocessing the same WooCommerce refund id must not create a second credit note')
+
+    def test_concurrent_refund_unique_violation_is_treated_as_already_processed(self):
+        order, _invoice = self._create_confirmed_order_with_posted_invoice(price=75.0)
+        woocommerce_order = {'refunds': [{'id': 555004, 'reason': 'Concurrent delivery', 'total': '-75.00'}]}
+
+        with patch.object(type(self.env['account.move.reversal']), 'reverse_moves', side_effect=psycopg2.errors.UniqueViolation):
+            self.connector.woocommerce_to_odoo_order_refunds_sync(order, woocommerce_order)
+
+        self.assertFalse(self.env['account.move'].search([('woocommerce_refund_id', '=', '555004')]))
 
     def test_partial_refund_is_skipped(self):
         order, _invoice = self._create_confirmed_order_with_posted_invoice(price=100.0)
