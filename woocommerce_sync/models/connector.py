@@ -63,6 +63,9 @@ class WoocommerceSyncConnector(models.Model):
         """Returns a '<model>.<method>' description for 'with_delay()'/'delayable()' calls, so the Job Queue view shows the function name instead of falling back to the function's docstring."""
         return f'{self._name}.{method_name}'
 
+    def sync_run_token(self: models.Model) -> str:
+        return self.sync_summary_started_at.strftime('%Y%m%d%H%M%S%f') if self.sync_summary_started_at else secrets.token_hex(8)
+
     def sync_chunk_jobs_pending(self: models.Model, method_name: str) -> bool:
         """Return whether this connector still has unfinished chunk jobs for ``method_name``."""
         identity_prefix = f'{method_name}-{self.id}-'
@@ -86,13 +89,15 @@ class WoocommerceSyncConnector(models.Model):
         stale_cutoff = fields.Datetime.now() - timedelta(hours=6)
         if self.sync_summary_run_active and self.sync_summary_started_at and self.sync_summary_started_at > stale_cutoff:
             raise RetryableJobError(f'A previous WooCommerce sync is still active for connector {self.id}', seconds=60)
-        if self.sync_summary_run_active and any(
+        if any(
             self.sync_chunk_jobs_pending(method_name)
             for method_name in (
                 'woocommerce_to_odoo_products_chunk_sync',
                 'woocommerce_to_odoo_products_variations_chunk_sync',
                 'woocommerce_to_odoo_customers_chunk_sync',
                 'woocommerce_to_odoo_orders_chunk_sync',
+                'odoo_to_woocommerce_products_chunk_sync',
+                'odoo_woocommerce_products_stock_quantity_chunk_sync',
             )
         ):
             raise RetryableJobError(f'An older WooCommerce sync still has active chunks for connector {self.id}', seconds=60)
@@ -446,7 +451,7 @@ class WoocommerceSyncConnector(models.Model):
     settings_woocommerce_delivery_methods_archive = fields.Boolean(string='Archive imported delivery methods?', help='If enabled, imported shipping methods will be created as archived (inactive).', default=True)
     settings_woocommerce_orders_customers_map = fields.Boolean(
         string='Map guest customers to Odoo customers in orders?',
-        help='If enabled, orders purchased by guest (unregistered) customers will be mapped to existing Odoo customers by email address. If the customer does not exist in the database, a new customer will be created automatically. If disabled, a customer placeholder will be assigned to the order.',
+        help='If enabled, orders purchased by guest (unregistered) customers will be mapped by email address to existing Odoo customers already assigned to this WooCommerce store. If no matching customer exists, a new customer will be created automatically. If disabled, a customer placeholder will be assigned to the order.',
         default=True,
     )
     settings_woocommerce_line_items_product_map = fields.Boolean(
@@ -472,6 +477,31 @@ class WoocommerceSyncConnector(models.Model):
     # Last synced
     odoo_woocommerce_last_sync = fields.Datetime(string='Last Synced', compute='odoo_woocommerce_last_sync_assign', store=False, readonly=True)
 
+    @staticmethod
+    def woocommerce_connection_url_normalize(url: str | None) -> str | None:
+        if not url:
+            return url
+        parsed_url = urlparse(url.strip())
+        return parsed_url._replace(scheme=parsed_url.scheme.lower(), netloc=parsed_url.netloc.lower(), path=parsed_url.path.rstrip('/')).geturl()
+
+    @api.constrains('settings_woocommerce_connection_url')
+    def settings_woocommerce_connection_url_unique(self: models.Model) -> None:
+        for record in self.filtered('settings_woocommerce_connection_url'):
+            duplicate = self.search_count([('id', '!=', record.id), ('settings_woocommerce_connection_url', '=', record.settings_woocommerce_connection_url)])
+            if duplicate:
+                raise ValidationError(_('Only one WooCommerce connector can be configured for a store URL.'))
+
+    def init(self) -> None:
+        super().init()
+        # Database-level backstop for the URL-scoped identity contract: keeps concurrent creates from racing past the Python 'settings_woocommerce_connection_url_unique' constraint.
+        self.env.cr.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS woocommerce_sync_connector_connection_url_uniq
+            ON woocommerce_sync_connector (settings_woocommerce_connection_url)
+            WHERE settings_woocommerce_connection_url IS NOT NULL AND settings_woocommerce_connection_url != ''
+            """
+        )
+
     def odoo_woocommerce_last_sync_assign(self: models.Model) -> None:
         for record in self:
             sync_log = self.env['woocommerce.sync.log'].search([('woocommerce_connection_id', '=', record.id)], order='odoo_woocommerce_last_sync desc', limit=1)
@@ -479,12 +509,30 @@ class WoocommerceSyncConnector(models.Model):
 
     @api.model_create_multi
     def create(self: models.Model, values_list: list[dict[str, Any]]) -> models.Model:
+        values_list = [dict(values) for values in values_list]
+        for values in values_list:
+            if 'settings_woocommerce_connection_url' in values:
+                values['settings_woocommerce_connection_url'] = self.woocommerce_connection_url_normalize(values['settings_woocommerce_connection_url'])
         records = super().create(values_list)
         for record in records:
             record.cron_job_update()
         return records
 
     def write(self: models.Model, values: dict[str, Any]) -> bool:
+        values = dict(values)
+        if 'settings_woocommerce_connection_url' in values:
+            normalized_url = self.woocommerce_connection_url_normalize(values['settings_woocommerce_connection_url'])
+            for record in self:
+                if normalized_url == record.settings_woocommerce_connection_url:
+                    continue
+                synchronized_records_exist = any(
+                    self.env[model_name].with_context(active_test=False).search_count([('woocommerce_site_url', '=', record.settings_woocommerce_connection_url)], limit=1)
+                    for model_name in ('product.template', 'product.product', 'res.partner', 'sale.order', 'account.move')
+                )
+                if synchronized_records_exist:
+                    raise ValidationError(_('The WooCommerce store URL cannot be changed after records have been synchronized.'))
+            values['settings_woocommerce_connection_url'] = normalized_url
+
         # Skip cron update if called from cron context
         if self.env.context.get('ir_cron'):
             return super().write(values)
@@ -788,8 +836,8 @@ class WoocommerceSyncConnector(models.Model):
                     parsed_date = parsed_date.astimezone(tz)
                 # Odoo Datetime fields require naive datetimes
                 return parsed_date.replace(tzinfo=None)
-            except ValueError:
-                raise ValidationError(f'Invalid WooCommerce date format: {date_string}')
+            except ValueError as error:
+                raise ValidationError(f'Invalid WooCommerce date format: {date_string}') from error
         return False
 
     @staticmethod
@@ -1563,7 +1611,7 @@ class WoocommerceSyncConnector(models.Model):
             _logger.error(f'Failed to retrieve WooCommerce product variations for WooCommerce product ID {parent_id}. Error: {error}')
             raise RetryableJobError(f'Failed to retrieve WooCommerce product variations for product {parent_id}: {error}', seconds=30) from error
 
-    def odoo_woocommerce_products_stock_quantity_process(self: models.Model, temporary_sync_data_record_id: int, *args) -> None:
+    def odoo_woocommerce_products_stock_quantity_process(self: models.Model, temporary_sync_data_record_id: int, run_token: str | None = None, *args) -> None:
         """Processes all product data after variations have been fetched and schedules individual syncs."""
         self.ensure_one()
 
@@ -1572,6 +1620,7 @@ class WoocommerceSyncConnector(models.Model):
             raise RetryableJobError(f'Temporary stock sync data record {temporary_sync_data_record_id} was not found', seconds=30)
 
         woocommerce_products_stock_map = temporary_sync_data_record.woocommerce_products_variations_data or {}
+        run_token = run_token or self.sync_run_token()
 
         if version_info[0] == 16:
             odoo_products_batch = (
@@ -1608,7 +1657,8 @@ class WoocommerceSyncConnector(models.Model):
             chunk_identity_key = '-'.join(str(odoo_product_id) for odoo_product_id in odoo_products_chunk)
             stock_chunk_jobs.append(
                 self.delayable(
-                    identity_key=f'odoo_woocommerce_products_stock_quantity_chunk_sync-{self.id}-{chunk_identity_key}', description=self.job_description('odoo_woocommerce_products_stock_quantity_chunk_sync')
+                    identity_key=f'odoo_woocommerce_products_stock_quantity_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}',
+                    description=self.job_description('odoo_woocommerce_products_stock_quantity_chunk_sync'),
                 ).odoo_woocommerce_products_stock_quantity_chunk_sync(odoo_products_chunk, woocommerce_products_stock_map)
             )
 
@@ -1638,23 +1688,19 @@ class WoocommerceSyncConnector(models.Model):
         # WooCommerce REST API parameters
         params = {'status': 'publish', 'manage_stock': 'true', '_fields': 'id,type,date_modified_gmt,stock_quantity'}
 
-        # Retrieve last sync timestamp from the log model
-        if self.settings_woocommerce_modified_records_import:
-            woocommerce_stock_sync_log = self.env['woocommerce.sync.stock.log'].search([('woocommerce_connection_id', '=', self.id)], limit=1)
-            if woocommerce_stock_sync_log:
-                params['modified_after'] = self.datetime_to_woocommerce_utc(woocommerce_stock_sync_log.odoo_woocommerce_last_sync)
-
-        # Fetch WooCommerce products with stock management enabled
+        # Stock conflict resolution compares timestamps from both systems, so it
+        # needs current remote state even when only Odoo changed since the last run.
         try:
             woocommerce_products = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', params=params)
 
         except Exception as error:
             _logger.error(f'Failed to retrieve WooCommerce products from the API. Sync process halted. Error: {error}')
-            return
+            raise RetryableJobError(f'Failed to retrieve WooCommerce products for stock synchronization: {error}', seconds=30) from error
 
         # Build a single map for quick lookup of all products and variations
         woocommerce_products_stock_map = {woocommerce_product['id']: woocommerce_product for woocommerce_product in woocommerce_products}
         temporary_sync_data_record = self.env['woocommerce.sync.data.temp'].create({'woocommerce_products_variations_data': woocommerce_products_stock_map})
+        run_token = self.sync_run_token()
 
         woocommerce_variable_product_ids = [woocommerce_product['id'] for woocommerce_product in woocommerce_products if woocommerce_product['type'] == 'variable']
 
@@ -1664,7 +1710,7 @@ class WoocommerceSyncConnector(models.Model):
                 self.delayable(description=self.job_description('woocommerce_product_variations_stock_retrieve')).woocommerce_product_variations_stock_retrieve(parent_id, temporary_sync_data_record.id)
                 for parent_id in woocommerce_variable_product_ids
             ],
-            self.delayable(description=self.job_description('odoo_woocommerce_products_stock_quantity_process')).odoo_woocommerce_products_stock_quantity_process(temporary_sync_data_record.id),
+            self.delayable(description=self.job_description('odoo_woocommerce_products_stock_quantity_process')).odoo_woocommerce_products_stock_quantity_process(temporary_sync_data_record.id, run_token),
         ).delay()
 
     @api.model
@@ -3560,7 +3606,21 @@ class WoocommerceSyncConnector(models.Model):
                 odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_shipping_methods, first_shipping_line)
 
                 if odoo_delivery_carrier:
-                    odoo_sale_order.set_delivery_line(odoo_delivery_carrier, first_shipping_line['total'])
+                    previous_woocommerce_delivery_lines = odoo_sale_order.order_line.filtered(
+                        lambda line: line.is_delivery and line.woocommerce_site_url == self.settings_woocommerce_connection_url and line.woocommerce_id
+                    )
+                    protected_delivery_lines = previous_woocommerce_delivery_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
+                    if protected_delivery_lines:
+                        raise ValidationError('Cannot replace the WooCommerce delivery line because it has already been invoiced or delivered.')
+                    previous_woocommerce_delivery_lines._woocommerce_sync_unlink_stale()
+                    odoo_sale_order.carrier_id = odoo_delivery_carrier
+                    odoo_delivery_line = odoo_sale_order._create_delivery_line(odoo_delivery_carrier, first_shipping_line['total'])
+                    odoo_delivery_line.write(
+                        {
+                            'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                            'woocommerce_id': first_shipping_line['id'],
+                        }
+                    )
 
                 for shipping_line in extra_shipping_lines:
                     extra_odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_shipping_methods, shipping_line)
@@ -3585,14 +3645,14 @@ class WoocommerceSyncConnector(models.Model):
                     else:
                         self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(extra_shipping_line_values)
             else:
-                stale_delivery_lines = odoo_sale_order.order_line.filtered('is_delivery')
+                stale_delivery_lines = odoo_sale_order.order_line.filtered(lambda line: line.is_delivery and line.woocommerce_site_url == self.settings_woocommerce_connection_url and line.woocommerce_id)
                 protected_delivery_lines = stale_delivery_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
                 if protected_delivery_lines:
                     raise ValidationError('Cannot remove the WooCommerce delivery line because it has already been invoiced or delivered.')
                 stale_delivery_lines._woocommerce_sync_unlink_stale()
 
             incoming_managed_line_ids = {
-                str(line['id']) for line in woocommerce_order['line_items'] + woocommerce_order['fee_lines'] + woocommerce_order['coupon_lines'] + woocommerce_order['shipping_lines'][1:] if line.get('id')
+                str(line['id']) for line in woocommerce_order['line_items'] + woocommerce_order['fee_lines'] + woocommerce_order['coupon_lines'] + woocommerce_order['shipping_lines'] if line.get('id')
             }
             stale_order_lines = self.env['sale.order.line'].search(
                 [
@@ -3807,14 +3867,15 @@ class WoocommerceSyncConnector(models.Model):
         if not attribute_type and not attribute_name:
             return None
 
-        params = {'search': attribute_name}
+        params = {'search': attribute_name, 'per_page': 100}
         if language_code is not None:
             params['lang'] = language_code
 
         try:
-            woocommerce_attribute_values = self.woocommerce_api_get_all_items(woocommerce_api, endpoint=f'products/{attribute_type}', params=params)
+            # A single page is enough (only the first match is used); paginating with get_all_items risks an unbounded request loop against endpoints (e.g. products/attributes) that ignore the 'page' parameter and keep returning the same non-empty list.
+            woocommerce_attribute_values = self.woocommerce_api_request(woocommerce_api, endpoint=f'products/{attribute_type}', params=params)
 
-            if woocommerce_attribute_values and len(woocommerce_attribute_values) > 0:
+            if isinstance(woocommerce_attribute_values, list) and woocommerce_attribute_values:
                 return woocommerce_attribute_values[0]
 
             else:
@@ -3836,7 +3897,7 @@ class WoocommerceSyncConnector(models.Model):
             _logger.error(f'Failed to create or retrieve Odoo attribute in WooCommerce: {attribute_name}: {error}')
             return None
 
-    def wordpress_upload_image(self: models.Model, image: str, image_name: str) -> int | None:
+    def wordpress_upload_image(self: models.Model, image: str, image_name: str, session: requests.Session | None = None) -> int | None:
         """Uploads an image to WordPress."""
 
         self.ensure_one()
@@ -3844,6 +3905,9 @@ class WoocommerceSyncConnector(models.Model):
         if not image:
             return None
 
+        request_client = session or requests
+        request_timeout = (5, self.settings_woocommerce_timeout or 30)
+        media_url = f'{self.settings_woocommerce_connection_url}/wp-json/wp/v2/media'
         try:
             image = b64decode(image)
             image_file_type = filetype.guess(image)
@@ -3853,9 +3917,14 @@ class WoocommerceSyncConnector(models.Model):
                 return None
 
             # Check if image already exists in WordPress using its unique slug
-            wordpress_media_existing = requests.get(
-                url=f'{self.settings_woocommerce_connection_url}/wp-json/wp/v2/media?slug={image_name}', auth=HTTPBasicAuth(self.settings_wordpress_username, self.settings_wordpress_user_application_password)
-            ).json()
+            media_lookup_response = request_client.get(
+                url=media_url,
+                params={'slug': image_name},
+                auth=HTTPBasicAuth(self.settings_wordpress_username, self.settings_wordpress_user_application_password),
+                timeout=request_timeout,
+            )
+            media_lookup_response.raise_for_status()
+            wordpress_media_existing = media_lookup_response.json()
 
             if wordpress_media_existing and isinstance(wordpress_media_existing, list):
                 media = wordpress_media_existing[0]
@@ -3865,28 +3934,30 @@ class WoocommerceSyncConnector(models.Model):
                 return media.get('id')
 
             # Upload new image
-            response = requests.post(
-                url=f'{self.settings_woocommerce_connection_url}/wp-json/wp/v2/media',
-                headers={'Content-Disposition': f'attachment; filename="{f"{image_name}.{image_file_type.extension}"}"'},
-                data=BytesIO(image),
+            response = request_client.post(
+                url=media_url,
+                headers={
+                    'Content-Type': image_file_type.mime,
+                    'Content-Disposition': f'attachment; filename="{image_name}.{image_file_type.extension}"',
+                },
+                data=image,
                 auth=HTTPBasicAuth(self.settings_wordpress_username, self.settings_wordpress_user_application_password),
+                timeout=request_timeout,
             )
+            response.raise_for_status()
 
-            if response.status_code in (200, 201):
-                wordpress_media = response.json()
-                wordpress_image_id = wordpress_media.get('id')
+            wordpress_media = response.json()
+            wordpress_image_id = wordpress_media.get('id')
 
-                _logger.info(f'Uploaded new image from Odoo to WordPress: {image_name}.{image_file_type.extension} (WordPress image ID: {wordpress_image_id}')
+            _logger.info(f'Uploaded new image from Odoo to WordPress: {image_name}.{image_file_type.extension} (WordPress image ID: {wordpress_image_id})')
 
-                return wordpress_image_id
+            return wordpress_image_id
 
-            else:
-                _logger.error(f'Upload image from Odoo to WordPress failed: [{response.status_code}]: {response.text}')
-
-                return None
-
-        except Exception as error:
-            _logger.error(f'Error uploading image from Odoo to WordPress: {image_name}: {error}')
+        except requests.RequestException as error:
+            _logger.error(f'WordPress media request failed for {image_name}: {error}')
+            return None
+        except (ValueError, TypeError) as error:
+            _logger.error(f'WordPress returned an invalid media response for {image_name}: {error}')
 
             return None
 
@@ -3907,16 +3978,16 @@ class WoocommerceSyncConnector(models.Model):
 
         image_file_name = secure_filename(odoo_product.name.strip().replace(' ', '-').lower())
 
-        for image_base64 in images:
-            # Increment counter for each image
-            image_name = f'{image_file_name}-{counter}'
+        with requests.Session() as session:
+            for image_base64 in images:
+                image_name = f'{image_file_name}-{counter}'
 
-            wordpress_image_id = self.wordpress_upload_image(image_base64, image_name)
+                wordpress_image_id = self.wordpress_upload_image(image_base64, image_name, session=session)
 
-            if wordpress_image_id:
-                wordpress_uploaded_image_ids.append(wordpress_image_id)
+                if wordpress_image_id:
+                    wordpress_uploaded_image_ids.append(wordpress_image_id)
 
-            counter += 1
+                counter += 1
 
         return wordpress_uploaded_image_ids
 
@@ -3954,10 +4025,15 @@ class WoocommerceSyncConnector(models.Model):
 
         # Schedule a job per chunk of Odoo products instead of syncing everything in a single synchronous loop, mirroring the WooCommerce to Odoo direction
         odoo_product_ids = odoo_products.ids
-        for products_chunk in self.list_chunks(odoo_product_ids, self.settings_job_chunk_size):
+        run_token = self.sync_run_token()
+        images_upload_enabled = self.settings_woocommerce_images_sync and self.settings_wordpress_username and self.settings_wordpress_user_application_password
+        export_chunk_size = 1 if images_upload_enabled else self.settings_job_chunk_size
+        for products_chunk in self.list_chunks(odoo_product_ids, export_chunk_size):
             chunk_identity_key = '-'.join(str(product_id) for product_id in products_chunk)
             self.with_delay(
-                identity_key=f'odoo_to_woocommerce_products_chunk_sync-{self.id}-{chunk_identity_key}', description=self.job_description('odoo_to_woocommerce_products_chunk_sync')
+                channel='root.woocommerce_sync_export',
+                identity_key=f'odoo_to_woocommerce_products_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}',
+                description=self.job_description('odoo_to_woocommerce_products_chunk_sync'),
             ).odoo_to_woocommerce_products_chunk_sync(products_chunk, woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit)
 
     def odoo_to_woocommerce_products_chunk_sync(
@@ -3981,61 +4057,72 @@ class WoocommerceSyncConnector(models.Model):
 
         odoo_products = self.env['product.template'].with_context(lang=False).browse(odoo_product_ids).exists()
 
-        # WooCommerce's collection 'sku' filter accepts one SKU, not a comma-separated list.
-        odoo_products_default_code = odoo_products.mapped('default_code')
-        woocommerce_products = {}
-        for sku in odoo_products_default_code:
-            params = {'status': 'publish', 'sku': sku}
-            if self.settings_woocommerce_to_odoo_products_language_code:
-                params['lang'] = self.settings_woocommerce_to_odoo_products_language_code
+        woocommerce_products_by_odoo_id = {}
+        for odoo_product in odoo_products:
+            if odoo_product.woocommerce_id:
+                try:
+                    woocommerce_product = self.woocommerce_api_request(woocommerce_api, endpoint=f'products/{odoo_product.woocommerce_id}')
+                except requests.HTTPError as error:
+                    # A mapped product deleted in WooCommerce (404) must fall back to SKU matching/recreation instead of aborting the whole chunk.
+                    if error.response is None or error.response.status_code != 404:
+                        raise
+                    _logger.info(f'WooCommerce product {odoo_product.woocommerce_id} for Odoo product {odoo_product.id} no longer exists remotely; falling back to SKU matching')
+                else:
+                    if isinstance(woocommerce_product, dict) and woocommerce_product.get('id'):
+                        woocommerce_products_by_odoo_id[odoo_product.id] = woocommerce_product
+                    continue
 
-            for woocommerce_product in self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', params=params):
-                woocommerce_products[woocommerce_product['sku']] = woocommerce_product
+            # WooCommerce's collection 'sku' filter accepts one SKU, not a comma-separated list.
+            params = {'status': 'publish', 'sku': odoo_product.default_code}
+            if self.settings_woocommerce_odoo_to_woocommerce_products_language_code:
+                params['lang'] = self.settings_woocommerce_odoo_to_woocommerce_products_language_code
 
-        # Build the create/update payloads for this chunk
-        odoo_products_by_sku: dict[str, models.Model] = {}
-        create_payloads = []
-        update_payloads = []
+            matching_products = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', params=params)
+            if matching_products:
+                woocommerce_products_by_odoo_id[odoo_product.id] = matching_products[0]
+
+        # Build the create/update payloads for this chunk, keeping each payload paired with its Odoo product so results are written back by batch position instead of by SKU (which is optional and would drop SKU-less products).
+        create_entries: list[tuple[models.Model, dict[str, Any]]] = []
+        update_entries: list[tuple[models.Model, dict[str, Any]]] = []
 
         for odoo_product in odoo_products:
             try:
-                # Try to find the corresponding product in WooCommerce by its Odoo default code
-                woocommerce_product = woocommerce_products.get(odoo_product.default_code)
+                woocommerce_product = woocommerce_products_by_odoo_id.get(odoo_product.id)
 
                 if woocommerce_product and odoo_product['write_date'] <= self.datetime_convert(woocommerce_product['date_modified_gmt']):
                     _logger.info(f'Skipped import of Odoo product into WooCommerce: {odoo_product["name"]} (Odoo product ID: {odoo_product.id})')
                     continue
 
                 product_values = self.odoo_to_woocommerce_product_values(odoo_product, woocommerce_api, woocommerce_tax_rates, woocommerce_product)
-                odoo_products_by_sku[odoo_product.default_code] = odoo_product
 
                 if woocommerce_product:
                     product_values['id'] = woocommerce_product['id']
-                    update_payloads.append(product_values)
+                    update_entries.append((odoo_product, product_values))
                 else:
-                    create_payloads.append(product_values)
+                    create_entries.append((odoo_product, product_values))
 
             except Exception:
                 _logger.exception(f'Error preparing Odoo product {odoo_product.id} for WooCommerce sync')
 
-        # Send the create/update payloads to WooCommerce in batches of at most 100 items (the WooCommerce REST API batch endpoint limit)
-        woocommerce_products_synced = []
-        for create_chunk in self.list_chunks(create_payloads, 100):
-            response = woocommerce_api.batch('products', create=create_chunk)
-            woocommerce_products_synced.extend(response.get('create', []))
+        # Send the create/update payloads to WooCommerce in batches of at most 100 items (the WooCommerce REST API batch endpoint limit). WooCommerce returns each batch's results in submission order, so results are zipped back to their originating Odoo product.
+        woocommerce_products_synced: list[tuple[models.Model, dict[str, Any]]] = []
+        for create_chunk in self.list_chunks(create_entries, 100):
+            response = woocommerce_api.batch('products', create=[entry_values for _entry_product, entry_values in create_chunk])
+            for (chunk_odoo_product, _chunk_values), woocommerce_product in zip(create_chunk, response.get('create', [])):
+                woocommerce_products_synced.append((chunk_odoo_product, woocommerce_product))
 
-        for update_chunk in self.list_chunks(update_payloads, 100):
-            response = woocommerce_api.batch('products', update=update_chunk)
-            woocommerce_products_synced.extend(response.get('update', []))
+        for update_chunk in self.list_chunks(update_entries, 100):
+            response = woocommerce_api.batch('products', update=[entry_values for _entry_product, entry_values in update_chunk])
+            for (chunk_odoo_product, _chunk_values), woocommerce_product in zip(update_chunk, response.get('update', [])):
+                woocommerce_products_synced.append((chunk_odoo_product, woocommerce_product))
 
         # Write WooCommerce-assigned fields back to Odoo and handle variations for variable products
-        for woocommerce_product in woocommerce_products_synced:
+        for odoo_product, woocommerce_product in woocommerce_products_synced:
             if woocommerce_product.get('error'):
-                _logger.error(f'WooCommerce REST API batch error for product SKU {woocommerce_product.get("sku")}: {woocommerce_product["error"]}')
+                _logger.error(f'WooCommerce REST API batch error for Odoo product ID {odoo_product.id} (SKU {woocommerce_product.get("sku")}): {woocommerce_product["error"]}')
                 continue
 
-            odoo_product = odoo_products_by_sku.get(woocommerce_product.get('sku'))
-            if not odoo_product:
+            if not odoo_product.exists():
                 continue
 
             try:
@@ -4385,7 +4472,7 @@ class WoocommerceSyncConnector(models.Model):
         if not resource_id:
             return
 
-        identity_suffix = f'{resource_id}-{delivery_id}' if delivery_id else str(resource_id)
+        identity_suffix = f'{resource_id}-{delivery_id}' if delivery_id else f'{resource_id}-no-delivery-{secrets.token_hex(8)}'
         if topic.startswith('order.'):
             self.with_delay(identity_key=f'woocommerce_webhook_order_sync-{self.id}-{identity_suffix}', description=self.job_description('woocommerce_webhook_order_sync')).woocommerce_webhook_order_sync(resource_id)
         elif topic.startswith('product.'):

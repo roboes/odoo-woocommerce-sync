@@ -29,7 +29,7 @@ class WooCommerceClient:
 
     # Passthrough methods for direct/one-off calls (settings retrieval, single record updates, etc.)
     def get(self, endpoint: str, params: dict[str, Any] | None = None):
-        return self.api.get(endpoint=endpoint, params=params)
+        return self._request_response(endpoint=endpoint, params=params)
 
     def put(self, endpoint: str, data: dict[str, Any]):
         return self.api.put(endpoint=endpoint, data=data)
@@ -102,8 +102,8 @@ class WooCommerceClient:
         logger.info('WooCommerce REST API connection successful')
         return True
 
-    def request(self, endpoint: str, params: dict[str, Any] | None = None, max_retries: int = 5) -> Any:
-        """Performs a single GET request with rate-limit (HTTP 429) and transient server error (5xx) retry/backoff handling."""
+    def _request_response(self, endpoint: str, params: dict[str, Any] | None = None, max_retries: int = 5):
+        """Performs a GET request with rate-limit and transient-error retry handling."""
         attempt = 0
         while True:
             try:
@@ -131,7 +131,11 @@ class WooCommerceClient:
                 continue
 
             response.raise_for_status()
-            return response.json()
+            return response
+
+    def request(self, endpoint: str, params: dict[str, Any] | None = None, max_retries: int = 5) -> Any:
+        """Performs a single GET request and returns its decoded JSON body."""
+        return self._request_response(endpoint=endpoint, params=params, max_retries=max_retries).json()
 
     def get_all_items(self, endpoint: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Fetches all pages of 'endpoint' and returns them as a single flat list."""
@@ -146,14 +150,16 @@ class WooCommerceClient:
         page = 1
         while True:
             params['page'] = page
-            records = self.request(endpoint=endpoint, params=params)
+            response = self._request_response(endpoint=endpoint, params=params)
+            records = response.json()
 
             if not isinstance(records, list):
                 raise TypeError(f'WooCommerce REST API returned non-list data for {endpoint}: {records}')
 
             records_all.extend(records)
 
-            if not records or self.test_mode:
+            total_pages = int(response.headers.get('X-WP-TotalPages', 0) or 0)
+            if not records or self.test_mode or (total_pages and page >= total_pages) or (not total_pages and len(records) < params['per_page']):
                 break
 
             page += 1
@@ -172,7 +178,8 @@ class WooCommerceClient:
         page = 1
         while True:
             params['page'] = page
-            records = self.request(endpoint=endpoint, params=params)
+            response = self._request_response(endpoint=endpoint, params=params)
+            records = response.json()
 
             if not isinstance(records, list):
                 raise TypeError(f'WooCommerce REST API returned non-list data for {endpoint}: {records}')
@@ -182,7 +189,8 @@ class WooCommerceClient:
             else:
                 break
 
-            if self.test_mode:
+            total_pages = int(response.headers.get('X-WP-TotalPages', 0) or 0)
+            if self.test_mode or (total_pages and page >= total_pages) or (not total_pages and len(records) < params['per_page']):
                 break
 
             page += 1
