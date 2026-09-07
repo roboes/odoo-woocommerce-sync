@@ -36,9 +36,10 @@ class TestOrderMultipleShippingLines(WoocommerceSyncCommon):
         self.assertEqual(extra_shipping_line.name, 'Local Pickup')
         self.assertEqual(extra_shipping_line.price_unit, 3.00)
 
-        # The first shipping line goes through 'set_delivery_line' instead of the manual loop
+        # The first shipping line goes through 'set_delivery_line' and is marked as connector-owned
         first_line_as_order_line = odoo_sale_order.order_line.filtered(lambda line: line.woocommerce_id == '801')
-        self.assertFalse(first_line_as_order_line, 'The first shipping line must not also be added by the extra-lines loop')
+        self.assertEqual(len(first_line_as_order_line), 1, 'The first shipping line must be marked without being duplicated by the extra-lines loop')
+        self.assertTrue(first_line_as_order_line.is_delivery)
 
     def test_resyncing_order_updates_extra_shipping_line_instead_of_duplicating(self):
         woocommerce_order = make_woocommerce_order_payload(
@@ -79,3 +80,25 @@ class TestOrderMultipleShippingLines(WoocommerceSyncCommon):
         odoo_sale_order = self._sync_order(woocommerce_order, odoo_sale_orders={str(woocommerce_order['id']): {'id': first_sale_order.id}})
 
         self.assertFalse(odoo_sale_order.order_line.filtered(lambda line: line.is_delivery or line.woocommerce_id == '1002'))
+
+    def test_resync_preserves_manual_delivery_line_when_adding_woocommerce_shipping(self):
+        woocommerce_order = make_woocommerce_order_payload(id=94004, number='94004', status='pending', shipping_lines=[])
+        odoo_sale_order = self._sync_order(woocommerce_order)
+        manual_product = self.env['product.product'].create({'name': 'Manual Delivery Service', 'type': 'service'})
+        manual_line = self.env['sale.order.line'].create(
+            {
+                'order_id': odoo_sale_order.id,
+                'name': 'Manual delivery adjustment',
+                'product_id': manual_product.id,
+                'product_uom_qty': 1,
+                'price_unit': 7.5,
+                'is_delivery': True,
+            }
+        )
+
+        woocommerce_order['shipping_lines'] = [{'id': 1101, 'method_title': 'Flat Rate', 'total': '5.00'}]
+        woocommerce_order['date_modified_gmt'] = bump_iso_datetime(woocommerce_order['date_modified_gmt'])
+        self._sync_order(woocommerce_order, odoo_sale_orders={str(woocommerce_order['id']): {'id': odoo_sale_order.id}})
+
+        self.assertTrue(manual_line.exists())
+        self.assertTrue(odoo_sale_order.order_line.filtered(lambda line: line.woocommerce_id == '1101' and line.is_delivery))
