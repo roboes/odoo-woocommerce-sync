@@ -100,6 +100,17 @@ class TestBatch(unittest.TestCase):
 
 
 class TestRequest(unittest.TestCase):
+    def test_direct_get_retries_and_returns_response(self):
+        client = _make_client()
+        success_response = _make_response(200, {'value': 'USD'})
+        client.api.get.side_effect = [_make_response(429, headers={'Retry-After': '0'}), success_response]
+
+        with patch.object(woocommerce_client.time, 'sleep'):
+            response = client.get('settings/general/woocommerce_currency')
+
+        self.assertIs(response, success_response)
+        self.assertEqual(client.api.get.call_count, 2)
+
     def test_raises_on_non_retryable_http_error(self):
         client = _make_client()
         client.api.get.return_value = _make_response(401, {'code': 'woocommerce_rest_cannot_view'})
@@ -116,6 +127,18 @@ class TestRequest(unittest.TestCase):
 
 
 class TestGetItemsInBatches(unittest.TestCase):
+    def test_stops_at_non_empty_final_page_from_response_header(self):
+        client = _make_client()
+        client.api.get.side_effect = [
+            _make_response(200, [{'id': 1}, {'id': 2}], headers={'X-WP-TotalPages': '2'}),
+            _make_response(200, [{'id': 3}], headers={'X-WP-TotalPages': '2'}),
+        ]
+
+        pages = list(client.get_items_in_batches(endpoint='products', batch_size=2))
+
+        self.assertEqual(pages, [[{'id': 1}, {'id': 2}], [{'id': 3}]])
+        self.assertEqual(client.api.get.call_count, 2)
+
     def test_yields_pages_until_empty_page(self):
         client = _make_client()
         client.api.get.side_effect = [
