@@ -1,5 +1,29 @@
 # Changelog
 
+## v16.0.5.4 / v18.0.5.4 / v19.0.5.4 - 2026-09-07
+
+### Improvements
+
+- Connector store URLs are normalized, duplicate normalized store connectors are rejected, and URLs cannot be changed after records have been synchronized, protecting the URL-scoped external identity contract.
+- Direct WooCommerce GET requests used for settings and webhook processing now share the existing rate-limit and transient-error retry behavior.
+- Image-enabled product exports are dispatched as one-product jobs on a dedicated queue channel, allowing deployments to limit media-heavy exports without blocking unrelated jobs.
+- Documentation now states that guest matching is store-scoped and that webhooks cover create/update events while deletion detection remains polling-based.
+
+### Fixes
+
+- Pagination now stops at WooCommerce's advertised `X-WP-TotalPages` boundary, with a short-page fallback, instead of requiring an extra empty page that some WordPress installations reject.
+- Bidirectional stock synchronization now retrieves complete remote stock state even in incremental mode, allowing Odoo-only stock changes to be pushed to WooCommerce.
+- Odoo-to-WooCommerce product synchronization now resolves established mappings by `woocommerce_id` before falling back to mutable SKU matching, preventing duplicate creates after SKU changes.
+- Odoo-to-WooCommerce product export now falls back to SKU matching and recreation when a product's stored `woocommerce_id` no longer exists remotely (HTTP 404), instead of aborting the entire export chunk.
+- Odoo-to-WooCommerce batch results are now written back to Odoo by batch position instead of by SKU, so products without a `default_code` receive their `woocommerce_id` and are no longer recreated on every run.
+- Native delivery lines created from WooCommerce shipping methods now carry their external identity, and order resync preserves manually added delivery lines.
+- Outbound product and stock chunk identity keys now include their originating run token, and overlapping-run detection includes both job types.
+- Webhook deliveries without a WooCommerce delivery ID now receive a unique queue identity so a redelivery cannot be suppressed by an earlier failed job.
+- WordPress image lookup and upload requests now have explicit connect/read timeouts, validate HTTP responses, reuse connections, and send the image MIME type required by the WordPress media endpoint.
+- Odoo-to-WooCommerce attribute, brand, category, and tag lookups now issue a single WooCommerce REST API request instead of paginating, preventing an unbounded request loop (and the resulting worker timeout, repeated image uploads, and products never being created) against WordPress endpoints such as `products/attributes` that ignore the `page` parameter and keep returning the same results.
+- The WooCommerce store URL now also has a database-level partial unique index, closing a race where concurrent connector creation could bypass the record-level uniqueness check.
+- Added regression coverage for final-page pagination, outbound identity after an SKU change, outbound recreation after a remote 404, WooCommerce ID write-back for SKU-less products, single-request attribute lookups, incremental stock candidate selection, direct GET retries, and manual delivery-line preservation.
+
 ## v16.0.5.3 / v18.0.5.3 / v19.0.5.3 - 2026-09-01
 
 ### Fixes

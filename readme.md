@@ -15,7 +15,7 @@ The **Odoo-WooCommerce Sync** add-on enables synchronization between WooCommerce
 - **WooCommerce to Odoo:** Synchronize new and existing products (including variations), stock quantity levels, customers (including a separate shipping address contact), and orders (including line items, fee lines, coupon lines and full refunds converted into Odoo credit notes).
 - **Odoo to WooCommerce:** Synchronize new and existing products (including variations) and stock quantity levels.
 - **Extended Models and Views:** Enhance existing Odoo models and views for `product.template`, `product.product`, `res.partner`, `sale.order`, and `sale.order.line` to accommodate corresponding WooCommerce REST API fields.
-- **Automated and Manual Synchronization:** A built-in cron job scheduler enables regular synchronization, complemented by a dedicated button for manually triggering updates. Optional WooCommerce webhooks (order/product/customer changes) can also be registered for near-real-time sync, in addition to the regular polling.
+- **Automated and Manual Synchronization:** A built-in cron job scheduler enables regular synchronization, complemented by a dedicated button for manually triggering updates. Optional WooCommerce webhooks (order/product/customer create and update events) can also be registered for near-real-time sync, in addition to the regular polling.
 - **Advanced Settings:** Support for multiple WooCommerce websites with specific configuration options for each instance (e.g. syncing only products from WooCommerce to Odoo).
 - **Image Synchronization:** Optionally synchronize product images from WooCommerce to Odoo and Odoo to WooCommerce. For products imported from WooCommerce that include multiple images/product image gallery, an additional product image gallery is added to the `product.template` view.
 - **Language Filtering:** Synchronize products by language (_requires Polylang_).
@@ -77,6 +77,7 @@ python -m pip install filetype phonenumbers woocommerce
 - **Contacts** (`contacts`)
 - **Job Queue** (`queue_job`)
   - [GitHub](https://github.com/OCA/queue/tree/19.0/queue_job) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/19.0/queue_job) (requires additional [configuration instructions](https://github.com/OCA/queue/tree/19.0/queue_job#configuration)).
+  - Reserve queue capacity for other jobs by limiting image-heavy product exports to one worker, for example `channels = root:2,root.woocommerce_sync_export:1`. The root capacity must be at least two for this isolation to be effective. Restart Odoo after changing the queue configuration.
 - **Multiple Images Base** (`base_multi_image`): Extends the functionality of any model to support multiple attached images (a gallery) and enables full management of them.
   - [GitHub](https://github.com/OCA/server-tools/tree/19.0/base_multi_image) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/19.0/base_multi_image)
 
@@ -144,10 +145,10 @@ The add-on is configured through the WooCommerce Sync configuration, accessible 
 
 For order imports, two mapping logics are enabled by default. If disabled, the system instead falls back to placeholders: a customer placeholder (for guest checkouts) and a product placeholder. The options are:
 
-- **Guest Customers Mapping:** When enabled, orders placed by guest (unregistered) customers are matched to existing Odoo customers using their email addresses. If no matching customer exists, a new record is created automatically. When disabled, a customer placeholder (`ref = WooCommerce_Customer_Placeholder`) is assigned to the order.
+- **Guest Customers Mapping:** When enabled, orders placed by guest (unregistered) customers are matched by email to existing Odoo customers already assigned to the same WooCommerce store. If no matching customer exists, a new record is created automatically. When disabled, a customer placeholder (`ref = WooCommerce_Customer_Placeholder`) is assigned to the order.
 - **Line Items Product Mapping:** When enabled, each line item is mapped to an existing Odoo product using the `woocommerce_product_id`. If no match is found, a product placeholder is used. When disabled, all order line items are assigned to a placeholder product (`default_code = WooCommerce_Product_Placeholder`) while still displaying the WooCommerce product name. This option is not recommended since product details in WooCommerce may change over time, complicating accurate mapping.
 
-WooCommerce webhooks (`WooCommerce Webhooks` group) are optional and disabled by default. When enabled, this Odoo instance must be reachable from WooCommerce at its configured base URL, since WooCommerce delivers webhook events to `<base_url>/woocommerce_sync/webhook/<connector_id>`.
+WooCommerce webhooks (`WooCommerce Webhooks` group) are optional and disabled by default. They cover order, product, and customer create/update events; deletion detection remains part of regular polling. When enabled, this Odoo instance must be reachable from WooCommerce at its configured base URL, since WooCommerce delivers webhook events to `<base_url>/woocommerce_sync/webhook/<connector_id>`.
 
 ## Disclaimer
 

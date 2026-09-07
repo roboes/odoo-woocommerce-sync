@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from odoo.addons.queue_job.exception import RetryableJobError
+from odoo.addons.woocommerce_sync.models import connector as connector_module
 from odoo.tests.common import tagged
 
 from .common import WoocommerceSyncCommon
@@ -11,24 +12,24 @@ from .common import WoocommerceSyncCommon
 @tagged('post_install', '-at_install')
 class TestWebhookQueueJobDispatch(WoocommerceSyncCommon):
     def test_order_topic_dispatches_order_sync_job_with_identity_key(self):
-        with patch.object(type(self.connector), 'with_delay', return_value=MagicMock()) as mocked_with_delay:
+        with patch.object(connector_module.secrets, 'token_hex', return_value='fallback'), patch.object(type(self.connector), 'with_delay', return_value=MagicMock()) as mocked_with_delay:
             self.connector.woocommerce_webhook_process('order.updated', 555)
 
-        mocked_with_delay.assert_called_once_with(identity_key=f'woocommerce_webhook_order_sync-{self.connector.id}-555', description='woocommerce.sync.connector.woocommerce_webhook_order_sync')
+        mocked_with_delay.assert_called_once_with(identity_key=f'woocommerce_webhook_order_sync-{self.connector.id}-555-no-delivery-fallback', description='woocommerce.sync.connector.woocommerce_webhook_order_sync')
         mocked_with_delay.return_value.woocommerce_webhook_order_sync.assert_called_once_with(555)
 
     def test_product_topic_dispatches_product_sync_job_with_identity_key(self):
-        with patch.object(type(self.connector), 'with_delay', return_value=MagicMock()) as mocked_with_delay:
+        with patch.object(connector_module.secrets, 'token_hex', return_value='fallback'), patch.object(type(self.connector), 'with_delay', return_value=MagicMock()) as mocked_with_delay:
             self.connector.woocommerce_webhook_process('product.created', 777)
 
-        mocked_with_delay.assert_called_once_with(identity_key=f'woocommerce_webhook_product_sync-{self.connector.id}-777', description='woocommerce.sync.connector.woocommerce_webhook_product_sync')
+        mocked_with_delay.assert_called_once_with(identity_key=f'woocommerce_webhook_product_sync-{self.connector.id}-777-no-delivery-fallback', description='woocommerce.sync.connector.woocommerce_webhook_product_sync')
         mocked_with_delay.return_value.woocommerce_webhook_product_sync.assert_called_once_with(777)
 
     def test_customer_topic_dispatches_customer_sync_job_with_identity_key(self):
-        with patch.object(type(self.connector), 'with_delay', return_value=MagicMock()) as mocked_with_delay:
+        with patch.object(connector_module.secrets, 'token_hex', return_value='fallback'), patch.object(type(self.connector), 'with_delay', return_value=MagicMock()) as mocked_with_delay:
             self.connector.woocommerce_webhook_process('customer.updated', 42)
 
-        mocked_with_delay.assert_called_once_with(identity_key=f'woocommerce_webhook_customer_sync-{self.connector.id}-42', description='woocommerce.sync.connector.woocommerce_webhook_customer_sync')
+        mocked_with_delay.assert_called_once_with(identity_key=f'woocommerce_webhook_customer_sync-{self.connector.id}-42-no-delivery-fallback', description='woocommerce.sync.connector.woocommerce_webhook_customer_sync')
         mocked_with_delay.return_value.woocommerce_webhook_customer_sync.assert_called_once_with(42)
 
     def test_missing_resource_id_does_not_dispatch_a_job(self):
