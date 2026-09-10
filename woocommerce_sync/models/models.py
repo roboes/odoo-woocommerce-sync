@@ -225,10 +225,13 @@ class ProductTemplate(models.Model):
     def get_gallery_images(self):
         """Returns list of base64 binary images for the product gallery (excluding the main image_1920)."""
         self.ensure_one()
+        main_image = self.image_1920
         if 'base_multi_image.image' in self.env:
-            return [img.image_1920 for img in self.env['base_multi_image.image'].search([('owner_model', '=', 'product.template'), ('owner_id', '=', self.id)]).sorted('sequence') if img.image_1920]
+            gallery_images = [img.image_1920 for img in self.env['base_multi_image.image'].search([('owner_model', '=', 'product.template'), ('owner_id', '=', self.id)]).sorted('sequence') if img.image_1920]
         else:
-            return [att.datas for att in self.env['ir.attachment'].search([('res_model', '=', 'product.template'), ('res_id', '=', self.id), ('mimetype', 'ilike', 'image')]) if att.datas]
+            gallery_images = [att.datas for att in self.env['ir.attachment'].search([('res_model', '=', 'product.template'), ('res_id', '=', self.id), ('mimetype', 'ilike', 'image')]) if att.datas]
+
+        return [image for image in gallery_images if image != main_image]
 
 
 # Product variations

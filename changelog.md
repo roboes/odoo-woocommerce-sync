@@ -1,5 +1,12 @@
 # Changelog
 
+## v16.0.5.5 / v18.0.5.5 / v19.0.5.5 - 2026-09-10
+
+### Fixes
+
+- Fixed connector configuration after Odoo 18 initially saves a new form with an empty store URL; the URL can now be entered before synchronization begins.
+- Fixed Odoo-to-WooCommerce product exports uploading the featured image twice when it was also returned by the gallery image source.
+
 ## v16.0.5.4 / v18.0.5.4 / v19.0.5.4 - 2026-09-07
 
 ### Improvements
