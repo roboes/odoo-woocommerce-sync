@@ -54,6 +54,22 @@ class TestOdooToWooCommerceProductValues(WoocommerceSyncCommon):
         self.assertIsNone(image_id)
         session.post.assert_not_called()
 
+    def test_gallery_does_not_repeat_featured_image(self):
+        featured_image = b64encode(FAKE_IMAGE_BYTES).decode()
+        odoo_product = self.env['product.template'].create({'name': 'Image Product', 'image_1920': featured_image})
+
+        with patch.object(type(odoo_product), 'get_gallery_images', return_value=[featured_image]), patch.object(type(self.connector), 'wordpress_upload_image', side_effect=[11, 12]) as mocked_upload:
+            image_ids = self.connector.wordpress_upload_product_images(odoo_product)
+            self.assertEqual(image_ids, [11])
+            mocked_upload.assert_called_once_with(featured_image, 'image-product-1', session=mocked_upload.call_args.kwargs['session'])
+
+    def test_connector_can_set_url_after_empty_form_save(self):
+        connector = self.env['woocommerce.sync.connector'].create({'settings_woocommerce_connection_name': 'Deferred URL connection'})
+
+        connector.write({'settings_woocommerce_connection_url': 'https://new-store.test'})
+
+        self.assertEqual(connector.settings_woocommerce_connection_url, 'https://new-store.test')
+
     def test_chunk_uses_stored_woocommerce_id_after_sku_change(self):
         odoo_product = self.env['product.template'].create(
             {
