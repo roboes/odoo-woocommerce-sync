@@ -523,7 +523,7 @@ class WoocommerceSyncConnector(models.Model):
         if 'settings_woocommerce_connection_url' in values:
             normalized_url = self.woocommerce_connection_url_normalize(values['settings_woocommerce_connection_url'])
             for record in self:
-                if normalized_url == record.settings_woocommerce_connection_url:
+                if not record.settings_woocommerce_connection_url or normalized_url == record.settings_woocommerce_connection_url:
                     continue
                 synchronized_records_exist = any(
                     self.env[model_name].with_context(active_test=False).search_count([('woocommerce_site_url', '=', record.settings_woocommerce_connection_url)], limit=1)
@@ -3974,7 +3974,9 @@ class WoocommerceSyncConnector(models.Model):
         if odoo_product.image_1920:
             images.append(odoo_product.image_1920)
 
-        images.extend(odoo_product.get_gallery_images())
+        for gallery_image in odoo_product.get_gallery_images():
+            if gallery_image and gallery_image not in images:
+                images.append(gallery_image)
 
         image_file_name = secure_filename(odoo_product.name.strip().replace(' ', '-').lower())
 
