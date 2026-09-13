@@ -1,5 +1,11 @@
 # Changelog
 
+## v16.0.5.6 / v18.0.5.6 / v19.0.5.6 - 2026-09-13
+
+### Features
+
+- Added an Odoo-to-WooCommerce order status sync (enabled by default): an order's status change in Odoo (confirmed, locked/done or cancelled) is pushed back to its matching WooCommerce order (`processing`/`completed`/`cancelled`).
+
 ## v16.0.5.5 / v18.0.5.5 / v19.0.5.5 - 2026-09-10
 
 ### Fixes
