@@ -99,7 +99,9 @@
                         <td style="padding: 8px; text-align: center; vertical-align: top;">
                           <field name="settings_woocommerce_to_odoo_orders_sync" class="oe_inline"/>
                         </td>
-                        <td style="padding: 8px; text-align: center; vertical-align: top;"/>
+                        <td style="padding: 8px; text-align: center; vertical-align: top;">
+                          <field name="settings_odoo_to_woocommerce_orders_status_sync" class="oe_inline"/>
+                        </td>
                       </tr>
                     </tbody>
                   </table>
