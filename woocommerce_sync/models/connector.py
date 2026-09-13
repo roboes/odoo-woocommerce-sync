@@ -332,18 +332,12 @@ class WoocommerceSyncConnector(models.Model):
     settings_sync_summary_chatter_enable = fields.Boolean(
         string='Post Sync Summary to Chatter',
         default=True,
-        help=(
-            "If enabled, a summary message (records processed, new/updated, errors) is posted to this record's chatter once per full sync run (products, "
-            'product variations, customers and orders directions only; triggered by "Sync Now"/the scheduled cron, not by webhooks).'
-        ),
+        help="If enabled, a summary message (records processed, new/updated, errors) is posted to this record's chatter once per full sync run (products, product variations, customers and orders directions only; triggered by 'Sync Now'/the scheduled cron, not by webhooks).",
     )
     settings_sync_summary_discuss_chat_enable = fields.Boolean(
         string='Post Sync Summary to Discuss Chat',
         default=True,
-        help=(
-            'If enabled, the summary message is sent as a direct-message Discuss chat from "WooCommerce Sync" (similar to the built-in "OdooBot" '
-            "conversation), to this record's followers and to whichever user created it."
-        ),
+        help="If enabled, the summary message is sent as a direct-message Discuss chat from 'WooCommerce Sync' (similar to the built-in 'OdooBot' conversation), to this record's followers and to whichever user created it.",
     )
 
     # Sync summary (chatter) tracking - covers the WooCommerce<->Odoo products/variations/customers/orders chunk syncs only. Per-chunk counts/errors are tracked separately in 'woocommerce.sync.summary.event' (append-only, to avoid concurrent-update conflicts); these 3 fields only track the current run's own state
@@ -377,6 +371,11 @@ class WoocommerceSyncConnector(models.Model):
     settings_odoo_to_woocommerce_variations_sync = fields.Boolean(default=True, readonly=True)
     settings_woocommerce_to_odoo_customers_sync = fields.Boolean(default=True)
     settings_woocommerce_to_odoo_orders_sync = fields.Boolean(default=True)
+    settings_odoo_to_woocommerce_orders_status_sync = fields.Boolean(
+        string='Sync order status to WooCommerce?',
+        help="If enabled, an order's status change in Odoo (confirmed, locked/done or cancelled) is pushed back to its matching WooCommerce order ('processing'/'completed'/'cancelled'), so the customer sees an up-to-date status on both ends. Only applies to orders originally imported from WooCommerce.",
+        default=True,
+    )
 
     # General settings
     settings_woocommerce_user_responsible = fields.Many2one(
@@ -393,11 +392,7 @@ class WoocommerceSyncConnector(models.Model):
         string='Tax Calculation',
         default='company',
         required=True,
-        help=(
-            "Whether taxes created/looked up by this sync are tax-included or tax-excluded. 'Match Odoo Company Settings' (the default) uses the company's own setting "
-            '(Home Menu → Settings → Invoicing → Taxes → Prices). WooCommerce product/variation/order line prices are always automatically converted to match this '
-            'setting before being stored in Odoo, regardless of whether WooCommerce itself sends tax-included or tax-excluded prices.'
-        ),
+        help="Whether taxes created/looked up by this sync are tax-included or tax-excluded. 'Match Odoo Company Settings' (the default) uses the company's own setting '(Home Menu → Settings → Invoicing → Taxes → Prices). WooCommerce product/variation/order line prices are always automatically converted to match this setting before being stored in Odoo, regardless of whether WooCommerce itself sends tax-included or tax-excluded prices.",
     )
 
     # Stock management
@@ -713,6 +708,10 @@ class WoocommerceSyncConnector(models.Model):
                     woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit
                 )
             )
+
+        ## Order status
+        if self.settings_odoo_to_woocommerce_orders_status_sync:
+            queue_jobs_run_in_sequence.append(self.delayable(priority=None, description=self.job_description('odoo_to_woocommerce_orders_status_sync')).odoo_to_woocommerce_orders_status_sync())
 
         # Stock quantity
         if self.settings_woocommerce_products_stock_management:
@@ -3992,6 +3991,75 @@ class WoocommerceSyncConnector(models.Model):
                 counter += 1
 
         return wordpress_uploaded_image_ids
+
+    def odoo_to_woocommerce_order_status_map(self: models.Model, odoo_sale_order: models.Model) -> str | None:
+        """Maps an Odoo sale order's state to the WooCommerce order status it corresponds to (inverse of the status handling in 'woocommerce_to_odoo_order_sync'). Returns None for states with no clear WooCommerce equivalent (draft/sent quotations), in which case the WooCommerce order is left untouched."""
+        if odoo_sale_order.state == 'cancel':
+            return 'cancelled'
+
+        if version_info[0] == 16:
+            if odoo_sale_order.state == 'done':
+                return 'completed'
+            if odoo_sale_order.state == 'sale':
+                return 'processing'
+        elif odoo_sale_order.state == 'sale':
+            return 'completed' if odoo_sale_order.locked else 'processing'
+
+        return None
+
+    def odoo_to_woocommerce_orders_status_sync(self: models.Model) -> None:
+        """Schedules a chunked push of Odoo sale order status changes back to their matching WooCommerce order. Only orders originally imported from WooCommerce ('woocommerce_id' set) are considered."""
+        # WooCommerce REST API
+        woocommerce_api = self.woocommerce_api_get()
+
+        # Check if WooCommerce REST API connection is successful
+        if not woocommerce_api:
+            error_message = 'WooCommerce REST API connection failed. Odoo to WooCommerce order status sync process halted; Please check your connection settings in the WooCommerce Configuration'
+            _logger.error(error_message)
+            return
+
+        odoo_sale_order_ids = self.env['sale.order'].search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '!=', False)]).ids
+
+        run_token = self.sync_run_token()
+        for orders_chunk in self.list_chunks(odoo_sale_order_ids, self.settings_job_chunk_size):
+            chunk_identity_key = '-'.join(str(order_id) for order_id in orders_chunk)
+            self.with_delay(
+                channel='root.woocommerce_sync_export',
+                identity_key=f'odoo_to_woocommerce_orders_status_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}',
+                description=self.job_description('odoo_to_woocommerce_orders_status_chunk_sync'),
+            ).odoo_to_woocommerce_orders_status_chunk_sync(orders_chunk)
+
+    def odoo_to_woocommerce_orders_status_chunk_sync(self: models.Model, odoo_sale_order_ids: list[int]) -> None:
+        """Processes a chunk of Odoo sale orders, pushing only those whose mapped WooCommerce status differs from the last known 'woocommerce_status', using the WooCommerce REST API 'orders/batch' endpoint."""
+        self.ensure_one()
+
+        # WooCommerce REST API
+        woocommerce_api = self.woocommerce_api_get(validate=False)
+
+        if not woocommerce_api:
+            _logger.error('WooCommerce REST API connection failed. Odoo to WooCommerce order status chunk sync halted')
+            return
+
+        odoo_sale_orders = self.env['sale.order'].browse(odoo_sale_order_ids).exists()
+
+        update_entries: list[tuple[models.Model, str]] = []
+        for odoo_sale_order in odoo_sale_orders:
+            target_status = self.odoo_to_woocommerce_order_status_map(odoo_sale_order)
+            if target_status and target_status != odoo_sale_order.woocommerce_status:
+                update_entries.append((odoo_sale_order, target_status))
+
+        for update_chunk in self.list_chunks(update_entries, 100):
+            response = woocommerce_api.batch('orders', update=[{'id': odoo_sale_order.woocommerce_id, 'status': target_status} for odoo_sale_order, target_status in update_chunk])
+            for (odoo_sale_order, target_status), woocommerce_order in zip(update_chunk, response.get('update', [])):
+                if not odoo_sale_order.exists():
+                    continue
+
+                if isinstance(woocommerce_order, dict) and woocommerce_order.get('error'):
+                    _logger.error(f'WooCommerce REST API batch error updating status for Odoo order {odoo_sale_order.id} (WooCommerce order {odoo_sale_order.woocommerce_id}): {woocommerce_order["error"]}')
+                    continue
+
+                odoo_sale_order.woocommerce_status = target_status
+                _logger.info(f'Synced Odoo order status into WooCommerce: {odoo_sale_order.name} (Odoo order ID: {odoo_sale_order.id}, WooCommerce order ID: {odoo_sale_order.woocommerce_id}, status: {target_status})')
 
     def odoo_to_woocommerce_products_sync(
         self: models.Model, woocommerce_currency: str, woocommerce_tax_rates: dict[str, float], woocommerce_prices_include_tax: bool, woocommerce_weight_unit: str, woocommerce_dimension_unit: str
