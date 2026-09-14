@@ -18,6 +18,7 @@ To run only one file/class:
 from . import (
     test_customer_identity,
     test_customer_shipping_address,
+    test_odoo_to_woocommerce_order_status_sync,
     test_odoo_to_woocommerce_values,
     test_order_fee_coupon_lines,
     test_order_shipping_lines,
@@ -34,6 +35,7 @@ from . import (
 __all__ = [
     'test_customer_identity',
     'test_customer_shipping_address',
+    'test_odoo_to_woocommerce_order_status_sync',
     'test_odoo_to_woocommerce_values',
     'test_order_fee_coupon_lines',
     'test_order_shipping_lines',
