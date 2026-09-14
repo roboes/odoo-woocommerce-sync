@@ -4045,8 +4045,26 @@ class WoocommerceSyncConnector(models.Model):
         update_entries: list[tuple[models.Model, str]] = []
         for odoo_sale_order in odoo_sale_orders:
             target_status = self.odoo_to_woocommerce_order_status_map(odoo_sale_order)
-            if target_status and target_status != odoo_sale_order.woocommerce_status:
-                update_entries.append((odoo_sale_order, target_status))
+            if not target_status or target_status == odoo_sale_order.woocommerce_status:
+                continue
+
+            remote_order = self.woocommerce_api_request(woocommerce_api, endpoint=f'orders/{odoo_sale_order.woocommerce_id}', params={'_fields': 'id,status'})
+            remote_status = remote_order.get('status') if isinstance(remote_order, dict) else None
+            if not remote_status:
+                _logger.error(
+                    f'Skipped Odoo order status push for {odoo_sale_order.name} (Odoo order ID: {odoo_sale_order.id}, WooCommerce order ID: {odoo_sale_order.woocommerce_id}): '
+                    'WooCommerce did not return a valid current order status.'
+                )
+                continue
+
+            if remote_status != odoo_sale_order.woocommerce_status:
+                _logger.info(
+                    f'Skipped Odoo order status push for {odoo_sale_order.name} (Odoo order ID: {odoo_sale_order.id}, WooCommerce order ID: {odoo_sale_order.woocommerce_id}): '
+                    f'WooCommerce status is now {remote_status}, while Odoo last imported {odoo_sale_order.woocommerce_status}. Waiting for the inbound order sync to apply the newer WooCommerce state.'
+                )
+                continue
+
+            update_entries.append((odoo_sale_order, target_status))
 
         for update_chunk in self.list_chunks(update_entries, 100):
             response = woocommerce_api.batch('orders', update=[{'id': odoo_sale_order.woocommerce_id, 'status': target_status} for odoo_sale_order, target_status in update_chunk])
