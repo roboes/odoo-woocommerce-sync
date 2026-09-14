@@ -1,5 +1,11 @@
 # Changelog
 
+## v16.0.5.7 / v18.0.5.7 / v19.0.5.7 - 2026-09-14
+
+### Fixes
+
+- Odoo-to-WooCommerce order status export now checks the live WooCommerce order status immediately before pushing an Odoo state change, reducing the risk that a stale Odoo `processing`/`completed` status overwrites a newer WooCommerce-side cancellation or refund before inbound order sync applies it in Odoo.
+
 ## v16.0.5.6 / v18.0.5.6 / v19.0.5.6 - 2026-09-13
 
 ### Features
