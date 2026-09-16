@@ -5,7 +5,7 @@
 
 repos:
   - repo: https://github.com/rbubley/mirrors-prettier
-    rev: v3.9.6
+    rev: v3.9.7
     hooks:
       - id: prettier
         name: prettier
