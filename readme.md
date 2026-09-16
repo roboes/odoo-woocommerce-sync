@@ -88,7 +88,7 @@ This mirrors Odoo's own [B2B (tax excluded) vs. B2C (tax included) pricing](http
 
 While not mandatory, the following Odoo Community Association (OCA) add-ons are recommended to enhance functionality:
 
-- **Module Auto Update** (`module_auto_update`): Automatically updates installed modules to their latest versions, ensuring the system remains current with minimal manual intervention.
+- **Module Auto Update** (`module_auto_update`): Automatically updates installed modules to their latest versions, ensuring the system remains current with minimal manual intervention. No configuration is needed beyond installing it; it detects on-disk code changes and upgrades the affected modules on the next Odoo restart.
   - [GitHub](https://github.com/OCA/server-tools/tree/16.0/module_auto_update) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/module_auto_update)
 - **Scheduled Actions as Queue Jobs** (`queue_job_cron`): Extends the functionality of `queue_job` and allows to run an Odoo cron as a queue job.
   - [GitHub](https://github.com/OCA/queue/tree/16.0/queue_job_cron) | [Odoo Apps Store](https://apps.odoo.com/apps/modules/16.0/queue_job_cron)
@@ -135,6 +135,17 @@ Follow these steps to install the Odoo-WooCommerce Sync add-on:
 5. **Activate Debug Mode:** Log in to Odoo and enable [Debug Mode](https://www.odoo.com/documentation/16.0/applications/general/developer_mode.html).
 6. **Update the Apps List:** Navigate to `Home Menu` → `Apps` and click **Update Apps List**.
 7. **Activate the Add-on:** Use the filter to search for `woocommerce_sync` and activate the add-on.
+
+## Updating
+
+New releases may add or change model fields, so simply overwriting the [`woocommerce_sync`](./woocommerce_sync) directory and restarting Odoo is not enough - the add-on must also be **upgraded** so Odoo can migrate the database schema (e.g. create new columns). Skipping this step can result in errors such as `column woocommerce_sync_connector.<field_name> does not exist`.
+
+1. **Replace the Add-on Files:** Download the new version and replace the [`woocommerce_sync`](./woocommerce_sync) directory in the Odoo `addons` directory.
+2. **Restart and Upgrade the Add-on**, using either method:
+   - **Via the UI:** Restart Odoo so the new code loads, then go to `Home Menu` → `Apps`, find `woocommerce_sync` (already listed, since it's installed - no need for Update Apps List), open it and click **Upgrade**.
+   - **Via the command line:** Restart the Odoo service with the `--update` flag, for example: `odoo-bin --config=/etc/odoo/odoo.conf --update=woocommerce_sync --stop-after-init`. Then start the service normally again, since `--stop-after-init` shuts it down after the upgrade.
+
+- (Optional) The [Module Auto Update](#odoo-add-ons-optional) add-on can automate this step on Odoo restart.
 
 ## Configuration
 
