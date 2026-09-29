@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import secrets
 import socket
 import time
@@ -34,7 +35,7 @@ from odoo.addons.queue_job.delay import chain
 from odoo.addons.queue_job.exception import RetryableJobError
 from odoo.exceptions import AccessError, UserError, ValidationError
 from odoo.release import version_info
-from odoo.tools import float_compare
+from odoo.tools import config, float_compare
 from requests.auth import HTTPBasicAuth
 from werkzeug.utils import secure_filename
 
@@ -46,6 +47,22 @@ _logger = logging.getLogger(__name__)
 if not _pil_avif_supported:
     _logger.warning('Pillow version on this system lacks AVIF support. Images served as AVIF will fail to process.')
 del _pil_avif_supported
+
+CHUNK_WAIT_MAX_RETRIES_DEFAULT = 120
+
+
+def chunk_wait_max_retries() -> int:
+    value = os.environ.get('ODOO_WOOCOMMERCE_SYNC_CHUNK_WAIT_MAX_RETRIES') or config.misc.get('woocommerce_sync', {}).get('chunk_wait_max_retries')
+    if value is None:
+        return CHUNK_WAIT_MAX_RETRIES_DEFAULT
+    try:
+        max_retries = int(value)
+    except ValueError:
+        max_retries = -1
+    if max_retries < 0:
+        _logger.warning(f"Invalid chunk_wait_max_retries value '{value}', falling back to {CHUNK_WAIT_MAX_RETRIES_DEFAULT}")
+        return CHUNK_WAIT_MAX_RETRIES_DEFAULT
+    return max_retries
 
 
 class WoocommerceSyncConnector(models.Model):
@@ -676,9 +693,9 @@ class WoocommerceSyncConnector(models.Model):
             if self.settings_woocommerce_to_odoo_products_variations_sync:
                 inbound_directions.append('variations')
                 queue_jobs_run_in_sequence.append(
-                    self.delayable(priority=None, description=self.job_description('woocommerce_to_odoo_products_variations_sync_batch')).woocommerce_to_odoo_products_variations_sync_batch(
-                        woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit
-                    )
+                    self.delayable(
+                        priority=None, max_retries=chunk_wait_max_retries(), description=self.job_description('woocommerce_to_odoo_products_variations_sync_batch')
+                    ).woocommerce_to_odoo_products_variations_sync_batch(woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit)
                 )
 
         ## Products related ids map
@@ -719,7 +736,7 @@ class WoocommerceSyncConnector(models.Model):
 
         # Store 'odoo_woocommerce_last_sync' only after all inbound chunks completed without errors
         queue_jobs_run_in_sequence.append(
-            self.delayable(priority=None, description=self.job_description('update_sync_last_log_after_chunks')).update_sync_last_log_after_chunks(
+            self.delayable(priority=None, max_retries=chunk_wait_max_retries(), description=self.job_description('update_sync_last_log_after_chunks')).update_sync_last_log_after_chunks(
                 woocommerce_connection_id=self.id,
                 model_name='woocommerce.sync.log',
                 field_name='odoo_woocommerce_last_sync',
