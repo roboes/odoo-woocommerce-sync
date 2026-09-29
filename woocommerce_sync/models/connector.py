@@ -329,6 +329,26 @@ class WoocommerceSyncConnector(models.Model):
             if record.settings_job_chunk_size <= 0:
                 raise ValidationError(_('Queue Job Chunk Size must be greater than zero.'))
 
+    settings_chunk_wait_timeout_minutes = fields.Integer(
+        string='Chunk Wait Timeout (in minutes)',
+        default=60,
+        help='How long a job that waits for previously dispatched chunk jobs keeps polling before it gives up and fails. Increase for large catalogs, whose chunks can take longer than the default to finish.',
+    )
+
+    @api.constrains('settings_chunk_wait_timeout_minutes')
+    def settings_chunk_wait_timeout_minutes_check(self: models.Model) -> None:
+        for record in self:
+            if record.settings_chunk_wait_timeout_minutes <= 0:
+                raise ValidationError(_('Chunk Wait Timeout must be greater than zero.'))
+
+    def chunk_wait_max_retries(self: models.Model, poll_seconds: int) -> int:
+        """Returns the queue job 'max_retries' budget matching 'settings_chunk_wait_timeout_minutes' for a barrier job that polls every 'poll_seconds'.
+
+        Barrier jobs signal "not ready yet" with 'RetryableJobError', so the 'queue_job' default of 5 retries would make them give up minutes after being dispatched, long before a large catalog's chunks have finished.
+        """
+        self.ensure_one()
+        return max(1, self.settings_chunk_wait_timeout_minutes * 60 // poll_seconds)
+
     settings_sync_summary_chatter_enable = fields.Boolean(
         string='Post Sync Summary to Chatter',
         default=True,
@@ -552,7 +572,9 @@ class WoocommerceSyncConnector(models.Model):
                 'name': f'WooCommerce Auto-Sync - {self.settings_woocommerce_connection_url}',
                 'model_id': self.env['ir.model']._get(self._name).id,
                 'code': (
-                    f'model.with_context(cron_running=True).browse({self.id}).with_delay().woocommerce_sync()' if 'queue.job' in self.env else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
+                    f'model.with_context(cron_running=True).browse({self.id}).with_delay(max_retries={self.chunk_wait_max_retries(poll_seconds=60)}).woocommerce_sync()'
+                    if 'queue.job' in self.env
+                    else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
                 ),
                 'active': self.settings_woocommerce_sync_scheduled,
                 'interval_number': self.settings_woocommerce_sync_scheduled_interval_minutes,
@@ -566,7 +588,9 @@ class WoocommerceSyncConnector(models.Model):
                 'name': f'WooCommerce Auto-Sync - {self.settings_woocommerce_connection_url}',
                 'model_id': self.env['ir.model']._get(self._name).id,
                 'code': (
-                    f'model.with_context(cron_running=True).browse({self.id}).with_delay().woocommerce_sync()' if 'queue.job' in self.env else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
+                    f'model.with_context(cron_running=True).browse({self.id}).with_delay(max_retries={self.chunk_wait_max_retries(poll_seconds=60)}).woocommerce_sync()'
+                    if 'queue.job' in self.env
+                    else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
                 ),
                 'active': self.settings_woocommerce_sync_scheduled,
                 'interval_number': self.settings_woocommerce_sync_scheduled_interval_minutes,
@@ -590,7 +614,7 @@ class WoocommerceSyncConnector(models.Model):
 
         # Run woocommerce_sync in the background (requires 'queue_job' Odoo add-on)
         if 'queue.job' in self.env:
-            sync_connector.with_delay(description=sync_connector.job_description('woocommerce_sync')).woocommerce_sync()
+            sync_connector.with_delay(max_retries=sync_connector.chunk_wait_max_retries(poll_seconds=60), description=sync_connector.job_description('woocommerce_sync')).woocommerce_sync()
 
             notification = {
                 'type': 'ir.actions.client',
@@ -676,9 +700,9 @@ class WoocommerceSyncConnector(models.Model):
             if self.settings_woocommerce_to_odoo_products_variations_sync:
                 inbound_directions.append('variations')
                 queue_jobs_run_in_sequence.append(
-                    self.delayable(priority=None, description=self.job_description('woocommerce_to_odoo_products_variations_sync_batch')).woocommerce_to_odoo_products_variations_sync_batch(
-                        woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit
-                    )
+                    self.delayable(
+                        priority=None, max_retries=self.chunk_wait_max_retries(poll_seconds=30), description=self.job_description('woocommerce_to_odoo_products_variations_sync_batch')
+                    ).woocommerce_to_odoo_products_variations_sync_batch(woocommerce_currency, woocommerce_tax_rates, woocommerce_prices_include_tax, woocommerce_weight_unit, woocommerce_dimension_unit)
                 )
 
         ## Products related ids map
@@ -719,7 +743,7 @@ class WoocommerceSyncConnector(models.Model):
 
         # Store 'odoo_woocommerce_last_sync' only after all inbound chunks completed without errors
         queue_jobs_run_in_sequence.append(
-            self.delayable(priority=None, description=self.job_description('update_sync_last_log_after_chunks')).update_sync_last_log_after_chunks(
+            self.delayable(priority=None, max_retries=self.chunk_wait_max_retries(poll_seconds=30), description=self.job_description('update_sync_last_log_after_chunks')).update_sync_last_log_after_chunks(
                 woocommerce_connection_id=self.id,
                 model_name='woocommerce.sync.log',
                 field_name='odoo_woocommerce_last_sync',
