@@ -671,8 +671,7 @@ class WoocommerceSyncConnector(models.Model):
 
         ## WooCommerce tax rates
         woocommerce_prices_include_tax = woocommerce_api.get(endpoint='settings/tax/woocommerce_prices_include_tax').json()['value'].lower() == 'yes'
-        woocommerce_tax_rates = woocommerce_api.get(endpoint='taxes').json()
-        woocommerce_tax_rates = {woocommerce_tax_rate['class']: float(woocommerce_tax_rate['rate']) for woocommerce_tax_rate in woocommerce_tax_rates}
+        woocommerce_tax_rates = self.woocommerce_tax_rates_retrieve(woocommerce_api)
 
         ## WooCommerce shipping methods
         woocommerce_shipping_methods = woocommerce_api.get(endpoint='shipping_methods').json()
@@ -1136,6 +1135,28 @@ class WoocommerceSyncConnector(models.Model):
         return self.settings_odoo_tax_calculation == 'tax_included'
 
     @api.model
+    def woocommerce_tax_rates_retrieve(self: models.Model, woocommerce_api: WooCommerceClient) -> dict[str, float]:
+        """Returns one WooCommerce tax rate per tax class, e.g. {'standard': 20.0, 'reduced-rate': 5.5}.
+
+        A tax class can hold several rates (one per country/state). The rate for the store's base country wins, then a rate without country, then any other one - instead of whichever rate the API happens to return last.
+        """
+        woocommerce_store_country = woocommerce_api.get(endpoint='settings/general/woocommerce_default_country').json()['value'].split(':')[0]
+        woocommerce_tax_rates = woocommerce_api.get_all_items(endpoint='taxes')
+
+        def woocommerce_tax_rate_priority(woocommerce_tax_rate: dict[str, Any]) -> int:
+            if woocommerce_tax_rate.get('country') == woocommerce_store_country:
+                return 2
+            if not woocommerce_tax_rate.get('country'):
+                return 1
+            return 0
+
+        tax_rates = {}
+        for woocommerce_tax_rate in sorted(woocommerce_tax_rates, key=woocommerce_tax_rate_priority):
+            tax_rates[woocommerce_tax_rate['class']] = float(woocommerce_tax_rate['rate'])
+
+        return tax_rates
+
+    @api.model
     def odoo_tax_rate_create_or_retrieve(self: models.Model, tax_rate: float | None, cache: dict[tuple[int, float, bool], int] | None = None) -> models.Model | bool:
         """Create or retrieve an Odoo tax rate.
 
@@ -1152,8 +1173,13 @@ class WoocommerceSyncConnector(models.Model):
 
             # ':g' avoids '19.0%' (which doesn't match an existing '19%' tax) for whole-number rates
             tax_name = f'{tax_rate:g}%'
-            tax_domain = [('company_id', '=', self.env.company.id), ('active', '=', True), ('name', '=', tax_name), ('amount', '=', tax_rate), ('type_tax_use', '=', 'sale'), ('price_include', '=', odoo_price_include)]
-            odoo_tax_rate = self.env['account.tax'].search(tax_domain, limit=1)
+            tax_domain = [('company_id', '=', self.env.company.id), ('active', '=', True), ('amount', '=', tax_rate), ('type_tax_use', '=', 'sale'), ('price_include', '=', odoo_price_include)]
+
+            def odoo_tax_rate_select(odoo_tax_rates: models.Model) -> models.Model:
+                # Match on rate rather than name only: localized charts of accounts name their taxes differently (e.g. French '20% G'), and creating a new bare '20%' tax would leave it without accounts or tax group
+                return odoo_tax_rates.filtered(lambda odoo_tax: odoo_tax.name == tax_name)[:1] or (odoo_tax_rates & self.env.company.account_sale_tax_id) or odoo_tax_rates[:1]
+
+            odoo_tax_rate = odoo_tax_rate_select(self.env['account.tax'].search(tax_domain))
 
             if not odoo_tax_rate:
                 try:
@@ -1162,7 +1188,7 @@ class WoocommerceSyncConnector(models.Model):
                     _logger.info(f'Created new WooCommerce tax rate in Odoo: {odoo_tax_rate.name}')
                 except Exception:
                     # A concurrent sync job already created this tax rate between the search above and this create() - reuse it instead of failing
-                    odoo_tax_rate = self.env['account.tax'].search(tax_domain, limit=1)
+                    odoo_tax_rate = odoo_tax_rate_select(self.env['account.tax'].search(tax_domain))
                     if not odoo_tax_rate:
                         raise
 
@@ -4573,7 +4599,7 @@ class WoocommerceSyncConnector(models.Model):
             'woocommerce_weight_unit': woocommerce_api.get(endpoint='settings/products/woocommerce_weight_unit').json()['value'],
             'woocommerce_dimension_unit': woocommerce_api.get(endpoint='settings/products/woocommerce_dimension_unit').json()['value'],
             'woocommerce_prices_include_tax': woocommerce_api.get(endpoint='settings/tax/woocommerce_prices_include_tax').json()['value'].lower() == 'yes',
-            'woocommerce_tax_rates': {tax_rate['class']: float(tax_rate['rate']) for tax_rate in woocommerce_api.get(endpoint='taxes').json()},
+            'woocommerce_tax_rates': self.woocommerce_tax_rates_retrieve(woocommerce_api),
             'woocommerce_shipping_methods': woocommerce_api.get(endpoint='shipping_methods').json(),
         }
 
