@@ -202,7 +202,7 @@ class ProductTemplate(models.Model):
     woocommerce_currency = fields.Char(string='Currency', readonly=True)
     woocommerce_weight_unit = fields.Char(string='Weight Unit', readonly=True)
     woocommerce_dimension_unit = fields.Char(string='Dimension Unit', readonly=True)
-    woocommerce_tax_rate = fields.Integer(string='Tax Rate', readonly=True)
+    woocommerce_tax_rate = fields.Float(string='Tax Rate', readonly=True)
 
     # Custom fields
     woocommerce_connector_id = fields.Many2one('woocommerce.sync.connector', string='WooCommerce Connector', index=True, ondelete='set null')
@@ -287,7 +287,7 @@ class ProductProduct(models.Model):
     woocommerce_currency = fields.Char(string='Currency', readonly=True)
     woocommerce_weight_unit = fields.Char(string='Weight Unit', readonly=True)
     woocommerce_dimension_unit = fields.Char(string='Dimension Unit', readonly=True)
-    woocommerce_tax_rate = fields.Integer(string='Tax Rate', readonly=True)
+    woocommerce_tax_rate = fields.Float(string='Tax Rate', readonly=True)
 
     # Custom fields
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
