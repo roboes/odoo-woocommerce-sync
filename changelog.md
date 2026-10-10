@@ -1,5 +1,14 @@
 # Changelog
 
+## v16.0.5.8 / v18.0.5.8 / v19.0.5.8 - 2026-10-10
+
+### Fixes
+
+- WooCommerce tax rates are now matched to existing Odoo sale taxes by percentage instead of by the exact name `<rate>%`, so localized charts of accounts (e.g. French `20% G`, German `19% USt`, Brazilian `ICMS 18%`) are reused instead of a bare tax without accounts or tax group being created. Among taxes with the same rate, the one matching the product type (goods/services), the company's fiscal country, not reserved to a fiscal position (e.g. EU OSS), having a tax account and being the company's default sale tax is preferred. Fixed-amount and group taxes are no longer matched.
+- When a WooCommerce tax class has several rates, the rate matching the store's base location (country and state, e.g. `BR:SP`) is now used instead of the last rate returned by the API. All tax rate pages are now fetched.
+- Taxes created by the sync on Odoo 18/19 now honor the 'Tax Calculation' setting (`price_include_override`); on Odoo 17+ branch companies now reuse their parent company's taxes.
+- The product 'Tax Rate' field now keeps decimals (e.g. `5.5` was stored as `5`). Requires a module update.
+
 ## v16.0.5.7 / v18.0.5.7 / v19.0.5.7 - 2026-09-14
 
 ### Fixes
