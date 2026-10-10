@@ -1138,57 +1138,91 @@ class WoocommerceSyncConnector(models.Model):
     def woocommerce_tax_rates_retrieve(self: models.Model, woocommerce_api: WooCommerceClient) -> dict[str, float]:
         """Returns one WooCommerce tax rate per tax class, e.g. {'standard': 20.0, 'reduced-rate': 5.5}.
 
-        A tax class can hold several rates (one per country/state). The rate for the store's base country wins, then a rate without country, then any other one - instead of whichever rate the API happens to return last.
+        A tax class can hold several rates (one per country/state/postcode). The rate matching the store's base location ('woocommerce_default_country', e.g. 'DE' or 'BR:SP') wins: same country and state, then same country without state, then a rate without country, then any other one. Rates restricted to postcodes/cities rank lower, then WooCommerce's own 'priority'/'order'.
         """
-        woocommerce_store_country = woocommerce_api.get(endpoint='settings/general/woocommerce_default_country').json()['value'].split(':')[0]
+        woocommerce_store_country, _, woocommerce_store_state = woocommerce_api.get(endpoint='settings/general/woocommerce_default_country').json()['value'].upper().partition(':')
         woocommerce_tax_rates = woocommerce_api.get_all_items(endpoint='taxes')
 
-        def woocommerce_tax_rate_priority(woocommerce_tax_rate: dict[str, Any]) -> int:
-            if woocommerce_tax_rate.get('country') == woocommerce_store_country:
-                return 2
-            if not woocommerce_tax_rate.get('country'):
-                return 1
-            return 0
+        # Most to least specific; any other (foreign) location ranks last
+        woocommerce_store_locations = [(woocommerce_store_country, woocommerce_store_state), (woocommerce_store_country, ''), ('', '')]
+
+        def woocommerce_tax_rate_priority(woocommerce_tax_rate: dict[str, Any]) -> tuple[int, bool, int, int]:
+            location = ((woocommerce_tax_rate.get('country') or '').upper(), (woocommerce_tax_rate.get('state') or '').upper())
+            location_rank = woocommerce_store_locations.index(location) if location in woocommerce_store_locations else len(woocommerce_store_locations)
+            restricted = bool(woocommerce_tax_rate.get('postcodes') or woocommerce_tax_rate.get('cities') or woocommerce_tax_rate.get('postcode') or woocommerce_tax_rate.get('city'))
+            return location_rank, restricted, int(woocommerce_tax_rate.get('priority') or 0), int(woocommerce_tax_rate.get('order') or 0)
 
         tax_rates = {}
         for woocommerce_tax_rate in sorted(woocommerce_tax_rates, key=woocommerce_tax_rate_priority):
-            tax_rates[woocommerce_tax_rate['class']] = float(woocommerce_tax_rate['rate'])
+            tax_rates.setdefault(woocommerce_tax_rate['class'], float(woocommerce_tax_rate['rate'] or 0))
 
         return tax_rates
 
     @api.model
-    def odoo_tax_rate_create_or_retrieve(self: models.Model, tax_rate: float | None, cache: dict[tuple[int, float, bool], int] | None = None) -> models.Model | bool:
+    def odoo_tax_rate_create_or_retrieve(self: models.Model, tax_rate: float | None, cache: dict[tuple[int, float, bool, str | None], int] | None = None, tax_scope: str | None = None) -> models.Model | bool:
         """Create or retrieve an Odoo tax rate.
 
         The tax's 'price_include' always matches the 'settings_odoo_tax_calculation' setting (see 'odoo_tax_calculation_price_include()') instead of WooCommerce's - so a freshly-created tax always matches every other tax already used in this Odoo company by default. Prices are converted to match this same convention before being stored on the Odoo side - see 'woocommerce_price_to_odoo_price()'.
+
+        Existing taxes are matched on their percentage rather than their name, since localized charts of accounts name them differently (e.g. French '20% G', German '19% USt', Brazilian 'ICMS 18%'). Among taxes with the same rate, the best one is the one matching 'tax_scope' ('consu'/'service'), belonging to the company's fiscal country, not reserved to a fiscal position (e.g. EU OSS taxes), having a tax account, being the company's default sale tax, then named exactly '<rate>%'. A new tax is only created if none exists.
         """
         if tax_rate is None:
             return False
 
         try:
             odoo_price_include = self.odoo_tax_calculation_price_include()
-            cache_key = (self.env.company.id, tax_rate, odoo_price_include)
+            company = self.env.company
+            cache_key = (company.id, tax_rate, odoo_price_include, tax_scope)
             if cache is not None and cache_key in cache:
                 return self.env['account.tax'].browse(cache[cache_key])
 
+            account_tax = self.env['account.tax']
             # ':g' avoids '19.0%' (which doesn't match an existing '19%' tax) for whole-number rates
             tax_name = f'{tax_rate:g}%'
-            tax_domain = [('company_id', '=', self.env.company.id), ('active', '=', True), ('amount', '=', tax_rate), ('type_tax_use', '=', 'sale'), ('price_include', '=', odoo_price_include)]
+            # Odoo 17+ branches use their parent company's taxes
+            company_domain = account_tax._check_company_domain(company) if callable(getattr(account_tax, '_check_company_domain', None)) else [('company_id', '=', company.id)]
+            tax_domain = [*company_domain, ('active', '=', True), ('type_tax_use', '=', 'sale'), ('amount_type', '=', 'percent'), ('amount', '=', tax_rate), ('price_include', '=', odoo_price_include)]
 
             def odoo_tax_rate_select(odoo_tax_rates: models.Model) -> models.Model:
-                # Match on rate rather than name only: localized charts of accounts name their taxes differently (e.g. French '20% G'), and creating a new bare '20%' tax would leave it without accounts or tax group
-                return odoo_tax_rates.filtered(lambda odoo_tax: odoo_tax.name == tax_name)[:1] or (odoo_tax_rates & self.env.company.account_sale_tax_id) or odoo_tax_rates[:1]
+                if not odoo_tax_rates:
+                    return odoo_tax_rates
 
-            odoo_tax_rate = odoo_tax_rate_select(self.env['account.tax'].search(tax_domain))
+                fiscal_country = company.account_fiscal_country_id or company.country_id
+                # Odoo 19 links taxes to fiscal positions directly; domestic taxes may be linked to the domestic one
+                if version_info[0] >= 19:
+                    fiscal_position_taxes = odoo_tax_rates.filtered(lambda odoo_tax: not odoo_tax.is_domestic)
+                else:
+                    fiscal_position_taxes = self.env['account.fiscal.position.tax'].sudo().search([('tax_dest_id', 'in', odoo_tax_rates.ids)]).tax_dest_id
+
+                # min() keeps the first of equally ranked taxes, i.e. Odoo's 'sequence, id' order
+                return min(
+                    odoo_tax_rates,
+                    key=lambda odoo_tax: (
+                        bool(tax_scope and odoo_tax.tax_scope and odoo_tax.tax_scope != tax_scope),
+                        bool(fiscal_country and odoo_tax.country_id and odoo_tax.country_id != fiscal_country),
+                        odoo_tax in fiscal_position_taxes,
+                        not odoo_tax.invoice_repartition_line_ids.filtered(lambda line: line.repartition_type == 'tax').account_id,
+                        odoo_tax != company.account_sale_tax_id,
+                        odoo_tax.name != tax_name,
+                    ),
+                )
+
+            odoo_tax_rate = odoo_tax_rate_select(account_tax.search(tax_domain))
 
             if not odoo_tax_rate:
+                tax_values = {'company_id': company.id, 'name': tax_name, 'amount_type': 'percent', 'amount': tax_rate, 'type_tax_use': 'sale'}
+                # Odoo 18+ computes 'price_include' from 'price_include_override' and ignores a written 'price_include'
+                if 'price_include_override' in account_tax._fields:
+                    tax_values['price_include_override'] = 'tax_included' if odoo_price_include else 'tax_excluded'
+                else:
+                    tax_values['price_include'] = odoo_price_include
                 try:
                     with self.env.cr.savepoint():
-                        odoo_tax_rate = self.env['account.tax'].create({'company_id': self.env.company.id, 'name': tax_name, 'amount': tax_rate, 'type_tax_use': 'sale', 'price_include': odoo_price_include})
+                        odoo_tax_rate = account_tax.create(tax_values)
                     _logger.info(f'Created new WooCommerce tax rate in Odoo: {odoo_tax_rate.name}')
                 except Exception:
                     # A concurrent sync job already created this tax rate between the search above and this create() - reuse it instead of failing
-                    odoo_tax_rate = odoo_tax_rate_select(self.env['account.tax'].search(tax_domain))
+                    odoo_tax_rate = odoo_tax_rate_select(account_tax.search(tax_domain))
                     if not odoo_tax_rate:
                         raise
 
@@ -2019,7 +2053,7 @@ class WoocommerceSyncConnector(models.Model):
             # Tax - a WooCommerce 'tax_status' of 'none'/'shipping' means the product itself is not taxable, regardless of its 'tax_class' rate
             odoo_product_tax_id = []
             if product_values['woocommerce_tax_rate'] and woocommerce_product.get('tax_status') == 'taxable':
-                odoo_product_tax = self.odoo_tax_rate_create_or_retrieve(product_values['woocommerce_tax_rate'], cache=odoo_tax_rate_cache)
+                odoo_product_tax = self.odoo_tax_rate_create_or_retrieve(product_values['woocommerce_tax_rate'], cache=odoo_tax_rate_cache, tax_scope='service' if product_values['woocommerce_service'] else 'consu')
                 if odoo_product_tax:
                     odoo_product_tax_id = [(6, 0, [odoo_product_tax.id])]
 
@@ -2568,7 +2602,9 @@ class WoocommerceSyncConnector(models.Model):
                     # Tax - a WooCommerce 'tax_status' of 'none'/'shipping' means the variation itself is not taxable, regardless of its 'tax_class' rate
                     odoo_product_variant_tax_id = []
                     if product_variation_values['woocommerce_tax_rate'] and woocommerce_variation.get('tax_status') == 'taxable':
-                        odoo_product_variant_tax = self.odoo_tax_rate_create_or_retrieve(product_variation_values['woocommerce_tax_rate'], cache=odoo_tax_rate_cache)
+                        odoo_product_variant_tax = self.odoo_tax_rate_create_or_retrieve(
+                            product_variation_values['woocommerce_tax_rate'], cache=odoo_tax_rate_cache, tax_scope='service' if product_variation_values['woocommerce_service'] else 'consu'
+                        )
                         if odoo_product_variant_tax:
                             odoo_product_variant_tax_id = [(6, 0, [odoo_product_variant_tax.id])]
 
@@ -3524,7 +3560,9 @@ class WoocommerceSyncConnector(models.Model):
                 # Tax
                 odoo_order_line_item_tax_id = []
                 if order_line_values['woocommerce_tax_class']:
-                    odoo_order_line_item_tax = self.odoo_tax_rate_create_or_retrieve(order_line_values['woocommerce_tax_class'], cache=odoo_tax_rate_cache)
+                    odoo_order_line_item_tax = self.odoo_tax_rate_create_or_retrieve(
+                        order_line_values['woocommerce_tax_class'], cache=odoo_tax_rate_cache, tax_scope='service' if self.env['product.product'].browse(product_id).type == 'service' else 'consu'
+                    )
                     if odoo_order_line_item_tax:
                         odoo_order_line_item_tax_id = [(6, 0, [odoo_order_line_item_tax.id])]
 
