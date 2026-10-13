@@ -4109,9 +4109,9 @@ class WoocommerceSyncConnector(models.Model):
 
     @staticmethod
     def odoo_sale_order_fully_delivered(odoo_sale_order: models.Model) -> bool:
-        """True when the order has at least one validated delivery and no outgoing delivery left to process (returns are ignored)."""
-        deliveries = odoo_sale_order.picking_ids.filtered(lambda picking: picking.picking_type_code == 'outgoing')
-        return any(delivery.state == 'done' for delivery in deliveries) and all(delivery.state in ('done', 'cancel') for delivery in deliveries)
+        """True when every goods line is fully delivered. Relies on the delivered quantity rather than the order's pickings, so deliveries made outside them also count (e.g. an order settled at the POS cancels its picking and ships from the POS)."""
+        goods_lines = odoo_sale_order.order_line.filtered(lambda line: not line.display_type and line.product_uom_qty > 0 and line.product_id.type in ('consu', 'product'))
+        return bool(goods_lines) and all(float_compare(line.qty_delivered, line.product_uom_qty, precision_rounding=line.product_id.uom_id.rounding) >= 0 for line in goods_lines)
 
     def odoo_to_woocommerce_orders_status_sync(self: models.Model) -> None:
         """Schedules a chunked push of Odoo sale order status changes back to their matching WooCommerce order. Only orders originally imported from WooCommerce ('woocommerce_id' set) are considered."""

@@ -93,3 +93,36 @@ class TestOrderCompletedOnDelivery(WoocommerceSyncCommon):
         self.deliver()
 
         self.assertEqual(self.connector.odoo_to_woocommerce_order_status_map(self.order), 'completed')
+
+    def test_order_delivered_outside_its_picking_is_completed(self):
+        # Settling an order at the POS cancels its picking and ships the goods from the POS instead
+        self.connector.settings_odoo_to_woocommerce_orders_completed_on_delivery = True
+        order_line = self.order.order_line
+        self.order.picking_ids.action_cancel()
+        warehouse = self.env['stock.warehouse'].search([('company_id', '=', self.env.company.id)], limit=1)
+        customers_location = self.env.ref('stock.stock_location_customers')
+        picking = self.env['stock.picking'].create(
+            {
+                'picking_type_id': warehouse.out_type_id.id,
+                'location_id': warehouse.lot_stock_id.id,
+                'location_dest_id': customers_location.id,
+                'move_ids': [
+                    (0, 0, {'name': order_line.name, 'product_id': order_line.product_id.id, 'product_uom_qty': 1, 'product_uom': order_line.product_id.uom_id.id, 'location_id': warehouse.lot_stock_id.id, 'location_dest_id': customers_location.id, 'sale_line_id': order_line.id})
+                ],
+            }
+        )
+        picking.action_confirm()
+        picking.move_ids.quantity = 1
+        picking.move_ids.picked = True
+        picking._action_done()
+
+        self.assertEqual(order_line.qty_delivered, 1)
+        self.assertEqual(self.connector.odoo_to_woocommerce_order_status_map(self.order), 'completed')
+
+    def test_service_only_order_is_not_completed(self):
+        self.connector.settings_odoo_to_woocommerce_orders_completed_on_delivery = True
+        service = self.env['product.product'].create({'name': 'Test Service', 'type': 'service', 'list_price': 5.0, 'taxes_id': [(6, 0, [])]})
+        order = self.env['sale.order'].create({'partner_id': self.order.partner_id.id, 'order_line': [(0, 0, {'product_id': service.id, 'product_uom_qty': 1, 'price_unit': 5.0})]})
+        order.action_confirm()
+
+        self.assertEqual(self.connector.odoo_to_woocommerce_order_status_map(order), 'processing')
