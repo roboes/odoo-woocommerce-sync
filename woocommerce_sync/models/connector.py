@@ -1546,9 +1546,11 @@ class WoocommerceSyncConnector(models.Model):
         # Odoo product stock quant (prefetched for the whole chunk by the caller to avoid one search per product)
         odoo_product_stock_quant = (odoo_quants_by_product_id or {}).get(odoo_product.id) or self.env['stock.quant']
         stock_location = self.settings_woocommerce_products_warehouse_location.lot_stock_id
-        warehouse_quantity = odoo_product.with_context(location=stock_location.id).qty_available
+        odoo_product_in_location = odoo_product.with_context(location=stock_location.id)
+        # WooCommerce stock is already net of its unshipped orders, which are still on hand in Odoo until delivered: compare and push the quantity left for sale
+        available_quantity = odoo_product_in_location.qty_available - odoo_product_in_location.outgoing_qty
 
-        if float_compare(woocommerce_stock_quantity, warehouse_quantity, precision_rounding=odoo_product.uom_id.rounding) == 0:
+        if float_compare(woocommerce_stock_quantity, available_quantity, precision_rounding=odoo_product.uom_id.rounding) == 0:
             return None
 
         # Get last update dates
@@ -1570,7 +1572,7 @@ class WoocommerceSyncConnector(models.Model):
             if odoo_product.tracking != 'none':
                 raise ValidationError(f'Automatic WooCommerce stock adjustment is not supported for lot/serial-tracked product {odoo_product.display_name}.')
 
-            quantity_delta = woocommerce_stock_quantity - warehouse_quantity
+            quantity_delta = woocommerce_stock_quantity - available_quantity
             self.env['stock.quant'].with_context(from_external_sync=True).with_company(self.env.company)._update_available_quantity(odoo_product, stock_location, quantity_delta)
             _logger.info(
                 f'Updated WooCommerce product stock quantity in Odoo: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {product_woocommerce_id}) - Stock quantity: {woocommerce_stock_quantity}'
@@ -1585,7 +1587,7 @@ class WoocommerceSyncConnector(models.Model):
                 'odoo_product': odoo_product,
                 'woocommerce_parent_id': odoo_product.woocommerce_parent_id,
                 'woocommerce_id': product_woocommerce_id,
-                'stock_quantity': warehouse_quantity,
+                'stock_quantity': available_quantity,
             }
 
         return None
