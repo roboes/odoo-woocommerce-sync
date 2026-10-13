@@ -431,6 +431,11 @@ class WoocommerceSyncConnector(models.Model):
 
     # WooCommerce to Odoo products import settings
     settings_woocommerce_products_related_ids_map = fields.Boolean(string='Map related products?', help="Automatically map WooCommerce 'related_ids' products to their Odoo equivalents.", default=False)
+    settings_woocommerce_to_odoo_products_translations_sync = fields.Boolean(
+        string='Apply WooCommerce product texts to all Odoo languages?',
+        help="Product names and sales descriptions are imported as the Odoo source text (en_US). If enabled, the other active Odoo languages also receive the updated text, but only where their translation still equals the previous source text: translations edited in Odoo are kept. Without it, users working in another language keep seeing the text from the product's creation.",
+        default=False,
+    )
     settings_woocommerce_to_odoo_products_language_code = fields.Char(string='Filter WooCommerce products by language (requires Polylang WordPress plugin)', help="2-digit language code (ISO 639-1) (e.g. 'en').")
     settings_woocommerce_products_package_size_unit_default = fields.Boolean(
         string="Default WooCommerce package size to 'Unit'", help="If enabled, newly synced WooCommerce products to Odoo will have their package size unit of measure set to 'Unit(s)'.", default=True
@@ -865,6 +870,31 @@ class WoocommerceSyncConnector(models.Model):
             except ValueError as error:
                 raise ValidationError(f'Invalid WooCommerce date format: {date_string}') from error
         return False
+
+    def odoo_product_outdated_translations(self: models.Model, odoo_product_template: models.Model, values: dict[str, Any]) -> dict[str, list[str]]:
+        """Returns, per translated text field about to be written, the active non-source languages whose translation still equals the current source text (i.e. was never translated separately)."""
+        if not self.settings_woocommerce_to_odoo_products_translations_sync:
+            return {}
+
+        language_codes = [code for code in self.env['res.lang'].search([('active', '=', True)]).mapped('code') if code != 'en_US']
+        outdated_translations = {}
+        for field_name in ('name', 'description_sale'):
+            if field_name not in values:
+                continue
+            source_text = odoo_product_template.with_context(lang='en_US')[field_name]
+            outdated_codes = [code for code in language_codes if odoo_product_template.with_context(lang=code)[field_name] == source_text]
+            if outdated_codes:
+                outdated_translations[field_name] = outdated_codes
+
+        return outdated_translations
+
+    @staticmethod
+    def odoo_product_translations_update(odoo_product_template: models.Model, outdated_translations: dict[str, list[str]]) -> None:
+        """Copies the new source text into the translations returned by 'odoo_product_outdated_translations()'."""
+        for field_name, language_codes in outdated_translations.items():
+            source_text = odoo_product_template.with_context(lang='en_US')[field_name]
+            if source_text:
+                odoo_product_template.update_field_translations(field_name, dict.fromkeys(language_codes, source_text))
 
     @staticmethod
     def datetime_to_woocommerce_utc(value: datetime) -> str:
@@ -2123,7 +2153,9 @@ class WoocommerceSyncConnector(models.Model):
                 product_values['uom_po_id'] = odoo_product_unit_of_measure.id if odoo_product_unit_of_measure else False
 
             if odoo_product:
+                outdated_translations = self.odoo_product_outdated_translations(odoo_product, product_values)
                 odoo_product.write(product_values)
+                self.odoo_product_translations_update(odoo_product, outdated_translations)
                 sync_status = 'updated'
                 _logger.info(f'Updated WooCommerce product in Odoo: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {odoo_product["woocommerce_id"]})')
 
@@ -2717,7 +2749,9 @@ class WoocommerceSyncConnector(models.Model):
                         new_count += 1
 
                     # Odoo product variant exists or was just created, now update it
+                    outdated_translations = self.odoo_product_outdated_translations(odoo_product_variant.product_tmpl_id, product_variation_values)
                     odoo_product_variant.write(product_variation_values)
+                    self.odoo_product_translations_update(odoo_product_variant.product_tmpl_id, outdated_translations)
 
                     _logger.info(
                         f'Updated WooCommerce product variation in Odoo: {odoo_product_variant.display_name} (Odoo product variant ID: {odoo_product_variant.id}, WooCommerce product variation ID: {woocommerce_variation["id"]})'

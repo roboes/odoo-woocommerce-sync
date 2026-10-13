@@ -113,6 +113,7 @@
                 </group>
                 <group string="WooCommerce to Odoo Products Import Settings">
                   <field name="settings_woocommerce_products_related_ids_map"/>
+                  <field name="settings_woocommerce_to_odoo_products_translations_sync"/>
                   <field name="settings_woocommerce_to_odoo_products_language_code"/>
                   <field name="settings_woocommerce_products_package_size_unit_default"/>
                   <field name="settings_woocommerce_to_odoo_products_delete" invisible="not settings_woocommerce_to_odoo_products_sync"/>
