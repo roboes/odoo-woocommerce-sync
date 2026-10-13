@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from odoo.tests.common import tagged
 
-from .common import WoocommerceSyncCommon
+from .common import WoocommerceSyncCommon, storable_product_values
 
 
 @tagged('post_install', '-at_install')
@@ -56,3 +56,40 @@ class TestOdooToWooCommerceOrderStatusSync(WoocommerceSyncCommon):
         request_mock.assert_called_once_with(woocommerce_api, endpoint='orders/555', params={'_fields': 'id,status'})
         woocommerce_api.batch.assert_called_once_with('orders', update=[{'id': '555', 'status': 'processing'}])
         self.assertEqual(order.woocommerce_status, 'processing')
+
+
+@tagged('post_install', '-at_install')
+class TestOrderCompletedOnDelivery(WoocommerceSyncCommon):
+    def setUp(self):
+        super().setUp()
+        partner = self.env['res.partner'].create({'name': 'Test Delivery Customer'})
+        product = self.env['product.product'].create({'name': 'Test Delivery Product', 'list_price': 10.0, 'taxes_id': [(6, 0, [])], **storable_product_values()})
+        self.order = self.env['sale.order'].create(
+            {
+                'partner_id': partner.id,
+                'woocommerce_id': '556',
+                'woocommerce_site_url': self.connector.settings_woocommerce_connection_url,
+                'woocommerce_status': 'processing',
+                'order_line': [(0, 0, {'product_id': product.id, 'product_uom_qty': 1, 'price_unit': 10.0})],
+            }
+        )
+        self.order.action_confirm()
+
+    def deliver(self):
+        for move in self.order.picking_ids.move_ids:
+            move.quantity = move.product_uom_qty
+            move.picked = True
+        self.order.picking_ids._action_done()
+
+    def test_delivered_order_stays_processing_by_default(self):
+        self.deliver()
+
+        self.assertEqual(self.connector.odoo_to_woocommerce_order_status_map(self.order), 'processing')
+
+    def test_delivered_order_is_completed_when_option_enabled(self):
+        self.connector.settings_odoo_to_woocommerce_orders_completed_on_delivery = True
+        self.assertEqual(self.connector.odoo_to_woocommerce_order_status_map(self.order), 'processing', 'Not delivered yet')
+
+        self.deliver()
+
+        self.assertEqual(self.connector.odoo_to_woocommerce_order_status_map(self.order), 'completed')

@@ -120,6 +120,7 @@
                   <field name="settings_woocommerce_to_odoo_products_delete" attrs="{'invisible': [('settings_woocommerce_to_odoo_products_sync', '=', False)]}"/>
                 </group>
                 <group string="WooCommerce to Odoo Orders Import Settings">
+                  <field name="settings_odoo_to_woocommerce_orders_completed_on_delivery" attrs="{'invisible': [('settings_odoo_to_woocommerce_orders_status_sync', '=', False)]}"/>
                   <field name="settings_woocommerce_order_status" widget="many2many_checkboxes"/>
                   <field name="settings_woocommerce_delivery_methods_archive"/>
                   <field name="settings_woocommerce_orders_customers_map"/>
