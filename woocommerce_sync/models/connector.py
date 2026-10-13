@@ -421,6 +421,11 @@ class WoocommerceSyncConnector(models.Model):
 
     # Stock management
     settings_woocommerce_products_stock_management = fields.Boolean(string='Sync stock quantity?', default=True)
+    settings_woocommerce_products_stock_odoo_master = fields.Boolean(
+        string='Odoo is the stock master?',
+        help="If enabled, stock only flows from Odoo to WooCommerce: WooCommerce stock changes never overwrite Odoo (WooCommerce sales reach Odoo as orders). Otherwise the most recent side wins, and any WooCommerce product edit (title, price...) made before the next sync can overwrite Odoo stock moves such as POS sales.",
+        default=False,
+    )
     settings_woocommerce_products_warehouse_location = fields.Many2one(
         comodel_name='stock.warehouse',
         string='Warehouse',
@@ -1568,7 +1573,7 @@ class WoocommerceSyncConnector(models.Model):
         latest_timestamp = max(odoo_stock_quantity_last_update, odoo_woocommerce_stock_last_sync, woocommerce_date_modified_gmt)
 
         # If WooCommerce is the most recent source of truth, update Odoo
-        if latest_timestamp == woocommerce_date_modified_gmt:
+        if latest_timestamp == woocommerce_date_modified_gmt and not self.settings_woocommerce_products_stock_odoo_master:
             if odoo_product.tracking != 'none':
                 raise ValidationError(f'Automatic WooCommerce stock adjustment is not supported for lot/serial-tracked product {odoo_product.display_name}.')
 

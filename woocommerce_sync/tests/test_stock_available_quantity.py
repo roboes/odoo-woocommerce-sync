@@ -57,3 +57,12 @@ class TestStockAvailableQuantity(WoocommerceSyncCommon):
         result = self.sync(3, '2000-01-01T00:00:00')
 
         self.assertEqual(result['stock_quantity'], 1, 'Pushing the on-hand quantity would let WooCommerce sell units already ordered')
+
+    def test_odoo_master_ignores_newer_woocommerce_stock(self):
+        self.connector.settings_woocommerce_products_stock_odoo_master = True
+
+        # A WooCommerce product edit made after a POS sale makes WooCommerce the most recent side
+        result = self.sync(5, '2099-01-01T00:00:00')
+
+        self.assertEqual(self.on_hand(), 3)
+        self.assertEqual(result['stock_quantity'], 1)
