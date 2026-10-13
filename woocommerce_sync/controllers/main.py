@@ -24,7 +24,8 @@ class WoocommerceSyncWebhookController(http.Controller):
         if request.httprequest.content_length and request.httprequest.content_length > maximum_payload_bytes:
             return request.make_json_response({'error': 'Payload too large'}, status=413)
 
-        raw_body = request.httprequest.stream.read(maximum_payload_bytes + 1)
+        # Odoo's 'HTTPRequest' wrapper does not expose werkzeug's 'stream' (only 'get_data()', 'headers', ...)
+        raw_body = request.httprequest.get_data(cache=False)
         if len(raw_body) > maximum_payload_bytes:
             return request.make_json_response({'error': 'Payload too large'}, status=413)
         signature = request.httprequest.headers.get('X-WC-Webhook-Signature', '')
