@@ -46,6 +46,7 @@
                   <field name="settings_woocommerce_user_responsible"/>
                   <field name="settings_woocommerce_modified_records_import"/>
                   <field name="settings_woocommerce_images_sync"/>
+                  <field name="settings_woocommerce_barcodes_sync"/>
                   <field name="settings_odoo_tax_calculation"/>
                   <field name="settings_job_chunk_size" options="{'min': 1}"/>
                   <field name="settings_chunk_wait_timeout_minutes" options="{'min': 1}"/>
