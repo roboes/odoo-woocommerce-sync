@@ -50,3 +50,15 @@ class TestWebhookHttp(HttpCase):
         response = self.post_webhook(b'{"id": 1, "padding": "' + b'x' * (2 * 1024 * 1024) + b'"}')
 
         self.assertEqual(response.status_code, 413)
+
+    def test_unsigned_ping_is_acknowledged(self):
+        with patch.object(type(self.connector), 'woocommerce_webhook_process') as mocked_process:
+            response = self.url_open(f'/woocommerce_sync/webhook/{self.connector.id}', data={'webhook_id': '19'})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        mocked_process.assert_not_called()
+
+    def test_unsigned_payload_is_still_rejected(self):
+        response = self.url_open(f'/woocommerce_sync/webhook/{self.connector.id}', data=json.dumps({'id': 555}).encode('utf-8'), headers={'Content-Type': 'application/json', 'X-WC-Webhook-Topic': 'order.updated'})
+
+        self.assertEqual(response.status_code, 401)
