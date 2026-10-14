@@ -18,6 +18,7 @@ To run only one file/class:
 from . import (
     test_customer_identity,
     test_customer_shipping_address,
+    test_image_formats,
     test_odoo_to_woocommerce_order_status_sync,
     test_odoo_to_woocommerce_values,
     test_order_fee_coupon_lines,
@@ -27,6 +28,7 @@ from . import (
     test_stock_incremental_sync,
     test_tax_rates,
     test_variation_sync_status,
+    test_webhook_http,
     test_webhook_queue_job_dispatch,
     test_webhook_signature,
     test_woocommerce_client,
@@ -36,6 +38,7 @@ from . import (
 __all__ = [
     'test_customer_identity',
     'test_customer_shipping_address',
+    'test_image_formats',
     'test_odoo_to_woocommerce_order_status_sync',
     'test_odoo_to_woocommerce_values',
     'test_order_fee_coupon_lines',
@@ -45,6 +48,7 @@ __all__ = [
     'test_stock_incremental_sync',
     'test_tax_rates',
     'test_variation_sync_status',
+    'test_webhook_http',
     'test_webhook_queue_job_dispatch',
     'test_webhook_signature',
     'test_woocommerce_client',

@@ -24,10 +24,15 @@ class WoocommerceSyncWebhookController(http.Controller):
         if request.httprequest.content_length and request.httprequest.content_length > maximum_payload_bytes:
             return request.make_json_response({'error': 'Payload too large'}, status=413)
 
-        raw_body = request.httprequest.stream.read(maximum_payload_bytes + 1)
+        # Odoo's 'HTTPRequest' wrapper does not expose werkzeug's 'stream' (only 'get_data()', 'headers', ...)
+        raw_body = request.httprequest.get_data(cache=False)
         if len(raw_body) > maximum_payload_bytes:
             return request.make_json_response({'error': 'Payload too large'}, status=413)
         signature = request.httprequest.headers.get('X-WC-Webhook-Signature', '')
+
+        # WooCommerce pings the delivery URL with an unsigned 'webhook_id=<id>' form (parsed into kwargs by Odoo) and keeps re-pinging after every delivery until a ping gets a 200
+        if not signature and kwargs.keys() == {'webhook_id'} and kwargs['webhook_id'].isdigit():
+            return request.make_json_response({'status': 'ok'})
 
         if not connector.settings_woocommerce_webhooks_secret or not self._signature_valid(raw_body, signature, connector.settings_woocommerce_webhooks_secret):
             _logger.warning(f'WooCommerce webhook signature validation failed for connector {connector_id}')
@@ -36,10 +41,6 @@ class WoocommerceSyncWebhookController(http.Controller):
         topic = request.httprequest.headers.get('X-WC-Webhook-Topic', '')
         if topic not in connector.WEBHOOK_TOPICS:
             return request.make_json_response({'error': 'Unsupported webhook topic'}, status=400)
-
-        # WooCommerce sends an empty body as a "ping" when a webhook is first created; just acknowledge it
-        if not raw_body:
-            return request.make_json_response({'status': 'ok'})
 
         try:
             payload = json.loads(raw_body)
