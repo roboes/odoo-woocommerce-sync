@@ -11,7 +11,11 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from urllib.parse import urljoin, urlparse
 
-from PIL import Image, features
+from PIL import (
+    Image,
+    WebPImagePlugin,  # noqa: F401 - force WebP plugin registration in Odoo worker
+    features,
+)
 
 try:
     from PIL import (
