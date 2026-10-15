@@ -111,7 +111,19 @@ class TestOrderCompletedOnDelivery(WoocommerceSyncCommon):
                 'location_id': warehouse.lot_stock_id.id,
                 'location_dest_id': customers_location.id,
                 'move_ids': [
-                    (0, 0, {'name': order_line.name, 'product_id': order_line.product_id.id, 'product_uom_qty': 1, 'product_uom': order_line.product_id.uom_id.id, 'location_id': warehouse.lot_stock_id.id, 'location_dest_id': customers_location.id, 'sale_line_id': order_line.id})
+                    (
+                        0,
+                        0,
+                        {
+                            'name': order_line.name,
+                            'product_id': order_line.product_id.id,
+                            'product_uom_qty': 1,
+                            'product_uom': order_line.product_id.uom_id.id,
+                            'location_id': warehouse.lot_stock_id.id,
+                            'location_dest_id': customers_location.id,
+                            'sale_line_id': order_line.id,
+                        },
+                    )
                 ],
             }
         )

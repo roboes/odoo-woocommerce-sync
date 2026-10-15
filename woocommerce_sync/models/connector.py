@@ -438,7 +438,7 @@ class WoocommerceSyncConnector(models.Model):
     settings_woocommerce_products_stock_management = fields.Boolean(string='Sync stock quantity?', default=True)
     settings_woocommerce_products_stock_odoo_master = fields.Boolean(
         string='Odoo is the stock master?',
-        help="If enabled, stock only flows from Odoo to WooCommerce: WooCommerce stock changes never overwrite Odoo (WooCommerce sales reach Odoo as orders). Otherwise the most recent side wins, and any WooCommerce product edit (title, price...) made before the next sync can overwrite Odoo stock moves such as POS sales.",
+        help='If enabled, stock only flows from Odoo to WooCommerce: WooCommerce stock changes never overwrite Odoo (WooCommerce sales reach Odoo as orders). Otherwise the most recent side wins, and any WooCommerce product edit (title, price...) made before the next sync can overwrite Odoo stock moves such as POS sales.',
         default=False,
     )
     settings_woocommerce_products_warehouse_location = fields.Many2one(
@@ -1300,9 +1300,7 @@ class WoocommerceSyncConnector(models.Model):
         if not barcodes:
             return product_owners, packaging_barcodes
 
-        products = self.env['product.product'].search(
-            [('barcode', 'in', list(barcodes)), ('company_id', 'in', (False, self.env.company.id))]
-        )
+        products = self.env['product.product'].search([('barcode', 'in', list(barcodes)), ('company_id', 'in', (False, self.env.company.id))])
         for product in products:
             product_owners.setdefault(product.barcode, set()).add(product.id)
 
@@ -1680,7 +1678,7 @@ class WoocommerceSyncConnector(models.Model):
             return None
 
         # Get last update dates
-        stock_update_dates = odoo_product_stock_quant.mapped('stock_quantity_last_update') if odoo_product_stock_quant else []
+        stock_update_dates = [date for date in odoo_product_stock_quant.mapped('stock_quantity_last_update') if date] if odoo_product_stock_quant else []
         odoo_outgoing_move_update_date = (odoo_outgoing_move_update_dates_by_product_id or {}).get(odoo_product.id)
         if odoo_outgoing_move_update_date:
             stock_update_dates.append(odoo_outgoing_move_update_date)
@@ -1759,9 +1757,7 @@ class WoocommerceSyncConnector(models.Model):
         stock_errors = []
         for odoo_product in odoo_products:
             try:
-                push_payload = self.odoo_woocommerce_products_stock_quantity_sync(
-                    odoo_product, woocommerce_products_stock_map, odoo_quants_by_product_id, odoo_outgoing_move_update_dates_by_product_id
-                )
+                push_payload = self.odoo_woocommerce_products_stock_quantity_sync(odoo_product, woocommerce_products_stock_map, odoo_quants_by_product_id, odoo_outgoing_move_update_dates_by_product_id)
                 if push_payload:
                     pending_pushes.append(push_payload)
             except ValidationError:
@@ -2351,11 +2347,7 @@ class WoocommerceSyncConnector(models.Model):
         odoo_tax_rate_cache: dict[tuple[float, bool], int] = {}
         odoo_uom_cache: dict[str, int] = {}
         odoo_barcode_cache = (
-            self.odoo_barcode_cache_retrieve(
-                [product.get('global_unique_id') for product in woocommerce_products if product.get('type') != 'variable']
-            )
-            if self.settings_woocommerce_barcodes_sync
-            else None
+            self.odoo_barcode_cache_retrieve([product.get('global_unique_id') for product in woocommerce_products if product.get('type') != 'variable']) if self.settings_woocommerce_barcodes_sync else None
         )
         new_count = updated_count = skipped_count = 0
         errors: list[str] = []
@@ -2665,11 +2657,7 @@ class WoocommerceSyncConnector(models.Model):
 
                 # WooCommerce product variations for the product
                 woocommerce_variations = self.woocommerce_api_get_all_items(woocommerce_api, endpoint=f'products/{woocommerce_product["id"]}/variations', params=params)
-                odoo_barcode_cache = (
-                    self.odoo_barcode_cache_retrieve([variation.get('global_unique_id') for variation in woocommerce_variations])
-                    if self.settings_woocommerce_barcodes_sync
-                    else None
-                )
+                odoo_barcode_cache = self.odoo_barcode_cache_retrieve([variation.get('global_unique_id') for variation in woocommerce_variations]) if self.settings_woocommerce_barcodes_sync else None
 
                 # Capture remote mappings before attribute-line writes can make Odoo materialize variant rows automatically. A row generated during this call is still a new WooCommerce variation mapping, not an update
                 existing_woocommerce_variation_ids = set(
@@ -2766,10 +2754,7 @@ class WoocommerceSyncConnector(models.Model):
                 for woocommerce_variation in woocommerce_variations:
                     processed_count += 1
                     odoo_existing_variant = odoo_existing_variants_by_woocommerce_id.get(str(woocommerce_variation['id'])) or self.env['product.product']
-                    odoo_existing_variant_barcode_outdated = (
-                        self.settings_woocommerce_barcodes_sync
-                        and (woocommerce_variation.get('global_unique_id') or '').strip() not in ('', odoo_existing_variant.barcode or '')
-                    )
+                    odoo_existing_variant_barcode_outdated = self.settings_woocommerce_barcodes_sync and (woocommerce_variation.get('global_unique_id') or '').strip() not in ('', odoo_existing_variant.barcode or '')
                     if (
                         odoo_existing_variant
                         and odoo_existing_variant.active
@@ -4277,10 +4262,15 @@ class WoocommerceSyncConnector(models.Model):
         # Collect images
         images = []
 
+        # Binary fields may return base64 as bytes or str depending on the source: normalize to str so duplicates are detected
+        def normalize(image):
+            return image.decode() if isinstance(image, bytes) else image
+
         if odoo_product.image_1920:
-            images.append(odoo_product.image_1920)
+            images.append(normalize(odoo_product.image_1920))
 
         for gallery_image in odoo_product.get_gallery_images():
+            gallery_image = normalize(gallery_image)
             if gallery_image and gallery_image not in images:
                 images.append(gallery_image)
 

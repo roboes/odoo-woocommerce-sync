@@ -8,7 +8,11 @@ from typing import ClassVar
 from odoo.release import version_info
 from odoo.tests.common import tagged
 
-from .common import WoocommerceSyncCommon, bump_iso_datetime, make_woocommerce_order_payload
+from .common import (
+    WoocommerceSyncCommon,
+    bump_iso_datetime,
+    make_woocommerce_order_payload,
+)
 
 
 @tagged('post_install', '-at_install')

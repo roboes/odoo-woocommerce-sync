@@ -29,6 +29,16 @@ Automated tests for the `woocommerce_sync` addon, using Odoo's standard `Transac
 
 Run against whichever Odoo version/database you're testing (16, 18 or 19 - the tests read `odoo.release.version_info` to adapt expectations automatically):
 
+### Disposable Docker run (no host Odoo installation)
+
+Set `settings_odoo_version` at the top of `tests/docker-tests.sh`, then run it from the repository root:
+
+```sh
+bash tests/docker-tests.sh
+```
+
+### Existing Odoo installation
+
 ```sh
 # Settings
 system_user="website"
@@ -39,7 +49,7 @@ database_name="${system_user}_odoo"
 odoo-bin --database ${database_name} --update woocommerce_sync --test-enable --test-tags /woocommerce_sync --stop-after-init
 ```
 
-Or, inside the project's Docker container (see `tests/odoo-tests.sh` at the repo root, which already includes this as one of its steps):
+Or, inside an existing Odoo container (the deployment-specific `tests/odoo-tests.sh` does not enable tests as written):
 
 ```sh
 docker exec -it odoo_server_${system_user} \
