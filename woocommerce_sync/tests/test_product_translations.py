@@ -37,7 +37,7 @@ class TestProductTranslations(WoocommerceSyncCommon):
         self.product = self.sync_woocommerce_product(name='Hockey mask', description='Old description')
         # As in a French Odoo, where the translation is stored next to the source text at creation
         self.product.update_field_translations('name', {'fr_FR': 'Hockey mask'})
-        self.product.update_field_translations('description_sale', {'fr_FR': 'Old description'})
+        self.product.with_context(lang='fr_FR').write({'description_sale': 'Old description'})
 
     def text(self, field_name, lang):
         return self.product.with_context(lang=lang)[field_name]
@@ -55,6 +55,14 @@ class TestProductTranslations(WoocommerceSyncCommon):
 
         self.assertEqual(self.text('name', 'fr_FR'), 'Hockey mask TEST')
         self.assertEqual(self.text('description_sale', 'fr_FR'), 'New description')
+
+    def test_empty_source_description_clears_untranslated_translation(self):
+        self.connector.settings_woocommerce_to_odoo_products_translations_sync = True
+
+        self.sync_woocommerce_product(description='')
+
+        self.assertEqual(self.text('description_sale', 'en_US'), '')
+        self.assertEqual(self.text('description_sale', 'fr_FR'), '')
 
     def test_translations_edited_in_odoo_are_kept(self):
         self.connector.settings_woocommerce_to_odoo_products_translations_sync = True

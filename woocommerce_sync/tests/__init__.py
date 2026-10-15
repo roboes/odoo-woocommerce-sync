@@ -16,6 +16,7 @@ To run only one file/class:
 """
 
 from . import (
+    test_chunk_job_payload,
     test_customer_identity,
     test_customer_shipping_address,
     test_image_formats,
@@ -26,9 +27,11 @@ from . import (
     test_product_translations,
     test_refund_credit_note,
     test_savepoint_isolation,
+    test_stock_available_quantity,
     test_stock_incremental_sync,
     test_tax_rates,
     test_variation_sync_status,
+    test_webhook_http,
     test_webhook_queue_job_dispatch,
     test_webhook_signature,
     test_woocommerce_client,
@@ -36,6 +39,7 @@ from . import (
 )
 
 __all__ = [
+    'test_chunk_job_payload',
     'test_customer_identity',
     'test_customer_shipping_address',
     'test_image_formats',
@@ -46,9 +50,11 @@ __all__ = [
     'test_product_translations',
     'test_refund_credit_note',
     'test_savepoint_isolation',
+    'test_stock_available_quantity',
     'test_stock_incremental_sync',
     'test_tax_rates',
     'test_variation_sync_status',
+    'test_webhook_http',
     'test_webhook_queue_job_dispatch',
     'test_webhook_signature',
     'test_woocommerce_client',
