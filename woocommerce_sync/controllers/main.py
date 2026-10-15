@@ -21,7 +21,10 @@ class WoocommerceSyncWebhookController(http.Controller):
             return request.make_json_response({'error': 'Webhook not found or not enabled'}, status=404)
 
         maximum_payload_bytes = 2 * 1024 * 1024
-        if request.httprequest.content_length and request.httprequest.content_length > maximum_payload_bytes:
+        content_length = request.httprequest.content_length
+        if content_length is None:
+            return request.make_json_response({'error': 'Content-Length required'}, status=411)
+        if content_length > maximum_payload_bytes:
             return request.make_json_response({'error': 'Payload too large'}, status=413)
 
         # Odoo's 'HTTPRequest' wrapper does not expose werkzeug's 'stream' (only 'get_data()', 'headers', ...)
