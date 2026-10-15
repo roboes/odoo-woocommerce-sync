@@ -3563,285 +3563,291 @@ class WoocommerceSyncConnector(models.Model):
                 sync_status = 'created'
                 _logger.info(f'Imported WooCommerce order into Odoo: {odoo_sale_order.name} (Odoo sale order ID: {odoo_sale_order.id}, WooCommerce order ID: {odoo_sale_order["woocommerce_number"]})')
 
-            # Order line items
-            order_line_items_total = sum(float(line_item['total']) for line_item in woocommerce_order['line_items'])
+            # An order already delivered or invoiced in Odoo (e.g. settled at the POS, or invoiced before WooCommerce marks it completed) keeps its lines: only its status and refunds are synced
+            order_lines_frozen = sync_status == 'updated' and any(line.qty_delivered or line.qty_invoiced for line in odoo_sale_order.order_line)
+            if order_lines_frozen:
+                _logger.info(f'Kept the order lines of {odoo_sale_order.name} (WooCommerce order ID: {odoo_sale_order["woocommerce_number"]}): already delivered or invoiced in Odoo')
 
-            for line_item in woocommerce_order['line_items']:
-                # Custom fields
-                order_line_values = {
-                    'woocommerce_site_url': self.settings_woocommerce_connection_url,
-                    'woocommerce_to_odoo_last_sync': fields.Datetime.now(),
-                }
+            if not order_lines_frozen:
+                # Order line items
+                order_line_items_total = sum(float(line_item['total']) for line_item in woocommerce_order['line_items'])
 
-                # WooCommerce REST API - Order line items properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-line-items-properties
-                order_line_values.update(
-                    {
-                        'woocommerce_id': line_item['id'],
-                        'woocommerce_name': line_item['name'],
-                        'woocommerce_product_id': line_item['product_id'],
-                        'woocommerce_variation_id': line_item['variation_id'],
-                        'woocommerce_quantity': line_item['quantity'],
-                        'woocommerce_tax_class': woocommerce_tax_rates.get(line_item['tax_class'] if line_item['tax_class'] else 'standard'),
-                        'woocommerce_subtotal': line_item['subtotal'],
-                        'woocommerce_subtotal_tax': line_item['subtotal_tax'],
-                        'woocommerce_total': line_item['total'],
-                        'woocommerce_total_tax': line_item['total_tax'],
-                        'woocommerce_taxes': line_item['taxes'],
-                        'woocommerce_meta_data': line_item['meta_data'],
-                        'woocommerce_sku': line_item['sku'],
-                        'woocommerce_price': line_item['price'],
-                    },
-                )
-
-                # Additional fields
-                order_line_values.update(
-                    {
-                        'woocommerce_weight_unit': woocommerce_weight_unit if woocommerce_weight_unit else None,
-                    },
-                )
-
-                # Odoo product default code
-                odoo_product_mapped = None
-
-                if self.settings_woocommerce_line_items_product_map:
-                    # Product
-                    if line_item['variation_id'] == 0:
-                        odoo_product_mapped = (
-                            self.env['product.template']
-                            .with_context(lang=False)
-                            .search(
-                                [
-                                    ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                                    ('active', '=', True),
-                                    ('woocommerce_id', '=', order_line_values['woocommerce_product_id']),
-                                ],
-                                limit=1,
-                            )
-                        )
-
-                    # Product variation
-                    else:
-                        odoo_product_mapped = (
-                            self.env['product.product']
-                            .with_context(lang=False)
-                            .search(
-                                [
-                                    ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                                    ('active', '=', True),
-                                    ('woocommerce_id', '=', order_line_values['woocommerce_variation_id']),
-                                ],
-                                limit=1,
-                            )
-                        )
-
-                if not odoo_product_mapped:
-                    # Create/retrieve product placeholder
-                    odoo_product = self.odoo_product_placeholder_create_or_retrieve()
-
-                if odoo_product_mapped:
-                    if line_item['variation_id'] == 0:
-                        product_id = odoo_product_mapped.product_variant_ids[:1].id  # product.template → product.product
-                    else:
-                        product_id = odoo_product_mapped.id  # Already product.product
-                else:
-                    product_id = odoo_product.product_variant_ids[:1].id
-
-                # Tax
-                odoo_order_line_item_tax_id = []
-                if order_line_values['woocommerce_tax_class']:
-                    odoo_order_line_item_tax = self.odoo_tax_rate_create_or_retrieve(
-                        order_line_values['woocommerce_tax_class'], cache=odoo_tax_rate_cache, tax_scope='service' if self.env['product.product'].browse(product_id).type == 'service' else 'consu'
-                    )
-                    if odoo_order_line_item_tax:
-                        odoo_order_line_item_tax_id = [(6, 0, [odoo_order_line_item_tax.id])]
-
-                # Unit of measure
-                odoo_order_line_item_unit_of_measure = None
-                if self.settings_woocommerce_products_package_size_unit_default:
-                    odoo_order_line_item_unit_of_measure = self.env.ref('uom.product_uom_unit')
-
-                elif order_line_values['woocommerce_weight_unit']:
-                    odoo_order_line_item_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(order_line_values['woocommerce_weight_unit'], cache=odoo_uom_cache)
-
-                # Localization
-
-                ## Brazil (requires 'l10n_br_sale' Odoo add-on)
-                if (
-                    self.env['ir.module.module'].with_context(lang=False).search([('name', '=', 'l10n_br_sale'), ('state', '=', 'installed')])
-                    and woocommerce_order['shipping_total']
-                    and order_line_items_total
-                    and 'freight_value' in self.env['sale.order.line']._fields
-                ):
-                    order_line_values.update({'freight_value': float(woocommerce_order['shipping_total']) * (float(line_item['total']) / order_line_items_total)})
-
-                # Odoo 'sale.order.line' model fields
-                sale_order_line_fields = {
-                    # General information
-                    'order_id': odoo_sale_order.id,
-                    'name': order_line_values['woocommerce_name'],
-                    'product_id': product_id,
-                    # Shipping and stock
-                    'warehouse_id': self.settings_woocommerce_products_warehouse_location.id,
-                    # Payment
-                    'currency_id': odoo_order_currency.id if odoo_order_currency else False,
-                    'product_uom_qty': order_line_values['woocommerce_quantity'],
-                    # WooCommerce order line items always report 'price' as the tax-excluded (net) per-unit amount, regardless of
-                    # the store's 'Prices entered with tax' setting (unlike product/variation prices) - grossed up to match the
-                    # attached Odoo tax when 'settings_odoo_tax_calculation' resolves to tax-included
-                    'price_unit': (
-                        round(float(order_line_values['woocommerce_price']) * (1 + (order_line_values['woocommerce_tax_class'] or 0) / 100), 2)
-                        if order_line_values['woocommerce_tax_class'] and self.odoo_tax_calculation_price_include()
-                        else order_line_values['woocommerce_price']
-                    ),
-                    # 'discount'
-                }
-
-                # Dimensions
-                if version_info[0] in [16, 18]:
-                    sale_order_line_fields['product_uom'] = odoo_order_line_item_unit_of_measure.id if odoo_order_line_item_unit_of_measure else False
-
-                elif version_info[0] == 19:
-                    sale_order_line_fields['product_uom_id'] = odoo_order_line_item_unit_of_measure.id if odoo_order_line_item_unit_of_measure else False
-
-                # Tax
-                if version_info[0] in [16, 18]:
-                    sale_order_line_fields['tax_id'] = odoo_order_line_item_tax_id
-                elif version_info[0] == 19:
-                    sale_order_line_fields['tax_ids'] = odoo_order_line_item_tax_id
-
-                order_line_values.update(sale_order_line_fields)
-
-                odoo_sale_order_line = self.env['sale.order.line'].search(
-                    [
-                        ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                        ('order_id', '=', odoo_sale_order.id),
-                        ('woocommerce_id', '=', order_line_values['woocommerce_id']),
-                    ],
-                    limit=1,
-                )
-
-                # Verify if product exists
-                product_id = order_line_values['product_id']
-                if product_id and not self.env['product.product'].browse(product_id).exists():
-                    _logger.warning(f'Skipping order line: product.product({product_id},) does not exist in Odoo')
-                    continue
-
-                # Update the sale order line
-                if odoo_sale_order_line:
-                    odoo_sale_order_line.write(order_line_values)
-
-                else:
-                    self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(order_line_values)
-
-            # Fee lines (e.g. payment gateway surcharges) - represented as real order lines instead of only the raw 'woocommerce_fee_lines' JSON
-            if woocommerce_order['fee_lines']:
-                odoo_fee_product = self.odoo_woocommerce_service_product_create_or_retrieve('woocommerce_fee', 'WooCommerce Fee')
-                for fee_line in woocommerce_order['fee_lines']:
-                    odoo_fee_order_line = self.env['sale.order.line'].search(
-                        [('order_id', '=', odoo_sale_order.id), ('woocommerce_id', '=', fee_line['id']), ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url)], limit=1
-                    )
-                    fee_line_values = {
+                for line_item in woocommerce_order['line_items']:
+                    # Custom fields
+                    order_line_values = {
                         'woocommerce_site_url': self.settings_woocommerce_connection_url,
-                        'woocommerce_id': fee_line['id'],
-                        'order_id': odoo_sale_order.id,
-                        'name': fee_line.get('name') or 'WooCommerce Fee',
-                        'product_id': odoo_fee_product.id,
-                        'product_uom_qty': 1,
-                        'price_unit': float(fee_line['total']),
+                        'woocommerce_to_odoo_last_sync': fields.Datetime.now(),
                     }
-                    if odoo_fee_order_line:
-                        odoo_fee_order_line.write(fee_line_values)
-                    else:
-                        self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(fee_line_values)
 
-            # Coupon lines (discounts) - represented as negative-amount order lines instead of only the raw 'woocommerce_coupon_lines' JSON
-            if woocommerce_order['coupon_lines']:
-                odoo_coupon_product = self.odoo_woocommerce_service_product_create_or_retrieve('woocommerce_coupon', 'WooCommerce Discount')
-                for coupon_line in woocommerce_order['coupon_lines']:
-                    odoo_coupon_order_line = self.env['sale.order.line'].search(
-                        [('order_id', '=', odoo_sale_order.id), ('woocommerce_id', '=', coupon_line['id']), ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url)], limit=1
-                    )
-                    coupon_line_values = {
-                        'woocommerce_site_url': self.settings_woocommerce_connection_url,
-                        'woocommerce_id': coupon_line['id'],
-                        'order_id': odoo_sale_order.id,
-                        'name': f'Coupon: {coupon_line.get("code", "")}',
-                        'product_id': odoo_coupon_product.id,
-                        'product_uom_qty': 1,
-                        'price_unit': -abs(float(coupon_line.get('discount') or 0.0)),
-                    }
-                    if odoo_coupon_order_line:
-                        odoo_coupon_order_line.write(coupon_line_values)
-                    else:
-                        self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(coupon_line_values)
-
-            # Delivery carrier(s) - the first shipping line uses the native 'set_delivery_line' (one carrier per order); any additional shipping lines are added as extra order lines on the same carrier's product, instead of silently dropping them
-            if woocommerce_order['shipping_lines']:
-                first_shipping_line, *extra_shipping_lines = woocommerce_order['shipping_lines']
-
-                odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_shipping_methods, first_shipping_line)
-
-                if odoo_delivery_carrier:
-                    previous_woocommerce_delivery_lines = odoo_sale_order.order_line.filtered(
-                        lambda line: line.is_delivery and line.woocommerce_site_url == self.settings_woocommerce_connection_url and line.woocommerce_id
-                    )
-                    protected_delivery_lines = previous_woocommerce_delivery_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
-                    if protected_delivery_lines:
-                        raise ValidationError('Cannot replace the WooCommerce delivery line because it has already been invoiced or delivered.')
-                    previous_woocommerce_delivery_lines._woocommerce_sync_unlink_stale()
-                    odoo_sale_order.carrier_id = odoo_delivery_carrier
-                    odoo_delivery_line = odoo_sale_order._create_delivery_line(odoo_delivery_carrier, first_shipping_line['total'])
-                    odoo_delivery_line.write(
+                    # WooCommerce REST API - Order line items properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#order-line-items-properties
+                    order_line_values.update(
                         {
-                            'woocommerce_site_url': self.settings_woocommerce_connection_url,
-                            'woocommerce_id': first_shipping_line['id'],
-                        }
+                            'woocommerce_id': line_item['id'],
+                            'woocommerce_name': line_item['name'],
+                            'woocommerce_product_id': line_item['product_id'],
+                            'woocommerce_variation_id': line_item['variation_id'],
+                            'woocommerce_quantity': line_item['quantity'],
+                            'woocommerce_tax_class': woocommerce_tax_rates.get(line_item['tax_class'] if line_item['tax_class'] else 'standard'),
+                            'woocommerce_subtotal': line_item['subtotal'],
+                            'woocommerce_subtotal_tax': line_item['subtotal_tax'],
+                            'woocommerce_total': line_item['total'],
+                            'woocommerce_total_tax': line_item['total_tax'],
+                            'woocommerce_taxes': line_item['taxes'],
+                            'woocommerce_meta_data': line_item['meta_data'],
+                            'woocommerce_sku': line_item['sku'],
+                            'woocommerce_price': line_item['price'],
+                        },
                     )
 
-                for shipping_line in extra_shipping_lines:
-                    extra_odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_shipping_methods, shipping_line)
-                    if not extra_odoo_delivery_carrier:
+                    # Additional fields
+                    order_line_values.update(
+                        {
+                            'woocommerce_weight_unit': woocommerce_weight_unit if woocommerce_weight_unit else None,
+                        },
+                    )
+
+                    # Odoo product default code
+                    odoo_product_mapped = None
+
+                    if self.settings_woocommerce_line_items_product_map:
+                        # Product
+                        if line_item['variation_id'] == 0:
+                            odoo_product_mapped = (
+                                self.env['product.template']
+                                .with_context(lang=False)
+                                .search(
+                                    [
+                                        ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                                        ('active', '=', True),
+                                        ('woocommerce_id', '=', order_line_values['woocommerce_product_id']),
+                                    ],
+                                    limit=1,
+                                )
+                            )
+
+                        # Product variation
+                        else:
+                            odoo_product_mapped = (
+                                self.env['product.product']
+                                .with_context(lang=False)
+                                .search(
+                                    [
+                                        ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                                        ('active', '=', True),
+                                        ('woocommerce_id', '=', order_line_values['woocommerce_variation_id']),
+                                    ],
+                                    limit=1,
+                                )
+                            )
+
+                    if not odoo_product_mapped:
+                        # Create/retrieve product placeholder
+                        odoo_product = self.odoo_product_placeholder_create_or_retrieve()
+
+                    if odoo_product_mapped:
+                        if line_item['variation_id'] == 0:
+                            product_id = odoo_product_mapped.product_variant_ids[:1].id  # product.template → product.product
+                        else:
+                            product_id = odoo_product_mapped.id  # Already product.product
+                    else:
+                        product_id = odoo_product.product_variant_ids[:1].id
+
+                    # Tax
+                    odoo_order_line_item_tax_id = []
+                    if order_line_values['woocommerce_tax_class']:
+                        odoo_order_line_item_tax = self.odoo_tax_rate_create_or_retrieve(
+                            order_line_values['woocommerce_tax_class'], cache=odoo_tax_rate_cache, tax_scope='service' if self.env['product.product'].browse(product_id).type == 'service' else 'consu'
+                        )
+                        if odoo_order_line_item_tax:
+                            odoo_order_line_item_tax_id = [(6, 0, [odoo_order_line_item_tax.id])]
+
+                    # Unit of measure
+                    odoo_order_line_item_unit_of_measure = None
+                    if self.settings_woocommerce_products_package_size_unit_default:
+                        odoo_order_line_item_unit_of_measure = self.env.ref('uom.product_uom_unit')
+
+                    elif order_line_values['woocommerce_weight_unit']:
+                        odoo_order_line_item_unit_of_measure = self.odoo_unit_of_measure_create_or_retrieve(order_line_values['woocommerce_weight_unit'], cache=odoo_uom_cache)
+
+                    # Localization
+
+                    ## Brazil (requires 'l10n_br_sale' Odoo add-on)
+                    if (
+                        self.env['ir.module.module'].with_context(lang=False).search([('name', '=', 'l10n_br_sale'), ('state', '=', 'installed')])
+                        and woocommerce_order['shipping_total']
+                        and order_line_items_total
+                        and 'freight_value' in self.env['sale.order.line']._fields
+                    ):
+                        order_line_values.update({'freight_value': float(woocommerce_order['shipping_total']) * (float(line_item['total']) / order_line_items_total)})
+
+                    # Odoo 'sale.order.line' model fields
+                    sale_order_line_fields = {
+                        # General information
+                        'order_id': odoo_sale_order.id,
+                        'name': order_line_values['woocommerce_name'],
+                        'product_id': product_id,
+                        # Shipping and stock
+                        'warehouse_id': self.settings_woocommerce_products_warehouse_location.id,
+                        # Payment
+                        'currency_id': odoo_order_currency.id if odoo_order_currency else False,
+                        'product_uom_qty': order_line_values['woocommerce_quantity'],
+                        # WooCommerce order line items always report 'price' as the tax-excluded (net) per-unit amount, regardless of
+                        # the store's 'Prices entered with tax' setting (unlike product/variation prices) - grossed up to match the
+                        # attached Odoo tax when 'settings_odoo_tax_calculation' resolves to tax-included
+                        'price_unit': (
+                            round(float(order_line_values['woocommerce_price']) * (1 + (order_line_values['woocommerce_tax_class'] or 0) / 100), 2)
+                            if order_line_values['woocommerce_tax_class'] and self.odoo_tax_calculation_price_include()
+                            else order_line_values['woocommerce_price']
+                        ),
+                        # 'discount'
+                    }
+
+                    # Dimensions
+                    if version_info[0] in [16, 18]:
+                        sale_order_line_fields['product_uom'] = odoo_order_line_item_unit_of_measure.id if odoo_order_line_item_unit_of_measure else False
+
+                    elif version_info[0] == 19:
+                        sale_order_line_fields['product_uom_id'] = odoo_order_line_item_unit_of_measure.id if odoo_order_line_item_unit_of_measure else False
+
+                    # Tax
+                    if version_info[0] in [16, 18]:
+                        sale_order_line_fields['tax_id'] = odoo_order_line_item_tax_id
+                    elif version_info[0] == 19:
+                        sale_order_line_fields['tax_ids'] = odoo_order_line_item_tax_id
+
+                    order_line_values.update(sale_order_line_fields)
+
+                    odoo_sale_order_line = self.env['sale.order.line'].search(
+                        [
+                            ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                            ('order_id', '=', odoo_sale_order.id),
+                            ('woocommerce_id', '=', order_line_values['woocommerce_id']),
+                        ],
+                        limit=1,
+                    )
+
+                    # Verify if product exists
+                    product_id = order_line_values['product_id']
+                    if product_id and not self.env['product.product'].browse(product_id).exists():
+                        _logger.warning(f'Skipping order line: product.product({product_id},) does not exist in Odoo')
                         continue
 
-                    # Keyed by 'woocommerce_id' so resyncing the same order updates this line instead of duplicating it
-                    odoo_extra_shipping_order_line = self.env['sale.order.line'].search(
-                        [('order_id', '=', odoo_sale_order.id), ('woocommerce_id', '=', shipping_line['id']), ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url)], limit=1
-                    )
-                    extra_shipping_line_values = {
-                        'woocommerce_site_url': self.settings_woocommerce_connection_url,
-                        'woocommerce_id': shipping_line['id'],
-                        'order_id': odoo_sale_order.id,
-                        'name': shipping_line['method_title'],
-                        'product_id': extra_odoo_delivery_carrier.product_id.id,
-                        'product_uom_qty': 1,
-                        'price_unit': float(shipping_line['total']),
-                    }
-                    if odoo_extra_shipping_order_line:
-                        odoo_extra_shipping_order_line.write(extra_shipping_line_values)
-                    else:
-                        self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(extra_shipping_line_values)
-            else:
-                stale_delivery_lines = odoo_sale_order.order_line.filtered(lambda line: line.is_delivery and line.woocommerce_site_url == self.settings_woocommerce_connection_url and line.woocommerce_id)
-                protected_delivery_lines = stale_delivery_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
-                if protected_delivery_lines:
-                    raise ValidationError('Cannot remove the WooCommerce delivery line because it has already been invoiced or delivered.')
-                stale_delivery_lines._woocommerce_sync_unlink_stale()
+                    # Update the sale order line
+                    if odoo_sale_order_line:
+                        odoo_sale_order_line.write(order_line_values)
 
-            incoming_managed_line_ids = {
-                str(line['id']) for line in woocommerce_order['line_items'] + woocommerce_order['fee_lines'] + woocommerce_order['coupon_lines'] + woocommerce_order['shipping_lines'] if line.get('id')
-            }
-            stale_order_lines = self.env['sale.order.line'].search(
-                [
-                    ('order_id', '=', odoo_sale_order.id),
-                    ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                    ('woocommerce_id', '!=', False),
-                    ('woocommerce_id', 'not in', list(incoming_managed_line_ids)),
-                ]
-            )
-            protected_stale_lines = stale_order_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
-            if protected_stale_lines:
-                raise ValidationError(f'Cannot remove WooCommerce order lines {protected_stale_lines.mapped("woocommerce_id")} because they have already been invoiced or delivered.')
-            stale_order_lines._woocommerce_sync_unlink_stale()
+                    else:
+                        self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(order_line_values)
+
+                # Fee lines (e.g. payment gateway surcharges) - represented as real order lines instead of only the raw 'woocommerce_fee_lines' JSON
+                if woocommerce_order['fee_lines']:
+                    odoo_fee_product = self.odoo_woocommerce_service_product_create_or_retrieve('woocommerce_fee', 'WooCommerce Fee')
+                    for fee_line in woocommerce_order['fee_lines']:
+                        odoo_fee_order_line = self.env['sale.order.line'].search(
+                            [('order_id', '=', odoo_sale_order.id), ('woocommerce_id', '=', fee_line['id']), ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url)], limit=1
+                        )
+                        fee_line_values = {
+                            'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                            'woocommerce_id': fee_line['id'],
+                            'order_id': odoo_sale_order.id,
+                            'name': fee_line.get('name') or 'WooCommerce Fee',
+                            'product_id': odoo_fee_product.id,
+                            'product_uom_qty': 1,
+                            'price_unit': float(fee_line['total']),
+                        }
+                        if odoo_fee_order_line:
+                            odoo_fee_order_line.write(fee_line_values)
+                        else:
+                            self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(fee_line_values)
+
+                # Coupon lines (discounts) - represented as negative-amount order lines instead of only the raw 'woocommerce_coupon_lines' JSON
+                if woocommerce_order['coupon_lines']:
+                    odoo_coupon_product = self.odoo_woocommerce_service_product_create_or_retrieve('woocommerce_coupon', 'WooCommerce Discount')
+                    for coupon_line in woocommerce_order['coupon_lines']:
+                        odoo_coupon_order_line = self.env['sale.order.line'].search(
+                            [('order_id', '=', odoo_sale_order.id), ('woocommerce_id', '=', coupon_line['id']), ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url)], limit=1
+                        )
+                        coupon_line_values = {
+                            'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                            'woocommerce_id': coupon_line['id'],
+                            'order_id': odoo_sale_order.id,
+                            'name': f'Coupon: {coupon_line.get("code", "")}',
+                            'product_id': odoo_coupon_product.id,
+                            'product_uom_qty': 1,
+                            'price_unit': -abs(float(coupon_line.get('discount') or 0.0)),
+                        }
+                        if odoo_coupon_order_line:
+                            odoo_coupon_order_line.write(coupon_line_values)
+                        else:
+                            self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(coupon_line_values)
+
+                # Delivery carrier(s) - the first shipping line uses the native 'set_delivery_line' (one carrier per order); any additional shipping lines are added as extra order lines on the same carrier's product, instead of silently dropping them
+                if woocommerce_order['shipping_lines']:
+                    first_shipping_line, *extra_shipping_lines = woocommerce_order['shipping_lines']
+
+                    odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_shipping_methods, first_shipping_line)
+
+                    if odoo_delivery_carrier:
+                        previous_woocommerce_delivery_lines = odoo_sale_order.order_line.filtered(
+                            lambda line: line.is_delivery and line.woocommerce_site_url == self.settings_woocommerce_connection_url and line.woocommerce_id
+                        )
+                        protected_delivery_lines = previous_woocommerce_delivery_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
+                        if protected_delivery_lines:
+                            raise ValidationError('Cannot replace the WooCommerce delivery line because it has already been invoiced or delivered.')
+                        previous_woocommerce_delivery_lines._woocommerce_sync_unlink_stale()
+                        odoo_sale_order.carrier_id = odoo_delivery_carrier
+                        odoo_delivery_line = odoo_sale_order._create_delivery_line(odoo_delivery_carrier, first_shipping_line['total'])
+                        odoo_delivery_line.write(
+                            {
+                                'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                                'woocommerce_id': first_shipping_line['id'],
+                            }
+                        )
+
+                    for shipping_line in extra_shipping_lines:
+                        extra_odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_shipping_methods, shipping_line)
+                        if not extra_odoo_delivery_carrier:
+                            continue
+
+                        # Keyed by 'woocommerce_id' so resyncing the same order updates this line instead of duplicating it
+                        odoo_extra_shipping_order_line = self.env['sale.order.line'].search(
+                            [('order_id', '=', odoo_sale_order.id), ('woocommerce_id', '=', shipping_line['id']), ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url)], limit=1
+                        )
+                        extra_shipping_line_values = {
+                            'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                            'woocommerce_id': shipping_line['id'],
+                            'order_id': odoo_sale_order.id,
+                            'name': shipping_line['method_title'],
+                            'product_id': extra_odoo_delivery_carrier.product_id.id,
+                            'product_uom_qty': 1,
+                            'price_unit': float(shipping_line['total']),
+                        }
+                        if odoo_extra_shipping_order_line:
+                            odoo_extra_shipping_order_line.write(extra_shipping_line_values)
+                        else:
+                            self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(extra_shipping_line_values)
+                else:
+                    stale_delivery_lines = odoo_sale_order.order_line.filtered(lambda line: line.is_delivery and line.woocommerce_site_url == self.settings_woocommerce_connection_url and line.woocommerce_id)
+                    protected_delivery_lines = stale_delivery_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
+                    if protected_delivery_lines:
+                        raise ValidationError('Cannot remove the WooCommerce delivery line because it has already been invoiced or delivered.')
+                    stale_delivery_lines._woocommerce_sync_unlink_stale()
+
+                incoming_managed_line_ids = {
+                    str(line['id']) for line in woocommerce_order['line_items'] + woocommerce_order['fee_lines'] + woocommerce_order['coupon_lines'] + woocommerce_order['shipping_lines'] if line.get('id')
+                }
+                stale_order_lines = self.env['sale.order.line'].search(
+                    [
+                        ('order_id', '=', odoo_sale_order.id),
+                        ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                        ('woocommerce_id', '!=', False),
+                        ('woocommerce_id', 'not in', list(incoming_managed_line_ids)),
+                    ]
+                )
+                protected_stale_lines = stale_order_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
+                if protected_stale_lines:
+                    raise ValidationError(f'Cannot remove WooCommerce order lines {protected_stale_lines.mapped("woocommerce_id")} because they have already been invoiced or delivered.')
+                stale_order_lines._woocommerce_sync_unlink_stale()
 
             # Apply the order state only after all line and delivery mutations have completed.
             if order_values['woocommerce_status'] in ('processing', 'on-hold', 'completed') and odoo_sale_order.state in ('draft', 'sent'):
