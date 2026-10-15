@@ -74,3 +74,13 @@ class TestStockAvailableQuantity(WoocommerceSyncCommon):
 
         self.assertEqual(result['stock_quantity'], 1)
         self.assertEqual(self.on_hand(), 3, 'A stale WooCommerce quantity must not be added back to on-hand stock')
+
+    def test_new_odoo_outgoing_move_wins_over_stale_woocommerce_stock(self):
+        quants = self.env['stock.quant'].search([('product_id', '=', self.product.id), ('location_id', '=', self.stock_location.id)])
+        quants.write({'stock_quantity_last_update': '2000-01-01 00:00:00'})
+        self.product.woocommerce_stock_last_sync = '2000-01-01 00:00:00'
+
+        result = self.sync(3, '2001-01-01T00:00:00')
+
+        self.assertEqual(result['stock_quantity'], 1)
+        self.assertEqual(self.on_hand(), 3, 'A stale WooCommerce quantity must not be added back to on-hand stock')
