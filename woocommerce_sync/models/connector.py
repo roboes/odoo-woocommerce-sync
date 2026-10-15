@@ -1527,7 +1527,11 @@ class WoocommerceSyncConnector(models.Model):
         return odoo_product
 
     def odoo_woocommerce_products_stock_quantity_sync(
-        self: models.Model, odoo_product: models.Model, woocommerce_products_stock_map: dict[int, dict[str, Any]], odoo_quants_by_product_id: dict[int, models.Model] | None = None
+        self: models.Model,
+        odoo_product: models.Model,
+        woocommerce_products_stock_map: dict[int, dict[str, Any]],
+        odoo_quants_by_product_id: dict[int, models.Model] | None = None,
+        odoo_outgoing_move_update_dates_by_product_id: dict[int, datetime] | None = None,
     ) -> dict[str, Any] | None:
         """Syncs stock for a single Odoo product. If WooCommerce is the most recent source, updates Odoo directly and returns 'None'. If Odoo is the most recent source, returns a payload for the caller to push to WooCommerce in a batch request instead of one REST call per product."""
         product_woocommerce_id = odoo_product.woocommerce_id or odoo_product.product_tmpl_id.woocommerce_id
@@ -1555,6 +1559,9 @@ class WoocommerceSyncConnector(models.Model):
 
         # Get last update dates
         stock_update_dates = odoo_product_stock_quant.mapped('stock_quantity_last_update') if odoo_product_stock_quant else []
+        odoo_outgoing_move_update_date = (odoo_outgoing_move_update_dates_by_product_id or {}).get(odoo_product.id)
+        if odoo_outgoing_move_update_date:
+            stock_update_dates.append(odoo_outgoing_move_update_date)
         odoo_stock_quantity_last_update = max(stock_update_dates) if stock_update_dates else None
         odoo_stock_quantity_last_update = odoo_stock_quantity_last_update if isinstance(odoo_stock_quantity_last_update, datetime) else datetime.min.replace(tzinfo=timezone.utc).replace(tzinfo=None)
 
@@ -1611,11 +1618,28 @@ class WoocommerceSyncConnector(models.Model):
             odoo_quants_by_product_id.setdefault(quant.product_id.id, self.env['stock.quant'])
             odoo_quants_by_product_id[quant.product_id.id] |= quant
 
+        stock_location = self.settings_woocommerce_products_warehouse_location.lot_stock_id
+        odoo_outgoing_moves = self.env['stock.move'].search(
+            [
+                ('product_id', 'in', odoo_products.ids),
+                ('location_id', 'child_of', stock_location.id),
+                ('state', 'in', ('waiting', 'confirmed', 'assigned', 'partially_available')),
+                ('sale_line_id.order_id.woocommerce_site_url', '=', False),
+            ]
+        )
+        odoo_outgoing_move_update_dates_by_product_id = {}
+        for move in odoo_outgoing_moves:
+            current_update_date = odoo_outgoing_move_update_dates_by_product_id.get(move.product_id.id)
+            if not current_update_date or move.write_date > current_update_date:
+                odoo_outgoing_move_update_dates_by_product_id[move.product_id.id] = move.write_date
+
         pending_pushes = []
         stock_errors = []
         for odoo_product in odoo_products:
             try:
-                push_payload = self.odoo_woocommerce_products_stock_quantity_sync(odoo_product, woocommerce_products_stock_map, odoo_quants_by_product_id)
+                push_payload = self.odoo_woocommerce_products_stock_quantity_sync(
+                    odoo_product, woocommerce_products_stock_map, odoo_quants_by_product_id, odoo_outgoing_move_update_dates_by_product_id
+                )
                 if push_payload:
                     pending_pushes.append(push_payload)
             except ValidationError:
