@@ -14,9 +14,11 @@ Automated tests for the `woocommerce_sync` addon, using Odoo's standard `Transac
 | `test_refund_credit_note.py` | WooCommerce order refunds being converted into Odoo credit notes (full refund only; partial refunds are left untouched; idempotent on reprocessing). |
 | `test_odoo_to_woocommerce_values.py` | Odoo -> WooCommerce product payload building, including Odoo-version-specific fields and bounded WordPress media lookup/upload requests. |
 | `test_woocommerce_to_odoo_product_sync.py` | `woocommerce_service` mapping from `virtual`/`downloadable`, and tax only applied when WooCommerce `tax_status` is `taxable`. |
+| `test_chunk_job_payload.py` | Chunk jobs only receive the slice of the Odoo lookup maps (products, customers, orders, stock) matching their records, instead of the whole map. |
 | `test_customer_shipping_address.py` | `odoo_customer_shipping_address_create_or_update()`: creates/updates a `type=delivery` child contact from WooCommerce shipping fields instead of duplicating it on resync. |
 | `test_order_fee_coupon_lines.py` | WooCommerce order fee lines/coupon lines synced as real `sale.order.line` rows, idempotent on resync. |
 | `test_order_shipping_lines.py` | Orders with multiple WooCommerce shipping lines: extra lines beyond the first are added as order lines, idempotent on resync. |
+| `test_stock_available_quantity.py` | Stock sync compares and pushes the quantity left for sale (on hand minus undelivered outgoing moves), so undelivered WooCommerce orders are not decremented twice; with "Odoo is the stock master?", newer WooCommerce stock never overwrites Odoo. |
 | `test_tax_rates.py` | WooCommerce tax rates matched to existing localized Odoo sale taxes by percentage (scope, fiscal country, tax account, default sale tax, exact name), store location (country/state) rate selection per tax class, decimal rates kept. |
 
 ## Running the tests
