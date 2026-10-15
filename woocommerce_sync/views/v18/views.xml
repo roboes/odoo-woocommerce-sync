@@ -113,14 +113,17 @@
                 <group string="Stock Management">
                   <field name="settings_woocommerce_products_stock_management"/>
                   <field name="settings_woocommerce_products_warehouse_location" invisible="not settings_woocommerce_products_stock_management"/>
+                  <field name="settings_woocommerce_products_stock_odoo_master" invisible="not settings_woocommerce_products_stock_management"/>
                 </group>
                 <group string="WooCommerce to Odoo Products Import Settings">
                   <field name="settings_woocommerce_products_related_ids_map"/>
+                  <field name="settings_woocommerce_to_odoo_products_translations_sync"/>
                   <field name="settings_woocommerce_to_odoo_products_language_code"/>
                   <field name="settings_woocommerce_products_package_size_unit_default"/>
                   <field name="settings_woocommerce_to_odoo_products_delete" invisible="not settings_woocommerce_to_odoo_products_sync"/>
                 </group>
                 <group string="WooCommerce to Odoo Orders Import Settings">
+                  <field name="settings_odoo_to_woocommerce_orders_completed_on_delivery" invisible="not settings_odoo_to_woocommerce_orders_status_sync"/>
                   <field name="settings_woocommerce_order_status" widget="many2many_checkboxes"/>
                   <field name="settings_woocommerce_delivery_methods_archive"/>
                   <field name="settings_woocommerce_orders_customers_map"/>

@@ -4,7 +4,7 @@
 - A GTIN already used by another Odoo product is skipped instead of failing the product sync.
 """
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from odoo.tests.common import tagged
 
@@ -61,6 +61,42 @@ class TestBarcodes(WoocommerceSyncCommon):
         self.assertTrue(odoo_product, 'The product should still be synced, only without barcode')
         self.assertFalse(odoo_product.barcode)
 
+    def test_barcode_cache_tracks_products_written_in_the_same_chunk(self):
+        self.connector.settings_woocommerce_barcodes_sync = True
+        self.env['product.product'].create({'name': 'Existing cached barcode owner', 'barcode': '4006381333940'})
+        barcode_cache = self.connector.odoo_barcode_cache_retrieve(['4006381333940'])
+        barcode = self.connector.odoo_barcode_retrieve('4006381333940', self.env['product.product'], barcode_cache)
+
+        self.assertIsNone(barcode)
+
+        barcode_cache = self.connector.odoo_barcode_cache_retrieve([])
+        barcode_owner = self.env['product.product'].create({'name': 'Chunk barcode owner'})
+
+        self.connector.odoo_barcode_cache_update(barcode_cache, None, '4006381333941', barcode_owner)
+        barcode = self.connector.odoo_barcode_retrieve('4006381333941', self.env['product.product'], barcode_cache)
+
+        self.assertIsNone(barcode)
+
+    def test_gtin_used_by_packaging_in_another_company_is_skipped(self):
+        if 'product.packaging' not in self.env:
+            self.skipTest('Odoo 19 no longer has product.packaging')
+
+        other_company = self.env['res.company'].create({'name': 'Other barcode company'})
+        packaging_product = self.env['product.product'].create({'name': 'Packaging barcode owner', 'company_id': other_company.id})
+        self.env['product.packaging'].create(
+            {
+                'name': 'Packaging barcode owner',
+                'product_id': packaging_product.id,
+                'company_id': other_company.id,
+                'barcode': '4006381333939',
+            }
+        )
+        self.connector.settings_woocommerce_barcodes_sync = True
+
+        barcode = self.connector.odoo_barcode_retrieve('4006381333939', self.env['product.product'])
+
+        self.assertIsNone(barcode)
+
     def test_resync_keeps_own_barcode(self):
         self.connector.settings_woocommerce_barcodes_sync = True
         odoo_product = self.sync_woocommerce_product(id=92005, sku='TEST-BARCODE-5', global_unique_id='4006381333935')
@@ -77,6 +113,55 @@ class TestBarcodes(WoocommerceSyncCommon):
         self.sync_woocommerce_product(id=92007, sku='TEST-BARCODE-7', global_unique_id='4006381333937', date_modified_gmt='2026-01-01T00:00:00')
 
         self.assertEqual(odoo_product.barcode, '4006381333937', 'A product unchanged in WooCommerce should still get its barcode once the option is enabled')
+
+    def test_enabling_the_option_fills_unchanged_variation_barcodes(self):
+        self.connector.settings_woocommerce_modified_records_import = False
+        parent_payload = make_woocommerce_product_payload(id=92008, sku='TEST-VARIABLE-BARCODE', type='variable', variations=[92009])
+        self.connector.woocommerce_to_odoo_product_sync(
+            parent_payload,
+            woocommerce_currency=None,
+            woocommerce_tax_rates={},
+            woocommerce_prices_include_tax=False,
+            woocommerce_weight_unit='kg',
+            woocommerce_dimension_unit='cm',
+            odoo_products={},
+        )
+        variation = make_woocommerce_product_payload(
+            id=92009,
+            parent_id=92008,
+            sku='TEST-VARIABLE-BARCODE-RED',
+            type='variation',
+            image=None,
+            attributes=[{'id': 1, 'name': 'Color', 'option': 'Red'}],
+            global_unique_id='4006381333938',
+            date_modified_gmt='2026-01-01T00:00:00',
+        )
+
+        with (
+            patch.object(type(self.connector), 'woocommerce_api_get', return_value=Mock()),
+            patch.object(type(self.connector), 'woocommerce_api_get_all_items', return_value=[variation]),
+        ):
+            self.connector.woocommerce_to_odoo_product_variations_sync(
+                parent_payload,
+                woocommerce_currency=None,
+                woocommerce_tax_rates={},
+                woocommerce_prices_include_tax=False,
+                woocommerce_weight_unit='kg',
+                woocommerce_dimension_unit='cm',
+            )
+            self.connector.settings_woocommerce_barcodes_sync = True
+            counts = self.connector.woocommerce_to_odoo_product_variations_sync(
+                parent_payload,
+                woocommerce_currency=None,
+                woocommerce_tax_rates={},
+                woocommerce_prices_include_tax=False,
+                woocommerce_weight_unit='kg',
+                woocommerce_dimension_unit='cm',
+            )
+
+        synced_variant = self.env['product.product'].search([('woocommerce_id', '=', str(variation['id']))])
+        self.assertEqual(counts['skipped'], 0)
+        self.assertEqual(synced_variant.barcode, '4006381333938')
 
     def test_barcode_is_exported_as_gtin_only_when_enabled(self):
         odoo_product = self.env['product.template'].create({'name': 'Export barcode', 'default_code': 'TEST-BARCODE-6', 'barcode': '4006381333936'})
