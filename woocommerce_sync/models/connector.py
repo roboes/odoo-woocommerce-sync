@@ -6,7 +6,7 @@ import secrets
 import socket
 import time
 from base64 import b64decode, b64encode
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from urllib.parse import urljoin, urlparse
@@ -62,6 +62,11 @@ class WoocommerceSyncConnector(models.Model):
         """Splits 'items' into consecutive chunks of at most 'chunk_size' elements."""
         for index in range(0, len(items), chunk_size):
             yield items[index : index + chunk_size]
+
+    @staticmethod
+    def dict_subset(mapping: dict[str, Any], keys: Iterable[Any]) -> dict[str, Any]:
+        """Returns the entries of 'mapping' for 'keys' only. Chunk jobs get the slice of a lookup map they need instead of the whole map: queue jobs store their arguments, so passing a catalogue-wide map to every chunk multiplies it by the number of chunks (memory of the dispatching job, 'queue_job' table size)."""
+        return {str(key): mapping[str(key)] for key in keys if str(key) in mapping}
 
     def job_description(self: models.Model, method_name: str) -> str:
         """Returns a '<model>.<method>' description for 'with_delay()'/'delayable()' calls, so the Job Queue view shows the function name instead of falling back to the function's docstring."""
@@ -1746,7 +1751,13 @@ class WoocommerceSyncConnector(models.Model):
                 self.delayable(
                     identity_key=f'odoo_woocommerce_products_stock_quantity_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}',
                     description=self.job_description('odoo_woocommerce_products_stock_quantity_chunk_sync'),
-                ).odoo_woocommerce_products_stock_quantity_chunk_sync(odoo_products_chunk, woocommerce_products_stock_map)
+                ).odoo_woocommerce_products_stock_quantity_chunk_sync(
+                    odoo_products_chunk,
+                    self.dict_subset(
+                        woocommerce_products_stock_map,
+                        {odoo_product.woocommerce_id or odoo_product.product_tmpl_id.woocommerce_id for odoo_product in odoo_products_batch.browse(odoo_products_chunk)},
+                    ),
+                )
             )
 
         temporary_sync_data_record.unlink()
@@ -2281,7 +2292,7 @@ class WoocommerceSyncConnector(models.Model):
                     woocommerce_prices_include_tax,
                     woocommerce_weight_unit,
                     woocommerce_dimension_unit,
-                    odoo_products,
+                    self.dict_subset(odoo_products, (woocommerce_product['id'] for woocommerce_product in products_chunk)),
                     odoo_brand_cache,
                     odoo_category_cache,
                     odoo_tag_cache,
@@ -3131,7 +3142,7 @@ class WoocommerceSyncConnector(models.Model):
                 run_token = self.sync_summary_started_at.strftime('%Y%m%d%H%M%S%f')
                 self.with_delay(
                     identity_key=f'woocommerce_to_odoo_customers_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}', description=self.job_description('woocommerce_to_odoo_customers_chunk_sync')
-                ).woocommerce_to_odoo_customers_chunk_sync(customers_chunk, odoo_customers)
+                ).woocommerce_to_odoo_customers_chunk_sync(customers_chunk, self.dict_subset(odoo_customers, (woocommerce_customer['id'] for woocommerce_customer in customers_chunk)))
                 self.sync_summary_chunk_dispatched('customers', chunk_identity_key)
 
     def woocommerce_to_odoo_order_sync(
@@ -3950,7 +3961,9 @@ class WoocommerceSyncConnector(models.Model):
                 run_token = self.sync_summary_started_at.strftime('%Y%m%d%H%M%S%f')
                 self.with_delay(
                     identity_key=f'woocommerce_to_odoo_orders_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}', description=self.job_description('woocommerce_to_odoo_orders_chunk_sync')
-                ).woocommerce_to_odoo_orders_chunk_sync(orders_chunk, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods, odoo_sale_orders)
+                ).woocommerce_to_odoo_orders_chunk_sync(
+                    orders_chunk, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods, self.dict_subset(odoo_sale_orders, (woocommerce_order['id'] for woocommerce_order in orders_chunk))
+                )
                 self.sync_summary_chunk_dispatched('orders', chunk_identity_key)
 
     def woocommerce_attribute_create_or_retrieve(self: models.Model, woocommerce_api: WooCommerceClient, attribute_type: str, attribute_name: str, language_code: str | None = None) -> dict[str, Any] | None:
