@@ -16,6 +16,7 @@ To run only one file/class:
 """
 
 from . import (
+    test_barcodes,
     test_chunk_job_payload,
     test_customer_identity,
     test_customer_shipping_address,
@@ -40,6 +41,7 @@ from . import (
 )
 
 __all__ = [
+    'test_barcodes',
     'test_chunk_job_payload',
     'test_customer_identity',
     'test_customer_shipping_address',

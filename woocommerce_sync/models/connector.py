@@ -421,6 +421,11 @@ class WoocommerceSyncConnector(models.Model):
         default=False,
     )
     settings_woocommerce_images_sync = fields.Boolean(string='Sync images?', default=True)
+    settings_woocommerce_barcodes_sync = fields.Boolean(
+        string='Sync barcodes?',
+        help="Maps the WooCommerce 'GTIN, UPC, EAN or ISBN' field ('global_unique_id', WooCommerce 9.2+) to the Odoo product barcode, in both directions. A barcode already used by another Odoo product is skipped and logged, since Odoo barcodes are unique per company. To fill the barcodes of already synced products, run one sync with 'Import only modified records?' disabled.",
+        default=False,
+    )
     settings_odoo_tax_calculation = fields.Selection(
         selection=[('company', 'Match Odoo Company Settings'), ('tax_included', 'Tax Included'), ('tax_excluded', 'Tax Excluded')],
         string='Tax Calculation',
@@ -1288,6 +1293,74 @@ class WoocommerceSyncConnector(models.Model):
             _logger.error(f'Failed to create or retrieve WooCommerce tax rate in Odoo: {tax_rate}%: {error}')
             return False
 
+    def odoo_barcode_cache_retrieve(self: models.Model, woocommerce_barcodes: list[str | None]) -> tuple[dict[str, set[int]], set[str]]:
+        barcodes = {barcode.strip() for barcode in woocommerce_barcodes if barcode and barcode.strip()}
+        product_owners: dict[str, set[int]] = {}
+        packaging_barcodes: set[str] = set()
+        if not barcodes:
+            return product_owners, packaging_barcodes
+
+        products = self.env['product.product'].search(
+            [('barcode', 'in', list(barcodes)), ('company_id', 'in', (False, self.env.company.id))]
+        )
+        for product in products:
+            product_owners.setdefault(product.barcode, set()).add(product.id)
+
+        if version_info[0] < 19:
+            packaging_barcodes = set(self.env['product.packaging'].search([('barcode', 'in', list(barcodes))]).mapped('barcode'))
+
+        return product_owners, packaging_barcodes
+
+    def odoo_barcode_cache_update(
+        self: models.Model,
+        cache: tuple[dict[str, set[int]], set[str]],
+        old_barcode: str | None,
+        new_barcode: str | None,
+        odoo_products: models.Model,
+    ) -> None:
+        product_owners, _packaging_barcodes = cache
+        product_ids = set(odoo_products.ids)
+        old_barcode = (old_barcode or '').strip()
+        new_barcode = (new_barcode or '').strip()
+
+        if old_barcode and old_barcode != new_barcode:
+            owners = product_owners.get(old_barcode)
+            if owners:
+                owners.difference_update(product_ids)
+                if not owners:
+                    product_owners.pop(old_barcode)
+
+        if new_barcode:
+            product_owners.setdefault(new_barcode, set()).update(product_ids)
+
+    def odoo_barcode_retrieve(
+        self: models.Model,
+        woocommerce_barcode: str | None,
+        odoo_products: models.Model,
+        cache: tuple[dict[str, set[int]], set[str]] | None = None,
+    ) -> str | None:
+        """Returns a GTIN to store as the barcode, or None to leave the Odoo barcode unchanged."""
+        barcode = (woocommerce_barcode or '').strip()
+        if not self.settings_woocommerce_barcodes_sync or not barcode:
+            return None
+
+        domain = [('barcode', '=', barcode), ('company_id', 'in', (False, self.env.company.id))]
+        if cache is None:
+            packaging_used = False
+            if version_info[0] < 19:
+                packaging_used = self.env['product.packaging'].search_count([('barcode', '=', barcode)], limit=1)
+            product_used = self.env['product.product'].search_count([*domain, ('id', 'not in', odoo_products.ids)], limit=1)
+        else:
+            product_owners, packaging_barcodes = cache
+            packaging_used = barcode in packaging_barcodes
+            product_used = bool(product_owners.get(barcode, set()) - set(odoo_products.ids))
+
+        if packaging_used or product_used:
+            _logger.warning(f'WooCommerce barcode {barcode} is already used by another Odoo product or packaging; barcode not synced for {odoo_products.mapped("display_name") or "new product"}')
+            return None
+
+        return barcode
+
     @api.model
     def woocommerce_price_to_odoo_price(self: models.Model, price: str | float | None, tax_rate: float | None, woocommerce_prices_include_tax: bool) -> float:
         """Converts a WooCommerce product/variation price to match whichever tax convention the Odoo tax created by 'odoo_tax_rate_create_or_retrieve()' uses (see 'odoo_tax_calculation_price_include()'), so the stored 'list_price' and its attached tax always agree on whether tax is included.
@@ -2063,6 +2136,7 @@ class WoocommerceSyncConnector(models.Model):
         odoo_tag_cache: dict[str, int] | None = None,
         odoo_tax_rate_cache: dict[tuple[float, bool], int] | None = None,
         odoo_uom_cache: dict[str, int] | None = None,
+        odoo_barcode_cache: tuple[dict[str, set[int]], set[str]] | None = None,
     ) -> str:
         """Returns 'created', 'updated' or 'skipped', so the calling chunk job can tally per-direction sync-summary counts."""
         self.ensure_one()
@@ -2076,12 +2150,18 @@ class WoocommerceSyncConnector(models.Model):
             if odoo_product:
                 odoo_product = self.env['product.template'].with_context(lang=False).browse(odoo_product['id'])
 
+                # Products synced before the barcode option was enabled are updated even if unchanged in WooCommerce
+                odoo_product_barcode_outdated = (
+                    self.settings_woocommerce_barcodes_sync and woocommerce_product['type'] != 'variable' and (woocommerce_product.get('global_unique_id') or '').strip() not in ('', odoo_product.barcode or '')
+                )
+
                 # Skip if not modified and stock setting unchanged
                 if (
                     odoo_product.active
                     and odoo_product.woocommerce_date_modified_gmt
                     and self.datetime_convert(woocommerce_product['date_modified_gmt']) <= odoo_product.woocommerce_date_modified_gmt
                     and odoo_product.woocommerce_manage_stock == woocommerce_product['manage_stock']
+                    and not odoo_product_barcode_outdated
                 ):
                     _logger.info(f'Skipped import of WooCommerce product into Odoo: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {odoo_product.woocommerce_id})')
                     return 'skipped'
@@ -2203,6 +2283,19 @@ class WoocommerceSyncConnector(models.Model):
             if version_info[0] in [16, 18]:
                 product_values['uom_po_id'] = odoo_product_unit_of_measure.id if odoo_product_unit_of_measure else False
 
+            # Variable products carry their barcodes on the variations
+            odoo_product_barcode = None
+            odoo_product_barcode_previous = None
+            if product_values['woocommerce_type'] != 'variable':
+                odoo_product_barcode_previous = odoo_product.barcode if odoo_product else None
+                odoo_product_barcode = self.odoo_barcode_retrieve(
+                    woocommerce_product.get('global_unique_id'),
+                    odoo_product.product_variant_ids if odoo_product else self.env['product.product'],
+                    odoo_barcode_cache,
+                )
+                if odoo_product_barcode:
+                    product_values['barcode'] = odoo_product_barcode
+
             if odoo_product:
                 outdated_translations = self.odoo_product_outdated_translations(odoo_product, product_values)
                 odoo_product.write(product_values)
@@ -2231,6 +2324,10 @@ class WoocommerceSyncConnector(models.Model):
             # Release the savepoint (whether it was rolled back above or the record synced successfully) so it never lingers open for the rest of this chunk job's transaction
             savepoint.close(rollback=False)
 
+        if odoo_product_barcode and odoo_barcode_cache is not None:
+            barcode_owner = odoo_product.product_variant_ids.filtered(lambda variant: variant.barcode == odoo_product.barcode)
+            self.odoo_barcode_cache_update(odoo_barcode_cache, odoo_product_barcode_previous, odoo_product.barcode, barcode_owner)
+
         return sync_status
 
     @api.model
@@ -2253,6 +2350,13 @@ class WoocommerceSyncConnector(models.Model):
         # Shared tax rate/unit of measure caches for the products in this chunk
         odoo_tax_rate_cache: dict[tuple[float, bool], int] = {}
         odoo_uom_cache: dict[str, int] = {}
+        odoo_barcode_cache = (
+            self.odoo_barcode_cache_retrieve(
+                [product.get('global_unique_id') for product in woocommerce_products if product.get('type') != 'variable']
+            )
+            if self.settings_woocommerce_barcodes_sync
+            else None
+        )
         new_count = updated_count = skipped_count = 0
         errors: list[str] = []
 
@@ -2271,6 +2375,7 @@ class WoocommerceSyncConnector(models.Model):
                     odoo_tag_cache,
                     odoo_tax_rate_cache,
                     odoo_uom_cache,
+                    odoo_barcode_cache,
                 )
                 if sync_status == 'created':
                     new_count += 1
@@ -2560,6 +2665,11 @@ class WoocommerceSyncConnector(models.Model):
 
                 # WooCommerce product variations for the product
                 woocommerce_variations = self.woocommerce_api_get_all_items(woocommerce_api, endpoint=f'products/{woocommerce_product["id"]}/variations', params=params)
+                odoo_barcode_cache = (
+                    self.odoo_barcode_cache_retrieve([variation.get('global_unique_id') for variation in woocommerce_variations])
+                    if self.settings_woocommerce_barcodes_sync
+                    else None
+                )
 
                 # Capture remote mappings before attribute-line writes can make Odoo materialize variant rows automatically. A row generated during this call is still a new WooCommerce variation mapping, not an update
                 existing_woocommerce_variation_ids = set(
@@ -2656,11 +2766,16 @@ class WoocommerceSyncConnector(models.Model):
                 for woocommerce_variation in woocommerce_variations:
                     processed_count += 1
                     odoo_existing_variant = odoo_existing_variants_by_woocommerce_id.get(str(woocommerce_variation['id'])) or self.env['product.product']
+                    odoo_existing_variant_barcode_outdated = (
+                        self.settings_woocommerce_barcodes_sync
+                        and (woocommerce_variation.get('global_unique_id') or '').strip() not in ('', odoo_existing_variant.barcode or '')
+                    )
                     if (
                         odoo_existing_variant
                         and odoo_existing_variant.active
                         and odoo_existing_variant.woocommerce_date_modified_gmt
                         and self.datetime_convert(woocommerce_variation['date_modified_gmt']) <= odoo_existing_variant.woocommerce_date_modified_gmt
+                        and not odoo_existing_variant_barcode_outdated
                     ):
                         skipped_count += 1
                         _logger.info(
@@ -2799,9 +2914,16 @@ class WoocommerceSyncConnector(models.Model):
                     else:
                         new_count += 1
 
+                    odoo_product_variant_barcode_previous = odoo_product_variant.barcode
+                    odoo_product_variant_barcode = self.odoo_barcode_retrieve(woocommerce_variation.get('global_unique_id'), odoo_product_variant, odoo_barcode_cache)
+                    if odoo_product_variant_barcode:
+                        product_variation_values['barcode'] = odoo_product_variant_barcode
+
                     # Odoo product variant exists or was just created, now update it
                     outdated_translations = self.odoo_product_outdated_translations(odoo_product_variant.product_tmpl_id, product_variation_values)
                     odoo_product_variant.write(product_variation_values)
+                    if odoo_product_variant_barcode and odoo_barcode_cache is not None:
+                        self.odoo_barcode_cache_update(odoo_barcode_cache, odoo_product_variant_barcode_previous, odoo_product_variant.barcode, odoo_product_variant)
                     self.odoo_product_translations_update(odoo_product_variant.product_tmpl_id, outdated_translations)
 
                     _logger.info(
@@ -4449,6 +4571,9 @@ class WoocommerceSyncConnector(models.Model):
             'weight': odoo_product.weight if odoo_product.weight != 0.0 else '',
         }
 
+        if self.settings_woocommerce_barcodes_sync and odoo_product.barcode:
+            product_values['global_unique_id'] = odoo_product.barcode
+
         # Product meta data "odoo_id"
         woocommerce_product_meta_data = []
 
@@ -4616,6 +4741,9 @@ class WoocommerceSyncConnector(models.Model):
                 'regular_price': str(odoo_product_variant.list_price or 0.0),
                 'attributes': variation_attributes,
             }
+
+            if self.settings_woocommerce_barcodes_sync and odoo_product_variant.barcode:
+                variation_data['global_unique_id'] = odoo_product_variant.barcode
 
             # Dimensions (requires 'product_dimension' Odoo add-on)
             if 'product_length' in self.env['product.template']._fields:
