@@ -20,9 +20,9 @@ class TestStockAvailableQuantity(WoocommerceSyncCommon):
         self.product = self.env['product.product'].create({'name': 'Stock available quantity', 'woocommerce_id': WOOCOMMERCE_ID, **storable_product_values()})
         self.env['stock.quant']._update_available_quantity(self.product, self.stock_location, 3)
 
-        # An imported, not yet delivered order of 2
+        # A local Odoo order with an undelivered quantity of 2
         customers_location = self.env.ref('stock.stock_location_customers')
-        picking = self.env['stock.picking'].create(
+        self.picking = self.env['stock.picking'].create(
             {
                 'picking_type_id': self.warehouse.out_type_id.id,
                 'location_id': self.stock_location.id,
@@ -30,13 +30,20 @@ class TestStockAvailableQuantity(WoocommerceSyncCommon):
                 'move_ids': [Command.create({'name': self.product.name, 'product_id': self.product.id, 'product_uom_qty': 2, 'product_uom': self.product.uom_id.id, 'location_id': self.stock_location.id, 'location_dest_id': customers_location.id})],
             }
         )
-        picking.action_confirm()
+        self.picking.action_confirm()
 
     def on_hand(self):
         return self.product.with_context(location=self.stock_location.id).qty_available
 
     def sync(self, woocommerce_stock_quantity, date_modified_gmt):
-        return self.connector.odoo_woocommerce_products_stock_quantity_sync(self.product, {WOOCOMMERCE_ID: {'stock_quantity': woocommerce_stock_quantity, 'date_modified_gmt': date_modified_gmt}})
+        quants = self.env['stock.quant'].search([('product_id', '=', self.product.id), ('location_id', '=', self.stock_location.id)])
+        outgoing_move_update_dates = {self.product.id: max(self.picking.move_ids.mapped('write_date'))}
+        return self.connector.odoo_woocommerce_products_stock_quantity_sync(
+            self.product,
+            {WOOCOMMERCE_ID: {'stock_quantity': woocommerce_stock_quantity, 'date_modified_gmt': date_modified_gmt}},
+            {self.product.id: quants},
+            outgoing_move_update_dates,
+        )
 
     def test_undelivered_order_is_not_copied_into_odoo(self):
         # WooCommerce already shows 3 - 2 = 1 and is the most recent source
@@ -58,14 +65,18 @@ class TestStockAvailableQuantity(WoocommerceSyncCommon):
 
         self.assertEqual(result['stock_quantity'], 1, 'Pushing the on-hand quantity would let WooCommerce sell units already ordered')
 
-    def test_odoo_master_ignores_newer_woocommerce_stock(self):
-        self.connector.settings_woocommerce_products_stock_odoo_master = True
+    def test_new_odoo_outgoing_move_wins_over_stale_woocommerce_stock(self):
+        quants = self.env['stock.quant'].search([('product_id', '=', self.product.id), ('location_id', '=', self.stock_location.id)])
+        quants.write({'stock_quantity_last_update': '2000-01-01 00:00:00'})
+        self.product.woocommerce_stock_last_sync = '2000-01-01 00:00:00'
 
-        # A WooCommerce product edit made after a POS sale makes WooCommerce the most recent side
-        result = self.sync(5, '2099-01-01T00:00:00')
+        result = self.sync(3, '2001-01-01T00:00:00')
 
-        self.assertEqual(self.on_hand(), 3)
         self.assertEqual(result['stock_quantity'], 1)
+<<<<<<< Updated upstream
+=======
+        self.assertEqual(self.on_hand(), 3, 'A stale WooCommerce quantity must not be added back to on-hand stock')
+>>>>>>> Stashed changes
 
     def test_new_odoo_outgoing_move_wins_over_stale_woocommerce_stock(self):
         quants = self.env['stock.quant'].search([('product_id', '=', self.product.id), ('location_id', '=', self.stock_location.id)])
