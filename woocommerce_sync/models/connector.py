@@ -6,7 +6,7 @@ import secrets
 import socket
 import time
 from base64 import b64decode, b64encode
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from urllib.parse import urljoin, urlparse
@@ -62,6 +62,11 @@ class WoocommerceSyncConnector(models.Model):
         """Splits 'items' into consecutive chunks of at most 'chunk_size' elements."""
         for index in range(0, len(items), chunk_size):
             yield items[index : index + chunk_size]
+
+    @staticmethod
+    def dict_subset(mapping: dict[str, Any], keys: Iterable[Any]) -> dict[str, Any]:
+        """Returns the entries of 'mapping' for 'keys' only. Chunk jobs get the slice of a lookup map they need instead of the whole map: queue jobs store their arguments, so passing a catalogue-wide map to every chunk multiplies it by the number of chunks (memory of the dispatching job, 'queue_job' table size)."""
+        return {str(key): mapping[str(key)] for key in keys if str(key) in mapping}
 
     def job_description(self: models.Model, method_name: str) -> str:
         """Returns a '<model>.<method>' description for 'with_delay()'/'delayable()' calls, so the Job Queue view shows the function name instead of falling back to the function's docstring."""
@@ -426,6 +431,11 @@ class WoocommerceSyncConnector(models.Model):
 
     # Stock management
     settings_woocommerce_products_stock_management = fields.Boolean(string='Sync stock quantity?', default=True)
+    settings_woocommerce_products_stock_odoo_master = fields.Boolean(
+        string='Odoo is the stock master?',
+        help="If enabled, stock only flows from Odoo to WooCommerce: WooCommerce stock changes never overwrite Odoo (WooCommerce sales reach Odoo as orders). Otherwise the most recent side wins, and any WooCommerce product edit (title, price...) made before the next sync can overwrite Odoo stock moves such as POS sales.",
+        default=False,
+    )
     settings_woocommerce_products_warehouse_location = fields.Many2one(
         comodel_name='stock.warehouse',
         string='Warehouse',
@@ -1532,7 +1542,11 @@ class WoocommerceSyncConnector(models.Model):
         return odoo_product
 
     def odoo_woocommerce_products_stock_quantity_sync(
-        self: models.Model, odoo_product: models.Model, woocommerce_products_stock_map: dict[int, dict[str, Any]], odoo_quants_by_product_id: dict[int, models.Model] | None = None
+        self: models.Model,
+        odoo_product: models.Model,
+        woocommerce_products_stock_map: dict[int, dict[str, Any]],
+        odoo_quants_by_product_id: dict[int, models.Model] | None = None,
+        odoo_outgoing_move_update_dates_by_product_id: dict[int, datetime] | None = None,
     ) -> dict[str, Any] | None:
         """Syncs stock for a single Odoo product. If WooCommerce is the most recent source, updates Odoo directly and returns 'None'. If Odoo is the most recent source, returns a payload for the caller to push to WooCommerce in a batch request instead of one REST call per product."""
         product_woocommerce_id = odoo_product.woocommerce_id or odoo_product.product_tmpl_id.woocommerce_id
@@ -1551,13 +1565,18 @@ class WoocommerceSyncConnector(models.Model):
         # Odoo product stock quant (prefetched for the whole chunk by the caller to avoid one search per product)
         odoo_product_stock_quant = (odoo_quants_by_product_id or {}).get(odoo_product.id) or self.env['stock.quant']
         stock_location = self.settings_woocommerce_products_warehouse_location.lot_stock_id
-        warehouse_quantity = odoo_product.with_context(location=stock_location.id).qty_available
+        odoo_product_in_location = odoo_product.with_context(location=stock_location.id)
+        # WooCommerce stock is already net of its unshipped orders, which are still on hand in Odoo until delivered: compare and push the quantity left for sale
+        available_quantity = odoo_product_in_location.qty_available - odoo_product_in_location.outgoing_qty
 
-        if float_compare(woocommerce_stock_quantity, warehouse_quantity, precision_rounding=odoo_product.uom_id.rounding) == 0:
+        if float_compare(woocommerce_stock_quantity, available_quantity, precision_rounding=odoo_product.uom_id.rounding) == 0:
             return None
 
         # Get last update dates
         stock_update_dates = odoo_product_stock_quant.mapped('stock_quantity_last_update') if odoo_product_stock_quant else []
+        odoo_outgoing_move_update_date = (odoo_outgoing_move_update_dates_by_product_id or {}).get(odoo_product.id)
+        if odoo_outgoing_move_update_date:
+            stock_update_dates.append(odoo_outgoing_move_update_date)
         odoo_stock_quantity_last_update = max(stock_update_dates) if stock_update_dates else None
         odoo_stock_quantity_last_update = odoo_stock_quantity_last_update if isinstance(odoo_stock_quantity_last_update, datetime) else datetime.min.replace(tzinfo=timezone.utc).replace(tzinfo=None)
 
@@ -1571,11 +1590,11 @@ class WoocommerceSyncConnector(models.Model):
         latest_timestamp = max(odoo_stock_quantity_last_update, odoo_woocommerce_stock_last_sync, woocommerce_date_modified_gmt)
 
         # If WooCommerce is the most recent source of truth, update Odoo
-        if latest_timestamp == woocommerce_date_modified_gmt:
+        if latest_timestamp == woocommerce_date_modified_gmt and not self.settings_woocommerce_products_stock_odoo_master:
             if odoo_product.tracking != 'none':
                 raise ValidationError(f'Automatic WooCommerce stock adjustment is not supported for lot/serial-tracked product {odoo_product.display_name}.')
 
-            quantity_delta = woocommerce_stock_quantity - warehouse_quantity
+            quantity_delta = woocommerce_stock_quantity - available_quantity
             self.env['stock.quant'].with_context(from_external_sync=True).with_company(self.env.company)._update_available_quantity(odoo_product, stock_location, quantity_delta)
             _logger.info(
                 f'Updated WooCommerce product stock quantity in Odoo: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {product_woocommerce_id}) - Stock quantity: {woocommerce_stock_quantity}'
@@ -1590,7 +1609,7 @@ class WoocommerceSyncConnector(models.Model):
                 'odoo_product': odoo_product,
                 'woocommerce_parent_id': odoo_product.woocommerce_parent_id,
                 'woocommerce_id': product_woocommerce_id,
-                'stock_quantity': warehouse_quantity,
+                'stock_quantity': available_quantity,
             }
 
         return None
@@ -1614,11 +1633,28 @@ class WoocommerceSyncConnector(models.Model):
             odoo_quants_by_product_id.setdefault(quant.product_id.id, self.env['stock.quant'])
             odoo_quants_by_product_id[quant.product_id.id] |= quant
 
+        stock_location = self.settings_woocommerce_products_warehouse_location.lot_stock_id
+        odoo_outgoing_moves = self.env['stock.move'].search(
+            [
+                ('product_id', 'in', odoo_products.ids),
+                ('location_id', 'child_of', stock_location.id),
+                ('state', 'in', ('waiting', 'confirmed', 'assigned', 'partially_available')),
+                ('sale_line_id.order_id.woocommerce_site_url', '=', False),
+            ]
+        )
+        odoo_outgoing_move_update_dates_by_product_id = {}
+        for move in odoo_outgoing_moves:
+            current_update_date = odoo_outgoing_move_update_dates_by_product_id.get(move.product_id.id)
+            if not current_update_date or move.write_date > current_update_date:
+                odoo_outgoing_move_update_dates_by_product_id[move.product_id.id] = move.write_date
+
         pending_pushes = []
         stock_errors = []
         for odoo_product in odoo_products:
             try:
-                push_payload = self.odoo_woocommerce_products_stock_quantity_sync(odoo_product, woocommerce_products_stock_map, odoo_quants_by_product_id)
+                push_payload = self.odoo_woocommerce_products_stock_quantity_sync(
+                    odoo_product, woocommerce_products_stock_map, odoo_quants_by_product_id, odoo_outgoing_move_update_dates_by_product_id
+                )
                 if push_payload:
                     pending_pushes.append(push_payload)
             except ValidationError:
@@ -1751,7 +1787,13 @@ class WoocommerceSyncConnector(models.Model):
                 self.delayable(
                     identity_key=f'odoo_woocommerce_products_stock_quantity_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}',
                     description=self.job_description('odoo_woocommerce_products_stock_quantity_chunk_sync'),
-                ).odoo_woocommerce_products_stock_quantity_chunk_sync(odoo_products_chunk, woocommerce_products_stock_map)
+                ).odoo_woocommerce_products_stock_quantity_chunk_sync(
+                    odoo_products_chunk,
+                    self.dict_subset(
+                        woocommerce_products_stock_map,
+                        {odoo_product.woocommerce_id or odoo_product.product_tmpl_id.woocommerce_id for odoo_product in odoo_products_batch.browse(odoo_products_chunk)},
+                    ),
+                )
             )
 
         temporary_sync_data_record.unlink()
@@ -2286,7 +2328,7 @@ class WoocommerceSyncConnector(models.Model):
                     woocommerce_prices_include_tax,
                     woocommerce_weight_unit,
                     woocommerce_dimension_unit,
-                    odoo_products,
+                    self.dict_subset(odoo_products, (woocommerce_product['id'] for woocommerce_product in products_chunk)),
                     odoo_brand_cache,
                     odoo_category_cache,
                     odoo_tag_cache,
@@ -3136,7 +3178,7 @@ class WoocommerceSyncConnector(models.Model):
                 run_token = self.sync_summary_started_at.strftime('%Y%m%d%H%M%S%f')
                 self.with_delay(
                     identity_key=f'woocommerce_to_odoo_customers_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}', description=self.job_description('woocommerce_to_odoo_customers_chunk_sync')
-                ).woocommerce_to_odoo_customers_chunk_sync(customers_chunk, odoo_customers)
+                ).woocommerce_to_odoo_customers_chunk_sync(customers_chunk, self.dict_subset(odoo_customers, (woocommerce_customer['id'] for woocommerce_customer in customers_chunk)))
                 self.sync_summary_chunk_dispatched('customers', chunk_identity_key)
 
     def woocommerce_to_odoo_order_sync(
@@ -3955,7 +3997,9 @@ class WoocommerceSyncConnector(models.Model):
                 run_token = self.sync_summary_started_at.strftime('%Y%m%d%H%M%S%f')
                 self.with_delay(
                     identity_key=f'woocommerce_to_odoo_orders_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}', description=self.job_description('woocommerce_to_odoo_orders_chunk_sync')
-                ).woocommerce_to_odoo_orders_chunk_sync(orders_chunk, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods, odoo_sale_orders)
+                ).woocommerce_to_odoo_orders_chunk_sync(
+                    orders_chunk, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods, self.dict_subset(odoo_sale_orders, (woocommerce_order['id'] for woocommerce_order in orders_chunk))
+                )
                 self.sync_summary_chunk_dispatched('orders', chunk_identity_key)
 
     def woocommerce_attribute_create_or_retrieve(self: models.Model, woocommerce_api: WooCommerceClient, attribute_type: str, attribute_name: str, language_code: str | None = None) -> dict[str, Any] | None:

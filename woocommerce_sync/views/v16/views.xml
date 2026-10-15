@@ -112,6 +112,7 @@
                 <group string="Stock Management">
                   <field name="settings_woocommerce_products_stock_management"/>
                   <field name="settings_woocommerce_products_warehouse_location" attrs="{'invisible': [('settings_woocommerce_products_stock_management', '=', False)]}"/>
+                  <field name="settings_woocommerce_products_stock_odoo_master" attrs="{'invisible': [('settings_woocommerce_products_stock_management', '=', False)]}"/>
                 </group>
                 <group string="WooCommerce to Odoo Products Import Settings">
                   <field name="settings_woocommerce_products_related_ids_map"/>
