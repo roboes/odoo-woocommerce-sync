@@ -405,6 +405,11 @@ class WoocommerceSyncConnector(models.Model):
         help="If enabled, an order's status change in Odoo (confirmed, locked/done or cancelled) is pushed back to its matching WooCommerce order ('processing'/'completed'/'cancelled'), so the customer sees an up-to-date status on both ends. Only applies to orders originally imported from WooCommerce.",
         default=True,
     )
+    settings_odoo_to_woocommerce_orders_completed_on_delivery = fields.Boolean(
+        string='Mark WooCommerce orders completed when delivered?',
+        help="If enabled, a confirmed order whose deliveries are all done is pushed to WooCommerce as 'completed', without having to lock it (Odoo 17+) or set it to done (Odoo 16) first. Requires 'Sync order status to WooCommerce?'.",
+        default=False,
+    )
 
     # General settings
     settings_woocommerce_user_responsible = fields.Many2one(
@@ -4133,6 +4138,9 @@ class WoocommerceSyncConnector(models.Model):
         if odoo_sale_order.state == 'cancel':
             return 'cancelled'
 
+        if self.settings_odoo_to_woocommerce_orders_completed_on_delivery and odoo_sale_order.state == 'sale' and self.odoo_sale_order_fully_delivered(odoo_sale_order):
+            return 'completed'
+
         if version_info[0] == 16:
             if odoo_sale_order.state == 'done':
                 return 'completed'
@@ -4142,6 +4150,24 @@ class WoocommerceSyncConnector(models.Model):
             return 'completed' if odoo_sale_order.locked else 'processing'
 
         return None
+
+    @staticmethod
+    def odoo_sale_order_fully_delivered(odoo_sale_order: models.Model) -> bool:
+        """True when every goods line is fully delivered. Relies on the delivered quantity rather than the order's pickings, so deliveries made outside them also count (e.g. an order settled at the POS cancels its picking and ships from the POS)."""
+        goods_lines = odoo_sale_order.order_line.filtered(lambda line: not line.display_type and line.product_uom_qty > 0 and line.product_id.type in ('consu', 'product'))
+        if not goods_lines:
+            return False
+
+        for line in goods_lines:
+            if version_info[0] in (16, 18):
+                line_uom_rounding = line.product_uom.rounding
+            else:
+                line_uom_rounding = line.product_uom_id.rounding
+
+            if float_compare(line.qty_delivered, line.product_uom_qty, precision_rounding=line_uom_rounding) < 0:
+                return False
+
+        return True
 
     def odoo_to_woocommerce_orders_status_sync(self: models.Model) -> None:
         """Schedules a chunked push of Odoo sale order status changes back to their matching WooCommerce order. Only orders originally imported from WooCommerce ('woocommerce_id' set) are considered."""
