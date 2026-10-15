@@ -6,7 +6,7 @@ import secrets
 import socket
 import time
 from base64 import b64decode, b64encode
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from urllib.parse import urljoin, urlparse
@@ -62,6 +62,11 @@ class WoocommerceSyncConnector(models.Model):
         """Splits 'items' into consecutive chunks of at most 'chunk_size' elements."""
         for index in range(0, len(items), chunk_size):
             yield items[index : index + chunk_size]
+
+    @staticmethod
+    def dict_subset(mapping: dict[str, Any], keys: Iterable[Any]) -> dict[str, Any]:
+        """Returns the entries of 'mapping' for 'keys' only. Chunk jobs get the slice of a lookup map they need instead of the whole map: queue jobs store their arguments, so passing a catalogue-wide map to every chunk multiplies it by the number of chunks (memory of the dispatching job, 'queue_job' table size)."""
+        return {str(key): mapping[str(key)] for key in keys if str(key) in mapping}
 
     def job_description(self: models.Model, method_name: str) -> str:
         """Returns a '<model>.<method>' description for 'with_delay()'/'delayable()' calls, so the Job Queue view shows the function name instead of falling back to the function's docstring."""
@@ -400,6 +405,11 @@ class WoocommerceSyncConnector(models.Model):
         help="If enabled, an order's status change in Odoo (confirmed, locked/done or cancelled) is pushed back to its matching WooCommerce order ('processing'/'completed'/'cancelled'), so the customer sees an up-to-date status on both ends. Only applies to orders originally imported from WooCommerce.",
         default=True,
     )
+    settings_odoo_to_woocommerce_orders_completed_on_delivery = fields.Boolean(
+        string='Mark WooCommerce orders completed when delivered?',
+        help="If enabled, a confirmed order whose deliveries are all done is pushed to WooCommerce as 'completed', without having to lock it (Odoo 17+) or set it to done (Odoo 16) first. Requires 'Sync order status to WooCommerce?'.",
+        default=False,
+    )
 
     # General settings
     settings_woocommerce_user_responsible = fields.Many2one(
@@ -421,6 +431,11 @@ class WoocommerceSyncConnector(models.Model):
 
     # Stock management
     settings_woocommerce_products_stock_management = fields.Boolean(string='Sync stock quantity?', default=True)
+    settings_woocommerce_products_stock_odoo_master = fields.Boolean(
+        string='Odoo is the stock master?',
+        help="If enabled, stock only flows from Odoo to WooCommerce: WooCommerce stock changes never overwrite Odoo (WooCommerce sales reach Odoo as orders). Otherwise the most recent side wins, and any WooCommerce product edit (title, price...) made before the next sync can overwrite Odoo stock moves such as POS sales.",
+        default=False,
+    )
     settings_woocommerce_products_warehouse_location = fields.Many2one(
         comodel_name='stock.warehouse',
         string='Warehouse',
@@ -431,6 +446,11 @@ class WoocommerceSyncConnector(models.Model):
 
     # WooCommerce to Odoo products import settings
     settings_woocommerce_products_related_ids_map = fields.Boolean(string='Map related products?', help="Automatically map WooCommerce 'related_ids' products to their Odoo equivalents.", default=False)
+    settings_woocommerce_to_odoo_products_translations_sync = fields.Boolean(
+        string='Apply WooCommerce product texts to all Odoo languages?',
+        help="Product names and sales descriptions are imported as the Odoo source text (en_US). If enabled, the other active Odoo languages also receive the updated text, but only where their translation still equals the previous source text: translations edited in Odoo are kept. Without it, users working in another language keep seeing the text from the product's creation.",
+        default=False,
+    )
     settings_woocommerce_to_odoo_products_language_code = fields.Char(string='Filter WooCommerce products by language (requires Polylang WordPress plugin)', help="2-digit language code (ISO 639-1) (e.g. 'en').")
     settings_woocommerce_products_package_size_unit_default = fields.Boolean(
         string="Default WooCommerce package size to 'Unit'", help="If enabled, newly synced WooCommerce products to Odoo will have their package size unit of measure set to 'Unit(s)'.", default=True
@@ -865,6 +885,35 @@ class WoocommerceSyncConnector(models.Model):
             except ValueError as error:
                 raise ValidationError(f'Invalid WooCommerce date format: {date_string}') from error
         return False
+
+    def odoo_product_outdated_translations(self: models.Model, odoo_product_template: models.Model, values: dict[str, Any]) -> dict[str, list[str]]:
+        """Returns, per translated text field about to be written, the active non-source languages whose translation still equals the current source text (i.e. was never translated separately)."""
+        if not self.settings_woocommerce_to_odoo_products_translations_sync:
+            return {}
+
+        language_codes = [code for code in self.env['res.lang'].search([('active', '=', True)]).mapped('code') if code != 'en_US']
+        outdated_translations = {}
+        for field_name in ('name', 'description_sale'):
+            if field_name not in values:
+                continue
+            source_text = odoo_product_template.with_context(lang='en_US')[field_name]
+            outdated_codes = [code for code in language_codes if odoo_product_template.with_context(lang=code)[field_name] == source_text]
+            if outdated_codes:
+                outdated_translations[field_name] = outdated_codes
+
+        return outdated_translations
+
+    @staticmethod
+    def odoo_product_translations_update(odoo_product_template: models.Model, outdated_translations: dict[str, list[str]]) -> None:
+        """Copies the new source text into the translations returned by 'odoo_product_outdated_translations()'."""
+        values_by_language = {}
+        for field_name, language_codes in outdated_translations.items():
+            source_text = odoo_product_template.with_context(lang='en_US')[field_name]
+            for language_code in language_codes:
+                values_by_language.setdefault(language_code, {})[field_name] = source_text
+
+        for language_code, values in values_by_language.items():
+            odoo_product_template.with_context(lang=language_code).write(values)
 
     @staticmethod
     def datetime_to_woocommerce_utc(value: datetime) -> str:
@@ -1527,7 +1576,11 @@ class WoocommerceSyncConnector(models.Model):
         return odoo_product
 
     def odoo_woocommerce_products_stock_quantity_sync(
-        self: models.Model, odoo_product: models.Model, woocommerce_products_stock_map: dict[int, dict[str, Any]], odoo_quants_by_product_id: dict[int, models.Model] | None = None
+        self: models.Model,
+        odoo_product: models.Model,
+        woocommerce_products_stock_map: dict[int, dict[str, Any]],
+        odoo_quants_by_product_id: dict[int, models.Model] | None = None,
+        odoo_outgoing_move_update_dates_by_product_id: dict[int, datetime] | None = None,
     ) -> dict[str, Any] | None:
         """Syncs stock for a single Odoo product. If WooCommerce is the most recent source, updates Odoo directly and returns 'None'. If Odoo is the most recent source, returns a payload for the caller to push to WooCommerce in a batch request instead of one REST call per product."""
         product_woocommerce_id = odoo_product.woocommerce_id or odoo_product.product_tmpl_id.woocommerce_id
@@ -1546,13 +1599,18 @@ class WoocommerceSyncConnector(models.Model):
         # Odoo product stock quant (prefetched for the whole chunk by the caller to avoid one search per product)
         odoo_product_stock_quant = (odoo_quants_by_product_id or {}).get(odoo_product.id) or self.env['stock.quant']
         stock_location = self.settings_woocommerce_products_warehouse_location.lot_stock_id
-        warehouse_quantity = odoo_product.with_context(location=stock_location.id).qty_available
+        odoo_product_in_location = odoo_product.with_context(location=stock_location.id)
+        # WooCommerce stock is already net of its unshipped orders, which are still on hand in Odoo until delivered: compare and push the quantity left for sale
+        available_quantity = odoo_product_in_location.qty_available - odoo_product_in_location.outgoing_qty
 
-        if float_compare(woocommerce_stock_quantity, warehouse_quantity, precision_rounding=odoo_product.uom_id.rounding) == 0:
+        if float_compare(woocommerce_stock_quantity, available_quantity, precision_rounding=odoo_product.uom_id.rounding) == 0:
             return None
 
         # Get last update dates
         stock_update_dates = odoo_product_stock_quant.mapped('stock_quantity_last_update') if odoo_product_stock_quant else []
+        odoo_outgoing_move_update_date = (odoo_outgoing_move_update_dates_by_product_id or {}).get(odoo_product.id)
+        if odoo_outgoing_move_update_date:
+            stock_update_dates.append(odoo_outgoing_move_update_date)
         odoo_stock_quantity_last_update = max(stock_update_dates) if stock_update_dates else None
         odoo_stock_quantity_last_update = odoo_stock_quantity_last_update if isinstance(odoo_stock_quantity_last_update, datetime) else datetime.min.replace(tzinfo=timezone.utc).replace(tzinfo=None)
 
@@ -1566,11 +1624,11 @@ class WoocommerceSyncConnector(models.Model):
         latest_timestamp = max(odoo_stock_quantity_last_update, odoo_woocommerce_stock_last_sync, woocommerce_date_modified_gmt)
 
         # If WooCommerce is the most recent source of truth, update Odoo
-        if latest_timestamp == woocommerce_date_modified_gmt:
+        if latest_timestamp == woocommerce_date_modified_gmt and not self.settings_woocommerce_products_stock_odoo_master:
             if odoo_product.tracking != 'none':
                 raise ValidationError(f'Automatic WooCommerce stock adjustment is not supported for lot/serial-tracked product {odoo_product.display_name}.')
 
-            quantity_delta = woocommerce_stock_quantity - warehouse_quantity
+            quantity_delta = woocommerce_stock_quantity - available_quantity
             self.env['stock.quant'].with_context(from_external_sync=True).with_company(self.env.company)._update_available_quantity(odoo_product, stock_location, quantity_delta)
             _logger.info(
                 f'Updated WooCommerce product stock quantity in Odoo: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {product_woocommerce_id}) - Stock quantity: {woocommerce_stock_quantity}'
@@ -1585,7 +1643,7 @@ class WoocommerceSyncConnector(models.Model):
                 'odoo_product': odoo_product,
                 'woocommerce_parent_id': odoo_product.woocommerce_parent_id,
                 'woocommerce_id': product_woocommerce_id,
-                'stock_quantity': warehouse_quantity,
+                'stock_quantity': available_quantity,
             }
 
         return None
@@ -1609,11 +1667,28 @@ class WoocommerceSyncConnector(models.Model):
             odoo_quants_by_product_id.setdefault(quant.product_id.id, self.env['stock.quant'])
             odoo_quants_by_product_id[quant.product_id.id] |= quant
 
+        stock_location = self.settings_woocommerce_products_warehouse_location.lot_stock_id
+        odoo_outgoing_moves = self.env['stock.move'].search(
+            [
+                ('product_id', 'in', odoo_products.ids),
+                ('location_id', 'child_of', stock_location.id),
+                ('state', 'in', ('waiting', 'confirmed', 'assigned', 'partially_available')),
+                ('sale_line_id.order_id.woocommerce_site_url', '=', False),
+            ]
+        )
+        odoo_outgoing_move_update_dates_by_product_id = {}
+        for move in odoo_outgoing_moves:
+            current_update_date = odoo_outgoing_move_update_dates_by_product_id.get(move.product_id.id)
+            if not current_update_date or move.write_date > current_update_date:
+                odoo_outgoing_move_update_dates_by_product_id[move.product_id.id] = move.write_date
+
         pending_pushes = []
         stock_errors = []
         for odoo_product in odoo_products:
             try:
-                push_payload = self.odoo_woocommerce_products_stock_quantity_sync(odoo_product, woocommerce_products_stock_map, odoo_quants_by_product_id)
+                push_payload = self.odoo_woocommerce_products_stock_quantity_sync(
+                    odoo_product, woocommerce_products_stock_map, odoo_quants_by_product_id, odoo_outgoing_move_update_dates_by_product_id
+                )
                 if push_payload:
                     pending_pushes.append(push_payload)
             except ValidationError:
@@ -1746,7 +1821,13 @@ class WoocommerceSyncConnector(models.Model):
                 self.delayable(
                     identity_key=f'odoo_woocommerce_products_stock_quantity_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}',
                     description=self.job_description('odoo_woocommerce_products_stock_quantity_chunk_sync'),
-                ).odoo_woocommerce_products_stock_quantity_chunk_sync(odoo_products_chunk, woocommerce_products_stock_map)
+                ).odoo_woocommerce_products_stock_quantity_chunk_sync(
+                    odoo_products_chunk,
+                    self.dict_subset(
+                        woocommerce_products_stock_map,
+                        {odoo_product.woocommerce_id or odoo_product.product_tmpl_id.woocommerce_id for odoo_product in odoo_products_batch.browse(odoo_products_chunk)},
+                    ),
+                )
             )
 
         temporary_sync_data_record.unlink()
@@ -2123,7 +2204,9 @@ class WoocommerceSyncConnector(models.Model):
                 product_values['uom_po_id'] = odoo_product_unit_of_measure.id if odoo_product_unit_of_measure else False
 
             if odoo_product:
+                outdated_translations = self.odoo_product_outdated_translations(odoo_product, product_values)
                 odoo_product.write(product_values)
+                self.odoo_product_translations_update(odoo_product, outdated_translations)
                 sync_status = 'updated'
                 _logger.info(f'Updated WooCommerce product in Odoo: {odoo_product.name} (Odoo product ID: {odoo_product.id}, WooCommerce product ID: {odoo_product["woocommerce_id"]})')
 
@@ -2281,7 +2364,7 @@ class WoocommerceSyncConnector(models.Model):
                     woocommerce_prices_include_tax,
                     woocommerce_weight_unit,
                     woocommerce_dimension_unit,
-                    odoo_products,
+                    self.dict_subset(odoo_products, (woocommerce_product['id'] for woocommerce_product in products_chunk)),
                     odoo_brand_cache,
                     odoo_category_cache,
                     odoo_tag_cache,
@@ -2717,7 +2800,9 @@ class WoocommerceSyncConnector(models.Model):
                         new_count += 1
 
                     # Odoo product variant exists or was just created, now update it
+                    outdated_translations = self.odoo_product_outdated_translations(odoo_product_variant.product_tmpl_id, product_variation_values)
                     odoo_product_variant.write(product_variation_values)
+                    self.odoo_product_translations_update(odoo_product_variant.product_tmpl_id, outdated_translations)
 
                     _logger.info(
                         f'Updated WooCommerce product variation in Odoo: {odoo_product_variant.display_name} (Odoo product variant ID: {odoo_product_variant.id}, WooCommerce product variation ID: {woocommerce_variation["id"]})'
@@ -3131,7 +3216,7 @@ class WoocommerceSyncConnector(models.Model):
                 run_token = self.sync_summary_started_at.strftime('%Y%m%d%H%M%S%f')
                 self.with_delay(
                     identity_key=f'woocommerce_to_odoo_customers_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}', description=self.job_description('woocommerce_to_odoo_customers_chunk_sync')
-                ).woocommerce_to_odoo_customers_chunk_sync(customers_chunk, odoo_customers)
+                ).woocommerce_to_odoo_customers_chunk_sync(customers_chunk, self.dict_subset(odoo_customers, (woocommerce_customer['id'] for woocommerce_customer in customers_chunk)))
                 self.sync_summary_chunk_dispatched('customers', chunk_identity_key)
 
     def woocommerce_to_odoo_order_sync(
@@ -3956,7 +4041,9 @@ class WoocommerceSyncConnector(models.Model):
                 run_token = self.sync_summary_started_at.strftime('%Y%m%d%H%M%S%f')
                 self.with_delay(
                     identity_key=f'woocommerce_to_odoo_orders_chunk_sync-{self.id}-{run_token}-{chunk_identity_key}', description=self.job_description('woocommerce_to_odoo_orders_chunk_sync')
-                ).woocommerce_to_odoo_orders_chunk_sync(orders_chunk, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods, odoo_sale_orders)
+                ).woocommerce_to_odoo_orders_chunk_sync(
+                    orders_chunk, woocommerce_tax_rates, woocommerce_weight_unit, woocommerce_shipping_methods, self.dict_subset(odoo_sale_orders, (woocommerce_order['id'] for woocommerce_order in orders_chunk))
+                )
                 self.sync_summary_chunk_dispatched('orders', chunk_identity_key)
 
     def woocommerce_attribute_create_or_retrieve(self: models.Model, woocommerce_api: WooCommerceClient, attribute_type: str, attribute_name: str, language_code: str | None = None) -> dict[str, Any] | None:
@@ -4095,6 +4182,9 @@ class WoocommerceSyncConnector(models.Model):
         if odoo_sale_order.state == 'cancel':
             return 'cancelled'
 
+        if self.settings_odoo_to_woocommerce_orders_completed_on_delivery and odoo_sale_order.state == 'sale' and self.odoo_sale_order_fully_delivered(odoo_sale_order):
+            return 'completed'
+
         if version_info[0] == 16:
             if odoo_sale_order.state == 'done':
                 return 'completed'
@@ -4104,6 +4194,24 @@ class WoocommerceSyncConnector(models.Model):
             return 'completed' if odoo_sale_order.locked else 'processing'
 
         return None
+
+    @staticmethod
+    def odoo_sale_order_fully_delivered(odoo_sale_order: models.Model) -> bool:
+        """True when every goods line is fully delivered. Relies on the delivered quantity rather than the order's pickings, so deliveries made outside them also count (e.g. an order settled at the POS cancels its picking and ships from the POS)."""
+        goods_lines = odoo_sale_order.order_line.filtered(lambda line: not line.display_type and line.product_uom_qty > 0 and line.product_id.type in ('consu', 'product'))
+        if not goods_lines:
+            return False
+
+        for line in goods_lines:
+            if version_info[0] in (16, 18):
+                line_uom_rounding = line.product_uom.rounding
+            else:
+                line_uom_rounding = line.product_uom_id.rounding
+
+            if float_compare(line.qty_delivered, line.product_uom_qty, precision_rounding=line_uom_rounding) < 0:
+                return False
+
+        return True
 
     def odoo_to_woocommerce_orders_status_sync(self: models.Model) -> None:
         """Schedules a chunked push of Odoo sale order status changes back to their matching WooCommerce order. Only orders originally imported from WooCommerce ('woocommerce_id' set) are considered."""
