@@ -3168,11 +3168,15 @@ class WoocommerceSyncConnector(models.Model):
                 odoo_avatar_url = None
 
             # Odoo 'res.partner' model fields
-            customer_name = f'{customer_values["woocommerce_first_name"]} {customer_values["woocommerce_last_name"]}'.strip()
+            # Accounts without a profile name (e.g. created by an admin or an import) fall back to the billing name, then the email
+            customer_name = (
+                f'{customer_values["woocommerce_first_name"]} {customer_values["woocommerce_last_name"]}'.strip()
+                or f'{customer_values["woocommerce_billing_first_name"]} {customer_values["woocommerce_billing_last_name"]}'.strip()
+            )
             customer_values.update(
                 {
                     # General information
-                    'name': customer_values['woocommerce_billing_company'] or customer_name or 'Unknown',
+                    'name': customer_values['woocommerce_billing_company'] or customer_name or customer_values['woocommerce_email'] or 'Unknown',
                     'image_1920': odoo_avatar_url,
                     'ref': customer_values['woocommerce_id'],
                     'create_date': customer_values['woocommerce_date_created_gmt'],
@@ -3225,6 +3229,9 @@ class WoocommerceSyncConnector(models.Model):
                         customer_values.get('woocommerce_billing_city'),
                         customer_values.get('woocommerce_billing_postcode'),
                     )
+                    # A namesake already linked to another WooCommerce account is a different account (e.g. the same person registered twice): create a new contact instead
+                    if odoo_customer.woocommerce_id:
+                        odoo_customer = self.env['res.partner']
 
             if not odoo_customer:
                 try:
