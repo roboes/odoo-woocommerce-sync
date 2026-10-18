@@ -3173,6 +3173,7 @@ class WoocommerceSyncConnector(models.Model):
                 f'{customer_values["woocommerce_first_name"]} {customer_values["woocommerce_last_name"]}'.strip()
                 or f'{customer_values["woocommerce_billing_first_name"]} {customer_values["woocommerce_billing_last_name"]}'.strip()
             )
+            customer_has_name = bool(customer_values['woocommerce_billing_company'] or customer_name)
             customer_values.update(
                 {
                     # General information
@@ -3195,10 +3196,13 @@ class WoocommerceSyncConnector(models.Model):
                     'country_id': self.odoo_country_retrieve(customer_values['woocommerce_billing_country'], cache=odoo_country_cache).id,
                 },
             )
+            customer_values_for_update = customer_values.copy()
+            if not customer_has_name:
+                customer_values_for_update.pop('name')
 
             if odoo_customer:
                 if customer_values['woocommerce_date_modified_gmt'] > odoo_customer['write_date']:
-                    odoo_customer.write(customer_values)
+                    odoo_customer.write(customer_values_for_update)
                     sync_status = 'updated'
                     _logger.info(f'Updated WooCommerce customer in Odoo: {odoo_customer.name} (Odoo customer ID: {odoo_customer.id}, WooCommerce customer ID: {odoo_customer["woocommerce_id"]})')
                 else:
@@ -3224,8 +3228,12 @@ class WoocommerceSyncConnector(models.Model):
                 if not odoo_customer:
                     # Fallback: match by first+last name plus billing city/postcode
                     odoo_customer = self.odoo_customer_match_by_name_and_address(
-                        customer_values.get('woocommerce_first_name'),
-                        customer_values.get('woocommerce_last_name'),
+                        customer_values.get('woocommerce_first_name')
+                        if customer_values.get('woocommerce_first_name') or customer_values.get('woocommerce_last_name')
+                        else customer_values.get('woocommerce_billing_first_name'),
+                        customer_values.get('woocommerce_last_name')
+                        if customer_values.get('woocommerce_first_name') or customer_values.get('woocommerce_last_name')
+                        else customer_values.get('woocommerce_billing_last_name'),
                         customer_values.get('woocommerce_billing_city'),
                         customer_values.get('woocommerce_billing_postcode'),
                     )
@@ -3242,11 +3250,11 @@ class WoocommerceSyncConnector(models.Model):
                     odoo_customer = self.env['res.partner'].search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', customer_values['woocommerce_id'])], limit=1)
                     if not odoo_customer:
                         raise
-                    odoo_customer.write(customer_values)
+                    odoo_customer.write(customer_values_for_update)
                 sync_status = 'created'
                 _logger.info(f'Imported WooCommerce customer into Odoo: {odoo_customer.name} (Odoo customer ID: {odoo_customer.id}, WooCommerce customer ID: {odoo_customer["woocommerce_id"]})')
             elif not odoo_customer.woocommerce_id:
-                odoo_customer.write(customer_values)
+                odoo_customer.write(customer_values_for_update)
                 sync_status = 'updated'
                 _logger.info(f'Linked existing Odoo customer {odoo_customer.id} to WooCommerce customer {customer_values["woocommerce_id"]}')
 
