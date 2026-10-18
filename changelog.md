@@ -1,5 +1,21 @@
 # Changelog
 
+## v16.0.5.9 / v18.0.5.9 / v19.0.5.9 - 2026-10-15
+
+### Features
+
+- Added an option to make Odoo the sole source of stock quantities. (#23)
+- Added an option to mark WooCommerce orders completed when their goods are delivered. (#24)
+- Added an option to apply WooCommerce product text to untranslated Odoo languages. (#25)
+- Added optional barcode sync between WooCommerce GTINs and Odoo product barcodes. (#27)
+
+### Fixes
+
+- Fixed webhook request handling so WooCommerce deliveries and delivery pings receive the correct acknowledgments. (#20)
+- Reduced queued sync job payloads by passing only lookup data needed for each chunk. (#21)
+- Stock sync now uses quantity available for sale, accounting for outgoing orders. (#22)
+- Re-imported delivered or invoiced orders now keep their existing order lines. (#26)
+
 ## v16.0.5.8 / v18.0.5.8 / v19.0.5.8 - 2026-10-10
 
 ### Fixes
