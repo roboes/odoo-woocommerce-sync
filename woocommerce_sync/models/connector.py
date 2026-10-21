@@ -1382,6 +1382,20 @@ class WoocommerceSyncConnector(models.Model):
         return price
 
     @api.model
+    def woocommerce_order_line_total_to_odoo_price(self: models.Model, woocommerce_line: dict[str, Any], odoo_sale_order_line: models.Model) -> float:
+        """Converts a WooCommerce order shipping/fee line 'total' to match the tax convention of the taxes Odoo put on 'odoo_sale_order_line', so both totals agree.
+
+        Like order line items, WooCommerce shipping and fee lines always report 'total' tax-excluded, with their tax in 'total_tax', regardless of the store's 'Prices entered with tax' setting (WooCommerce even converts a tax-included shipping cost to net before storing it) - so the tax is added back when the Odoo line's taxes are tax-included.
+        """
+        total = float(woocommerce_line.get('total') or 0.0)
+        odoo_taxes = odoo_sale_order_line.tax_id if 'tax_id' in odoo_sale_order_line._fields else odoo_sale_order_line.tax_ids
+
+        if any(odoo_taxes.mapped('price_include')):
+            total += float(woocommerce_line.get('total_tax') or 0.0)
+
+        return odoo_sale_order_line.order_id.currency_id.round(total)
+
+    @api.model
     def odoo_unit_of_measure_create_or_retrieve(self: models.Model, unit_of_measure_name: str, cache: dict[str, int] | None = None) -> models.Model | bool:
         """Create or retrieve an Odoo unit of measure."""
         if not unit_of_measure_name:
@@ -3880,7 +3894,8 @@ class WoocommerceSyncConnector(models.Model):
                         if odoo_fee_order_line:
                             odoo_fee_order_line.write(fee_line_values)
                         else:
-                            self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(fee_line_values)
+                            odoo_fee_order_line = self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(fee_line_values)
+                        odoo_fee_order_line.price_unit = self.woocommerce_order_line_total_to_odoo_price(fee_line, odoo_fee_order_line)
 
                 # Coupon lines (discounts) - represented as negative-amount order lines instead of only the raw 'woocommerce_coupon_lines' JSON
                 if woocommerce_order['coupon_lines']:
@@ -3923,6 +3938,7 @@ class WoocommerceSyncConnector(models.Model):
                             {
                                 'woocommerce_site_url': self.settings_woocommerce_connection_url,
                                 'woocommerce_id': first_shipping_line['id'],
+                                'price_unit': self.woocommerce_order_line_total_to_odoo_price(first_shipping_line, odoo_delivery_line),
                             }
                         )
 
@@ -3947,7 +3963,8 @@ class WoocommerceSyncConnector(models.Model):
                         if odoo_extra_shipping_order_line:
                             odoo_extra_shipping_order_line.write(extra_shipping_line_values)
                         else:
-                            self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(extra_shipping_line_values)
+                            odoo_extra_shipping_order_line = self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(extra_shipping_line_values)
+                        odoo_extra_shipping_order_line.price_unit = self.woocommerce_order_line_total_to_odoo_price(shipping_line, odoo_extra_shipping_order_line)
                 else:
                     stale_delivery_lines = odoo_sale_order.order_line.filtered(lambda line: line.is_delivery and line.woocommerce_site_url == self.settings_woocommerce_connection_url and line.woocommerce_id)
                     protected_delivery_lines = stale_delivery_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
