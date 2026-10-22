@@ -3486,18 +3486,21 @@ class WoocommerceSyncConnector(models.Model):
                 odoo_order_currency = self.odoo_currency_retrieve(order_values['woocommerce_currency'])
 
             # Odoo customer reference
-            odoo_customer = (
-                self.env['res.partner']
-                .with_context(lang=False)
-                .search(
-                    [
-                        ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                        ('active', '=', True),
-                        ('woocommerce_id', '=', woocommerce_order['customer_id']),
-                    ],
-                    limit=1,
+            # Guest orders have 'customer_id' 0: Odoo turns ('woocommerce_id', '=', 0) into "= '0' OR IS NULL", which would match any partner without a WooCommerce ID
+            odoo_customer = self.env['res.partner']
+            if woocommerce_order['customer_id']:
+                odoo_customer = (
+                    self.env['res.partner']
+                    .with_context(lang=False)
+                    .search(
+                        [
+                            ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                            ('active', '=', True),
+                            ('woocommerce_id', '=', woocommerce_order['customer_id']),
+                        ],
+                        limit=1,
+                    )
                 )
-            )
 
             if not odoo_customer:
                 if self.settings_woocommerce_orders_customers_map:
