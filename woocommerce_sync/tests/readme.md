@@ -17,7 +17,7 @@ Automated tests for the `woocommerce_sync` addon, using Odoo's standard `Transac
 | `test_chunk_job_payload.py` | Chunk jobs only receive the slice of the Odoo lookup maps (products, customers, orders, stock) matching their records, instead of the whole map. |
 | `test_customer_shipping_address.py` | `odoo_customer_shipping_address_create_or_update()`: creates/updates a `type=delivery` child contact from WooCommerce shipping fields instead of duplicating it on resync. |
 | `test_order_fee_coupon_lines.py` | WooCommerce order fee lines/coupon lines synced as real `sale.order.line` rows, idempotent on resync. |
-| `test_order_shipping_lines.py` | Orders with multiple WooCommerce shipping lines: extra lines beyond the first are added as order lines, idempotent on resync. |
+| `test_order_shipping_lines.py` | Orders with multiple WooCommerce shipping lines: extra lines beyond the first are added as order lines, idempotent on resync. Real-cost carriers import string shipping totals without losing the amount paid. |
 | `test_barcodes.py` | Optional barcode sync: WooCommerce GTIN (`global_unique_id`) to Odoo barcode and back, disabled by default, duplicate barcodes skipped instead of failing the product. |
 | `test_order_reimport_delivered.py` | Re-importing an order already delivered or invoiced in Odoo keeps its lines and only syncs its status (no failure on the delivered/invoiced delivery line); undelivered orders still get their lines updated. |
 | `test_product_translations.py` | Optional update of product names and sales descriptions in the other active Odoo languages: off by default, only translations still equal to the previous source text follow WooCommerce, translations edited in Odoo are kept. |
@@ -31,11 +31,15 @@ Run against whichever Odoo version/database you're testing (16, 18 or 19 - the t
 
 ### Disposable Docker run (no host Odoo installation)
 
-Set `settings_odoo_version` at the top of `tests/docker-tests.sh`, then run it from the repository root:
+Run from the repository root. The Docker runner defaults to the active manifest's major/minor version (for example, `18.0` for `18.0.5.10`); reading the manifest requires `python3` on the host:
 
 ```sh
 bash tests/docker-tests.sh
 ```
+
+`ODOO_VERSION=18.0 bash tests/docker-tests.sh` explicitly overrides the Docker image and OCA branch versions; it does not change the module manifest.
+
+Each version-specific checkout should already have matching manifest version, dependency and view entries. To test Odoo 16 or 19 from the `18.0` checkout, use a temporary copy and select the matching manifest version and views; for 19, also select the dependency list without `base_multi_image`. Do not switch the `18.0` checkout's manifest to another Odoo version just for testing. The Docker runner installs `openupgradelib`, declared as a Python dependency by OCA `queue_job` on Odoo 19.
 
 ### Existing Odoo installation
 
