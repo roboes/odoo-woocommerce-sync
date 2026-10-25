@@ -1,5 +1,16 @@
 # Changelog
 
+## v16.0.5.10 / v18.0.5.10 / v19.0.5.10 - 2026-10-26
+
+### Fixes
+
+- Customer accounts without a profile name now use their billing name or email; customers sharing a name with another linked account no longer fail synchronization. (#28)
+- Shipping and fee lines now add WooCommerce tax back when Odoo uses tax-included prices, preventing understated order totals. (#29)
+- Guest orders no longer match unrelated store contacts without a WooCommerce customer ID; they use the existing guest email matching and creation flow. (#30)
+- Product and customer webhooks now find archived records instead of attempting to create duplicates. (#31)
+- Orders using real-cost delivery carriers now convert the WooCommerce shipping total to a number before creating the delivery line, avoiding import failures while preserving the tax-aware amount paid.
+- Odoo 19 no longer inherits the unavailable `base_multi_image.owner` model; gallery images continue to use the existing attachment fallback.
+
 ## v16.0.5.9 / v18.0.5.9 / v19.0.5.9 - 2026-10-15
 
 ### Features

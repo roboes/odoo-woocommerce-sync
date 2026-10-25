@@ -19,6 +19,36 @@ class TestOrderMultipleShippingLines(WoocommerceSyncCommon):
         self.connector.woocommerce_to_odoo_order_sync(woocommerce_order, woocommerce_tax_rates={}, woocommerce_weight_unit='kg', woocommerce_shipping_methods=[], odoo_sale_orders=odoo_sale_orders or {})
         return self.env['sale.order'].search([('woocommerce_site_url', '=', self.connector.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_order['id']))], limit=1)
 
+    def test_real_cost_carrier_preserves_woocommerce_shipping_total(self):
+        carriers = self.env['delivery.carrier']
+        invoice_policy = carriers._fields.get('invoice_policy')
+        if not invoice_policy or 'real' not in invoice_policy.get_values(self.env):
+            self.skipTest('This Odoo version has no real-cost carrier invoice policy')
+
+        product = self.env['product.product'].create({'name': 'Real Cost Shipping', 'type': 'service'})
+        carrier = carriers.create(
+            {
+                'name': 'Real Cost Shipping',
+                'woocommerce_site_url': self.connector.settings_woocommerce_connection_url,
+                'product_id': product.id,
+                'delivery_type': 'fixed',
+                'invoice_policy': 'real',
+            }
+        )
+        woocommerce_order = make_woocommerce_order_payload(
+            id=94005,
+            number='94005',
+            shipping_lines=[{'id': 1201, 'method_title': carrier.name, 'total': '4.08'}],
+        )
+
+        odoo_sale_order = self._sync_order(woocommerce_order)
+
+        self.assertTrue(odoo_sale_order, 'Importing an order with a real-cost carrier must succeed')
+        self.assertEqual(odoo_sale_order.carrier_id, carrier)
+        delivery_line = odoo_sale_order.order_line.filtered(lambda line: line.is_delivery and line.woocommerce_id == '1201')
+        self.assertEqual(len(delivery_line), 1)
+        self.assertAlmostEqual(delivery_line.price_unit, 4.08)
+
     def test_extra_shipping_lines_are_added_as_order_lines(self):
         woocommerce_order = make_woocommerce_order_payload(
             id=94001,
