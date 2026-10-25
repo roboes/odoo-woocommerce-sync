@@ -3508,18 +3508,21 @@ class WoocommerceSyncConnector(models.Model):
                 odoo_order_currency = self.odoo_currency_retrieve(order_values['woocommerce_currency'])
 
             # Odoo customer reference
-            odoo_customer = (
-                self.env['res.partner']
-                .with_context(lang=False)
-                .search(
-                    [
-                        ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                        ('active', '=', True),
-                        ('woocommerce_id', '=', woocommerce_order['customer_id']),
-                    ],
-                    limit=1,
+            # Guest orders have 'customer_id' 0: Odoo turns ('woocommerce_id', '=', 0) into "= '0' OR IS NULL", which would match any partner without a WooCommerce ID
+            odoo_customer = self.env['res.partner']
+            if woocommerce_order['customer_id']:
+                odoo_customer = (
+                    self.env['res.partner']
+                    .with_context(lang=False)
+                    .search(
+                        [
+                            ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                            ('active', '=', True),
+                            ('woocommerce_id', '=', woocommerce_order['customer_id']),
+                        ],
+                        limit=1,
+                    )
                 )
-            )
 
             if not odoo_customer:
                 if self.settings_woocommerce_orders_customers_map:
@@ -3639,6 +3642,12 @@ class WoocommerceSyncConnector(models.Model):
                                 odoo_customer = self.env['res.partner'].create(customer_values)
                         except psycopg2.errors.UniqueViolation:
                             # A concurrent sync job (e.g. the dedicated customer sync) already created this customer - reuse it instead of failing
+                            # Guests have no WooCommerce ID: match them by guest key, as ('woocommerce_id', '=', False) would match any partner without a WooCommerce ID
+                            identity_domain = []
+                            if customer_values['woocommerce_id']:
+                                identity_domain = ['|', ('woocommerce_id', '=', customer_values['woocommerce_id'])]
+                            elif customer_values.get('woocommerce_guest_key'):
+                                identity_domain = ['|', ('woocommerce_guest_key', '=', customer_values['woocommerce_guest_key'])]
                             odoo_customer = (
                                 self.env['res.partner']
                                 .with_context(active_test=False)
@@ -3646,8 +3655,7 @@ class WoocommerceSyncConnector(models.Model):
                                     [
                                         ('parent_id', '=', False),
                                         ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                                        '|',
-                                        ('woocommerce_id', '=', customer_values['woocommerce_id']),
+                                        *identity_domain,
                                         ('email', '=ilike', customer_values['email'].strip()),
                                     ],
                                     limit=1,
