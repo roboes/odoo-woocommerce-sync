@@ -4,7 +4,12 @@ from unittest.mock import MagicMock, patch
 
 from odoo.tests.common import tagged
 
-from .common import WoocommerceSyncCommon, bump_iso_datetime, make_woocommerce_customer_payload, make_woocommerce_product_payload
+from .common import (
+    WoocommerceSyncCommon,
+    bump_iso_datetime,
+    make_woocommerce_customer_payload,
+    make_woocommerce_product_payload,
+)
 
 WEBHOOK_SETTINGS = {
     'woocommerce_currency': 'EUR',
