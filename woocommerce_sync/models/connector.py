@@ -3949,7 +3949,7 @@ class WoocommerceSyncConnector(models.Model):
                             raise ValidationError('Cannot replace the WooCommerce delivery line because it has already been invoiced or delivered.')
                         previous_woocommerce_delivery_lines._woocommerce_sync_unlink_stale()
                         odoo_sale_order.carrier_id = odoo_delivery_carrier
-                        odoo_delivery_line = odoo_sale_order._create_delivery_line(odoo_delivery_carrier, first_shipping_line['total'])
+                        odoo_delivery_line = odoo_sale_order._create_delivery_line(odoo_delivery_carrier, float(first_shipping_line.get('total') or 0.0))
                         odoo_delivery_line.write(
                             {
                                 'woocommerce_site_url': self.settings_woocommerce_connection_url,
@@ -4995,7 +4995,7 @@ class WoocommerceSyncConnector(models.Model):
 
         odoo_product = (
             self.env['product.template']
-            .with_context(lang=False)
+            .with_context(active_test=False, lang=False)
             .search_read(
                 [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_product_id))],
                 fields=['id', 'name', 'write_date', 'woocommerce_id'],
@@ -5040,7 +5040,7 @@ class WoocommerceSyncConnector(models.Model):
 
         odoo_customer = (
             self.env['res.partner']
-            .with_context(lang=False)
+            .with_context(active_test=False, lang=False)
             .search_read(
                 [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_customer_id))],
                 fields=['id', 'name', 'active', 'write_date', 'woocommerce_id'],

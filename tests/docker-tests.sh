@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-odoo_version="${ODOO_VERSION:-18.0}"
-
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+odoo_version="${ODOO_VERSION:-$(python3 - "${repo_root}/woocommerce_sync/__manifest__.py" <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+manifest = ast.literal_eval(Path(sys.argv[1]).read_text())
+print('.'.join(manifest['version'].split('.')[:2]))
+PY
+)}"
+
 network="woocommerce-test-$$"
 postgres="${network}-db"
 image="woocommerce-sync-tests:${odoo_version}"
@@ -30,7 +38,7 @@ USER root
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # odoo-test-helper is needed by OCA modules' tests, which Odoo imports even when filtered by --test-tags
 COPY requirements.txt /tmp/requirements.txt
-RUN pip3 install --no-cache-dir -r /tmp/requirements.txt odoo-test-helper
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt odoo-test-helper openupgradelib
 COPY --from=oca /oca /opt/oca
 USER odoo
 DOCKERFILE
