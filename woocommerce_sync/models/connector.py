@@ -4995,7 +4995,7 @@ class WoocommerceSyncConnector(models.Model):
 
         odoo_product = (
             self.env['product.template']
-            .with_context(lang=False)
+            .with_context(active_test=False, lang=False)
             .search_read(
                 [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_product_id))],
                 fields=['id', 'name', 'write_date', 'woocommerce_id'],
@@ -5040,7 +5040,7 @@ class WoocommerceSyncConnector(models.Model):
 
         odoo_customer = (
             self.env['res.partner']
-            .with_context(lang=False)
+            .with_context(active_test=False, lang=False)
             .search_read(
                 [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_customer_id))],
                 fields=['id', 'name', 'active', 'write_date', 'woocommerce_id'],
