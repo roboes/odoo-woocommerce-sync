@@ -21,6 +21,7 @@
 - The Odoo list price is now the WooCommerce regular price, so a temporary sale price no longer overwrites it; products that are not taxable are no longer converted between tax-included and tax-excluded prices.
 - Exported product and variation prices are now converted to the store's 'Prices entered with tax' convention with Odoo's tax engine (including mixed, group, fixed and compound taxes), use the Odoo currency's decimal places, and variations use their own price including attribute extra prices. Variations are matched by their stored WooCommerce ID before their SKU, and are updated when their price differs from WooCommerce.
 - Products deleted from WooCommerce that are still referenced in Odoo (orders, invoices, stock moves...) are archived instead of failing the deletion job, which stopped the rest of the sync.
+- Products no longer published in WooCommerce (draft, private...) are now also archived by the product deletion check, so they no longer stay active in Odoo when the `product.updated` webhook is missed. (#33)
 - Customer and shipping addresses now get their Odoo state from the WooCommerce state code (e.g. `CA`, `SP`, `DE-BY`) or name.
 - A first product import now links an existing Odoo product with the same internal reference (when exactly one unlinked, shared or connector-company product matches) instead of creating a duplicate; products skipped for having no SKU are logged. Customer fallback matching also excludes other companies.
 - 'Map related products?' no longer maps related products from single digits of the stored ID list.
