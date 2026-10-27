@@ -29,15 +29,37 @@ class TestOrderFeeCouponLines(WoocommerceSyncCommon):
         self.assertEqual(fee_order_line.name, 'Card surcharge')
         self.assertEqual(fee_order_line.price_unit, 2.50)
 
-    def test_coupon_line_creates_negative_order_line(self):
-        woocommerce_order = make_woocommerce_order_payload(id=93002, number='93002', coupon_lines=[{'id': 601, 'code': 'SAVE10', 'discount': '10.00'}])
+    def test_coupon_line_is_informational_and_discount_is_not_double_counted(self):
+        # WooCommerce line items are already discounted ('total' < 'subtotal'): the coupon line must not deduct the discount a second time
+        line_item = {
+            'id': 602,
+            'name': 'Item',
+            'product_id': 0,
+            'variation_id': 0,
+            'quantity': 1,
+            'tax_class': '',
+            'subtotal': '100.00',
+            'subtotal_tax': '0.00',
+            'total': '90.00',
+            'total_tax': '0.00',
+            'taxes': [],
+            'meta_data': [],
+            'sku': '',
+            'price': 90.0,
+        }
+        woocommerce_order = make_woocommerce_order_payload(id=93002, number='93002', line_items=[line_item], coupon_lines=[{'id': 601, 'code': 'SAVE10', 'discount': '10.00'}])
 
         odoo_sale_order = self._sync_order(woocommerce_order)
 
         coupon_order_line = odoo_sale_order.order_line.filtered(lambda line: line.woocommerce_id == '601')
         self.assertTrue(coupon_order_line, 'A coupon line should have been created as a sale order line')
         self.assertIn('SAVE10', coupon_order_line.name)
-        self.assertEqual(coupon_order_line.price_unit, -10.00)
+        self.assertEqual(coupon_order_line.price_unit, 0.0)
+
+        product_order_line = odoo_sale_order.order_line.filtered(lambda line: line.woocommerce_id == '602')
+        self.assertEqual(product_order_line.price_unit, 100.0)
+        self.assertEqual(product_order_line.discount, 10.0)
+        self.assertAlmostEqual(odoo_sale_order.amount_untaxed, 90.0)
 
     def test_resyncing_order_updates_fee_line_instead_of_duplicating(self):
         woocommerce_order = make_woocommerce_order_payload(id=93003, number='93003', fee_lines=[{'id': 701, 'name': 'Card surcharge', 'total': '2.50'}])
