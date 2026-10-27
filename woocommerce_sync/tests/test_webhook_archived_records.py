@@ -24,6 +24,7 @@ WEBHOOK_SETTINGS = {
 @tagged('post_install', '-at_install')
 class TestWebhookArchivedRecords(WoocommerceSyncCommon):
     def _run_webhook_job(self, method_name: str, woocommerce_payload: dict) -> None:
+        self.env['res.currency'].with_context(active_test=False).search([('name', '=', WEBHOOK_SETTINGS['woocommerce_currency'])]).active = True
         woocommerce_api = MagicMock()
         woocommerce_api.request.return_value = woocommerce_payload
 

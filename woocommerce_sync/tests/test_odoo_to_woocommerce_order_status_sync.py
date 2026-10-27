@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from odoo.release import version_info
 from odoo.tests.common import tagged
 
-from .common import WoocommerceSyncCommon, storable_product_values
+from .common import WoocommerceSyncCommon, stock_move_values, storable_product_values
 
 
 @tagged('post_install', '-at_install')
@@ -114,15 +114,16 @@ class TestOrderCompletedOnDelivery(WoocommerceSyncCommon):
                     (
                         0,
                         0,
-                        {
-                            'name': order_line.name,
-                            'product_id': order_line.product_id.id,
-                            'product_uom_qty': 1,
-                            'product_uom': order_line.product_id.uom_id.id,
-                            'location_id': warehouse.lot_stock_id.id,
-                            'location_dest_id': customers_location.id,
-                            'sale_line_id': order_line.id,
-                        },
+                        stock_move_values(
+                            self.env,
+                            name=order_line.name,
+                            product_id=order_line.product_id.id,
+                            product_uom_qty=1,
+                            product_uom=order_line.product_id.uom_id.id,
+                            location_id=warehouse.lot_stock_id.id,
+                            location_dest_id=customers_location.id,
+                            sale_line_id=order_line.id,
+                        ),
                     )
                 ],
             }

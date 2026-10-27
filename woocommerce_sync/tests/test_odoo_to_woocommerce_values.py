@@ -6,7 +6,12 @@ from unittest.mock import MagicMock, patch
 import requests
 from odoo.tests.common import tagged
 
-from .common import FAKE_IMAGE_BYTES, WoocommerceSyncCommon, storable_product_values
+from .common import (
+    FAKE_IMAGE_BYTES,
+    WoocommerceSyncCommon,
+    default_product_category,
+    storable_product_values,
+)
 
 
 @tagged('post_install', '-at_install')
@@ -167,7 +172,7 @@ class TestOdooToWooCommerceProductValues(WoocommerceSyncCommon):
                 'name': 'Test Odoo Product',
                 'default_code': 'ODOO-TEST-1',
                 'list_price': 42.5,
-                'categ_id': self.env.ref('product.product_category_all').id,
+                'categ_id': default_product_category(self.env).id,
                 **storable_product_values(is_storable=True),
             },
         )

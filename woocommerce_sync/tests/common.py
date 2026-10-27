@@ -50,6 +50,17 @@ def storable_product_values(is_storable: bool = True) -> dict[str, Any]:
     return {'is_storable': is_storable}
 
 
+def stock_move_values(env, **values: Any) -> dict[str, Any]:
+    """Returns 'stock.move' create values without the fields removed in this Odoo version (Odoo 19 dropped 'stock.move.name')."""
+    stock_move_fields = env['stock.move']._fields
+    return {field_name: value for field_name, value in values.items() if field_name in stock_move_fields}
+
+
+def default_product_category(env):
+    """Returns a product category: Odoo 19 no longer ships the 'product.product_category_all' record."""
+    return env.ref('product.product_category_all', raise_if_not_found=False) or env['product.category'].search([], limit=1) or env['product.category'].create({'name': 'All'})
+
+
 def make_woocommerce_product_payload(**overrides: Any) -> dict[str, Any]:
     """Builds a minimal-but-complete WooCommerce 'products' REST API payload (all keys read by 'woocommerce_product_fields()'/'woocommerce_to_odoo_product_sync()'), so tests don't have to know every field the connector reads."""
     now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
