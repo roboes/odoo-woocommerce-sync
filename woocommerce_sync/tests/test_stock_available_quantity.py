@@ -6,7 +6,7 @@ WooCommerce decrements its stock when an order is placed, Odoo only when the del
 from odoo import Command
 from odoo.tests.common import tagged
 
-from .common import WoocommerceSyncCommon, storable_product_values
+from .common import WoocommerceSyncCommon, stock_move_values, storable_product_values
 
 WOOCOMMERCE_ID = '94001'
 
@@ -29,14 +29,15 @@ class TestStockAvailableQuantity(WoocommerceSyncCommon):
                 'location_dest_id': customers_location.id,
                 'move_ids': [
                     Command.create(
-                        {
-                            'name': self.product.name,
-                            'product_id': self.product.id,
-                            'product_uom_qty': 2,
-                            'product_uom': self.product.uom_id.id,
-                            'location_id': self.stock_location.id,
-                            'location_dest_id': customers_location.id,
-                        }
+                        stock_move_values(
+                            self.env,
+                            name=self.product.name,
+                            product_id=self.product.id,
+                            product_uom_qty=2,
+                            product_uom=self.product.uom_id.id,
+                            location_id=self.stock_location.id,
+                            location_dest_id=customers_location.id,
+                        )
                     )
                 ],
             }

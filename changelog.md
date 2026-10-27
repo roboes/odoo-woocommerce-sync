@@ -1,5 +1,48 @@
 # Changelog
 
+## v16.0.6.0 / v18.0.6.0 / v19.0.6.0 - 2026-10-27
+
+### Features
+
+- Added a 'Company' field to the WooCommerce configuration (multi-company only): sync jobs now run in the connector's company (taxes, warehouse, currency and imported orders) instead of the company of the user who started them. Existing configurations get the main company.
+- Added an 'Order Statuses' menu where managers can add custom/plugin WooCommerce order statuses (e.g. `shipped`) to the 'Order statuses to import' filter.
+- Orders in a currency other than the customer's/company's now use an existing Odoo pricelist in that currency. Without one, the order is imported as before and a warning is posted on it. Orders in a currency that is not active in Odoo fail with an explicit error instead of being booked in the company currency.
+- Brazilian checkout plugin fields are also mapped with Odoo's own `l10n_br`: CNPJ/CPF as tax ID (CPF in its own field on Odoo 16), IE, street number and neighborhood (in 'Street 2' when there is no district field). Invalid tax IDs are logged and skipped instead of failing the customer.
+
+### Fixes
+
+- Coupon discounts are no longer deducted twice: WooCommerce line prices are already discounted, so order lines now carry the undiscounted price and Odoo's own discount percentage (taxes are computed on the discounted amount), and coupon lines are zero-amount information lines. When the rounded percentage cannot reproduce the WooCommerce line total, the discounted net price is kept instead.
+- Order line taxes now use the rate actually charged on each line (`tax_lines[].rate_percent`, WooCommerce 5.7+) instead of the store's base rate for the tax class, so EU OSS, US state and other location-based rates match WooCommerce. Equal-rate components stay distinct and compound taxes include prior taxes. Lines WooCommerce did not tax no longer get the product's default Odoo tax. Older orders without `rate_percent` keep using the tax class rate.
+- Order line prices are no longer rounded to 2 decimals; Odoo applies its own price precision, so currencies with 0 or 3 decimals are imported correctly.
+- Orders cancelled, refunded or failed in WooCommerce are now actually cancelled on Odoo 16 and 18, which only opened the cancellation wizard.
+- Orders with a custom or plugin WooCommerce status (e.g. `checkout-draft`, `shipped`) are now imported instead of failing; the order 'Status' field now stores the raw WooCommerce status code. Requires a module update.
+- Deleting confirmed sale orders is again restricted to WooCommerce orders; other Odoo orders keep the standard Odoo restriction. WooCommerce orders are cancelled (and unlocked on Odoo 17+) before deletion.
+- Variable products keep a price per variation: the template list price is the lowest variation price and, for products with a single attribute, each attribute value gets the difference as extra price. Products with several attributes get the lowest price and a warning, since Odoo extra prices cannot represent every combination.
+- The Odoo list price is now the WooCommerce regular price, so a temporary sale price no longer overwrites it; products that are not taxable are no longer converted between tax-included and tax-excluded prices.
+- Exported product and variation prices are now converted to the store's 'Prices entered with tax' convention with Odoo's tax engine (including mixed, group, fixed and compound taxes), use the Odoo currency's decimal places, and variations use their own price including attribute extra prices. Variations are matched by their stored WooCommerce ID before their SKU, and are updated when their price differs from WooCommerce.
+- Products deleted from WooCommerce that are still referenced in Odoo (orders, invoices, stock moves...) are archived instead of failing the deletion job, which stopped the rest of the sync.
+- Products no longer published in WooCommerce (draft, private...) are now also archived by the product deletion check, so they no longer stay active in Odoo when the `product.updated` webhook is missed. (#33)
+- Customer and shipping addresses now get their Odoo state from the WooCommerce state code (e.g. `CA`, `SP`, `DE-BY`) or name.
+- A first product import now links an existing Odoo product with the same internal reference (when exactly one unlinked, shared or connector-company product matches) instead of creating a duplicate; products skipped for having no SKU are logged. Customer fallback matching also excludes other companies.
+- 'Map related products?' no longer maps related products from single digits of the stored ID list.
+- Internal connector updates made by sync jobs no longer rewrite the scheduled action.
+- The JSON table widget now loads and renders on Odoo 16 (it failed to load depending on the asset loading order, and crashed by extending the web `Field` wrapper).
+- Odoo 19 connector views are again restricted to WooCommerce Sync managers/operators (`group_ids`).
+- The product 'Default Attributes' field now uses the JSON table widget instead of the HTML widget, which only showed `false`.
+- `product.template` now inherits `base_multi_image.owner` whenever the manifest depends on `base_multi_image`, instead of on an Odoo version check.
+- WooCommerce weights and dimensions are now converted to Odoo's units (kg or lb, m³ or ft³) on import and back on export; volumes were stored in the store's unit (e.g. cm³ as m³). Without 'Default WooCommerce package size to Unit', products and order lines keep their own unit of measure instead of getting the WooCommerce weight unit.
+- WooCommerce stock changes are now applied as validated inventory adjustment moves (traceable and, with automated stock valuation, valued) instead of changing the on-hand quantity directly; Stock Manager rights are not required.
+- Imported orders now use the configured warehouse, the same one as the stock sync, instead of the user's default warehouse; the default warehouse follows the connector company even for ORM/RPC creation, and server-side validation rejects another company's warehouse. The connector company cannot be changed once records have been synchronized.
+- Webhook jobs reuse the store settings for 5 minutes instead of requesting them for every webhook; the order status push only queues orders whose status changed; stock sync retrieves variations per chunk of variable products instead of one job (and one rewrite of the shared temporary data) per product.
+- The Brazilian fields mapping no longer queries the installed modules for every customer and order.
+- The 'Sync Now' connection error message is now translatable.
+- Tests now run on Odoo 19 (removed `stock.move.name` and `product.product_category_all`).
+
+### Upgrade notes
+
+- Orders, taxes and prices already imported are not changed retroactively. Product weights and volumes are converted the next time each product changes in WooCommerce.
+- With automated (perpetual) stock valuation, WooCommerce stock changes now create inventory adjustment moves and their accounting entries.
+
 ## v16.0.5.10 / v18.0.5.10 / v19.0.5.10 - 2026-10-26
 
 ### Fixes

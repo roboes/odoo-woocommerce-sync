@@ -65,7 +65,7 @@
           <group string="Variations and Attributes">
             <field name="woocommerce_variations" widget="json_html"/>
             <field name="woocommerce_attributes" widget="json_html"/>
-            <field name="woocommerce_default_attributes" widget="html"/>
+            <field name="woocommerce_default_attributes" widget="json_html"/>
           </group>
           <group string="Stock and Inventory">
             <field name="woocommerce_manage_stock"/>

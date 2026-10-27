@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, ClassVar
 
 from odoo import api, fields, models
+from odoo.modules.module import get_manifest
 from odoo.release import version_info
 from psycopg2 import sql
 
@@ -118,7 +119,7 @@ if version_info[0] in [16, 18]:
 # Product
 class ProductTemplate(models.Model):
     _name = 'product.template'
-    _inherit: ClassVar[list[str]] = ['product.template'] + (['base_multi_image.owner'] if version_info[0] < 19 else [])
+    _inherit: ClassVar[list[str]] = ['product.template'] + (['base_multi_image.owner'] if 'base_multi_image' in get_manifest(__name__.split('.')[2]).get('depends', []) else [])
 
     # Override the existing 'default_code' field to remove the compute/inverse for multi-variant products, so it can be set manually
     default_code = fields.Char(string='Internal Reference', store=True)
@@ -413,20 +414,8 @@ class SaleOrder(models.Model):
     woocommerce_order_key = fields.Char(string='Key', readonly=True)
     woocommerce_created_via = fields.Char(string='Created Via', readonly=True)
     woocommerce_version = fields.Char(string='WooCommerce Version', readonly=True)
-    woocommerce_status = fields.Selection(
-        selection=[
-            ('pending', 'Pending'),
-            ('processing', 'Processing'),
-            ('on-hold', 'On Hold'),
-            ('completed', 'Completed'),
-            ('cancelled', 'Cancelled'),
-            ('refunded', 'Refunded'),
-            ('failed', 'Failed'),
-            ('trash', 'Trash'),
-        ],
-        string='Status',
-        readonly=True,
-    )
+    # Char instead of Selection: stores custom/plugin statuses (e.g. 'checkout-draft', 'shipped') that would otherwise make the order import fail. Same 'varchar' column, so no migration is needed
+    woocommerce_status = fields.Char(string='Status', readonly=True, help="WooCommerce order status code, e.g. 'pending', 'processing', 'on-hold', 'completed', 'cancelled', 'refunded', 'failed' or a custom status.")
     woocommerce_currency = fields.Char(string='Currency', readonly=True)
     woocommerce_date_created = fields.Datetime(string='Date Created', readonly=True)
     woocommerce_date_created_gmt = fields.Datetime(string='Date Created', readonly=True)
@@ -505,14 +494,17 @@ class SaleOrder(models.Model):
 
     @api.ondelete(at_uninstall=False)
     def _unlink_except_draft_or_cancel(self: models.Model) -> None:
-        """Remove Odoo's restriction on deletion (allow deleting any order)."""
-        return
+        """Allow deleting WooCommerce orders in any state; other orders keep Odoo's standard deletion restriction."""
+        return super(SaleOrder, self.filtered(lambda order: not order.woocommerce_site_url))._unlink_except_draft_or_cancel()
 
     def unlink(self: models.Model) -> bool:
-        """Auto-cancel orders before deletion to maintain consistency."""
-        for order in self:
+        """Auto-cancel WooCommerce orders before deletion to maintain consistency."""
+        for order in self.filtered('woocommerce_site_url'):
             if order.state not in ('draft', 'cancel'):
-                order.action_cancel()
+                # Odoo 17+ refuses to cancel locked orders
+                if 'locked' in order._fields and order.locked:
+                    order.action_unlock()
+                order.with_context(disable_cancel_warning=True).action_cancel()
         return super().unlink()
 
 

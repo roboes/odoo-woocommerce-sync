@@ -1,19 +1,15 @@
 /** @odoo-module **/
 
 import { registry } from '@web/core/registry';
-import { markup, useRef } from '@odoo/owl';
-import { Field } from '@web/views/fields/field';
+import { Component, markup } from '@odoo/owl';
 import { standardFieldProps } from '@web/views/fields/standard_field_props';
+import * as charFieldModule from '@web/views/fields/char/char_field';
 
-export class JsonHtmlField extends Field {
+// Plain Owl component: subclassing the web 'Field' wrapper crashes on Odoo 16, whose 'Field.setup()' reads 'props.fieldInfo' (not passed to field widgets)
+export class JsonHtmlField extends Component {
   static template = 'woocommerce_sync.JsonHtmlField';
   static props = { ...standardFieldProps };
   static supportedTypes = ['json'];
-
-  setup() {
-    super.setup(...arguments);
-    this.input = useRef('jsonInput');
-  }
 
   get formattedValue() {
     try {
@@ -97,10 +93,10 @@ export class JsonHtmlField extends Field {
   }
 }
 
-if (!!registry.category('fields').get('char')?.component) {
-  // Odoo 17+
-  registry.category('fields').add('json_html', { component: JsonHtmlField });
+// Odoo 17+ field registry entries are '{ component }' descriptors (with a matching 'charField' export), Odoo 16 entries are the component class itself.
+// Detected from the char field module instead of the registry content, which depends on the asset loading order (on Odoo 16 'char' may not be registered yet)
+if ('charField' in charFieldModule) {
+  registry.category('fields').add('json_html', { component: JsonHtmlField, supportedTypes: ['json'] });
 } else {
-  // Odoo 16 and below
   registry.category('fields').add('json_html', JsonHtmlField);
 }
