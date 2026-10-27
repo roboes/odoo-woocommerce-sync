@@ -2309,7 +2309,9 @@ class WoocommerceSyncConnector(models.Model):
         woocommerce_products = {str(woocommerce_product['id']): woocommerce_product.get('status') for woocommerce_product in woocommerce_products}
 
         # Archive products no longer published in WooCommerce (e.g. set back to draft): the product sync only reads published products, so without this they would stay active in Odoo whenever the 'product.updated' webhook is missed. A missing status is never treated as unpublished
-        odoo_products_to_archive_statuses = {woocommerce_id: woocommerce_products[woocommerce_id] for woocommerce_id in odoo_products & woocommerce_products.keys() if woocommerce_products[woocommerce_id] not in (None, 'publish')}
+        odoo_products_to_archive_statuses = {
+            woocommerce_id: woocommerce_products[woocommerce_id] for woocommerce_id in odoo_products & woocommerce_products.keys() if woocommerce_products[woocommerce_id] not in (None, 'publish')
+        }
         if odoo_products_to_archive_statuses:
             odoo_products_to_archive = (
                 self.env['product.template'].with_context(lang=False).search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', 'in', list(odoo_products_to_archive_statuses))])
