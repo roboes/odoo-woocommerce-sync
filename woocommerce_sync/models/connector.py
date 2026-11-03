@@ -57,6 +57,17 @@ if not _pil_avif_supported:
 del _pil_avif_supported
 
 
+def woocommerce_unique_violation_retry(error: Exception, record_label: str) -> None:
+    """Turns a duplicate insert on one of the WooCommerce unique indexes ('woocommerce_id_unique_index_create()' in models.py) into a queue job retry.
+
+    PostgreSQL only raises it once the concurrent job (polling chunk or webhook) that created the same record has committed, but Odoo's REPEATABLE READ snapshot keeps that record invisible to this transaction: only a retry, in a new transaction, can find and update it.
+    """
+    if isinstance(error, psycopg2.errors.UniqueViolation):
+        constraint_name = error.diag.constraint_name or ''
+        if '_woocommerce_site_url_' in constraint_name and constraint_name.endswith('_uniq'):
+            raise RetryableJobError(f'{record_label} was created by a concurrent sync job; retrying to update it', seconds=10) from error
+
+
 class WoocommerceSyncConnector(models.Model):
     _name = 'woocommerce.sync.connector'
     _description = 'WooCommerce Sync Connector'
@@ -2670,12 +2681,13 @@ class WoocommerceSyncConnector(models.Model):
             if odoo_product and self.settings_woocommerce_images_sync and len(woocommerce_product['images']) > 0:
                 self.image_process_attachments(woocommerce_product['images'][1:], odoo_product)  # Skips the main image
 
-        except Exception:
+        except Exception as error:
             # Roll back only this record's changes, keeping other records already written in this chunk job
             savepoint.rollback()
             for cache in (odoo_brand_cache, odoo_category_cache, odoo_tag_cache, odoo_tax_rate_cache, odoo_uom_cache):
                 if cache is not None:
                     cache.clear()
+            woocommerce_unique_violation_retry(error, f'WooCommerce product {woocommerce_product["id"]}')
             _logger.exception(f'Error syncing WooCommerce product {woocommerce_product["name"]} (WooCommerce product ID: {woocommerce_product["id"]})')
             raise
         finally:
@@ -2713,6 +2725,22 @@ class WoocommerceSyncConnector(models.Model):
         )
         new_count = updated_count = skipped_count = 0
         errors: list[str] = []
+
+        # 'odoo_products' is read when the chunk is enqueued: another job (e.g. a webhook) may have created some of these products since
+        missing_woocommerce_ids = [str(woocommerce_product['id']) for woocommerce_product in woocommerce_products if str(woocommerce_product['id']) not in odoo_products]
+        if missing_woocommerce_ids:
+            odoo_products = {
+                **odoo_products,
+                **{
+                    odoo_product['woocommerce_id']: odoo_product
+                    for odoo_product in self.env['product.template']
+                    .with_context(active_test=False, lang=False)
+                    .search_read(
+                        [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', 'in', missing_woocommerce_ids)],
+                        fields=['id', 'active', 'write_date', 'woocommerce_id', 'woocommerce_manage_stock'],
+                    )
+                },
+            }
 
         for woocommerce_product in woocommerce_products:
             try:
@@ -3342,12 +3370,13 @@ class WoocommerceSyncConnector(models.Model):
                 if odoo_product.default_code != odoo_product_sku:
                     odoo_product.write({'default_code': odoo_product_sku})
 
-        except Exception:
+        except Exception as error:
             # Roll back only this record's changes, keeping other records already written in this chunk job
             savepoint.rollback()
             for cache in (odoo_attribute_cache, odoo_attribute_value_cache, odoo_tax_rate_cache, odoo_uom_cache):
                 if cache is not None:
                     cache.clear()
+            woocommerce_unique_violation_retry(error, f'WooCommerce product {woocommerce_product["id"]} variations')
             _logger.exception(f'Error syncing WooCommerce product: {woocommerce_product["name"]} (WooCommerce product ID: {woocommerce_product["id"]})')
             raise
         finally:
@@ -3638,7 +3667,11 @@ class WoocommerceSyncConnector(models.Model):
                         odoo_customer = self.env['res.partner'].create(customer_values)
                 except Exception:
                     # A concurrent sync job (e.g. order sync creating the same customer from billing info) already created this customer - reuse it instead of failing
-                    odoo_customer = self.env['res.partner'].search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', customer_values['woocommerce_id'])], limit=1)
+                    odoo_customer = (
+                        self.env['res.partner']
+                        .with_context(active_test=False)
+                        .search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', customer_values['woocommerce_id'])], limit=1)
+                    )
                     if not odoo_customer:
                         raise
                     odoo_customer.write(customer_values_for_update)
@@ -3654,9 +3687,10 @@ class WoocommerceSyncConnector(models.Model):
             # Shipping address (only creates/updates a child contact when WooCommerce shipping fields are actually set)
             self.odoo_customer_shipping_address_create_or_update(odoo_customer, customer_values, odoo_country_cache)
 
-        except Exception:
+        except Exception as error:
             # Roll back only this record's changes, keeping other records already written in this chunk job
             savepoint.rollback()
+            woocommerce_unique_violation_retry(error, f'WooCommerce customer {woocommerce_customer["id"]}')
             _logger.exception(f'Error syncing WooCommerce customer: {woocommerce_customer["first_name"]} {woocommerce_customer["last_name"]} (WooCommerce customer ID: {woocommerce_customer["id"]})')
             raise
         finally:
@@ -4429,9 +4463,10 @@ class WoocommerceSyncConnector(models.Model):
             # Refunds
             self.woocommerce_to_odoo_order_refunds_sync(odoo_sale_order, woocommerce_order)
 
-        except Exception:
+        except Exception as error:
             # Roll back only this record's changes, keeping other records already written in this chunk job
             savepoint.rollback()
+            woocommerce_unique_violation_retry(error, f'WooCommerce order {woocommerce_order["id"]}')
             _logger.exception(f'Error syncing WooCommerce order {woocommerce_order["id"]}')
             raise
         finally:
@@ -4554,6 +4589,20 @@ class WoocommerceSyncConnector(models.Model):
         odoo_country_cache: dict[str, int] = {}
         errors: list[str] = []
         new_count = updated_count = skipped_count = 0
+
+        # 'odoo_sale_orders' is read when the chunk is enqueued: another job (e.g. a webhook) may have created some of these orders since
+        missing_woocommerce_ids = [str(woocommerce_order['id']) for woocommerce_order in woocommerce_orders if str(woocommerce_order['id']) not in odoo_sale_orders]
+        if missing_woocommerce_ids:
+            odoo_sale_orders = {
+                **odoo_sale_orders,
+                **{
+                    odoo_sale_order['woocommerce_id']: odoo_sale_order
+                    for odoo_sale_order in self.env['sale.order'].search_read(
+                        [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', 'in', missing_woocommerce_ids)],
+                        fields=['id', 'name', 'write_date', 'woocommerce_id'],
+                    )
+                },
+            }
 
         for woocommerce_order in woocommerce_orders:
             try:
