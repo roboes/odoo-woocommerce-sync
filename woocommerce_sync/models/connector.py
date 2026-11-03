@@ -5458,11 +5458,6 @@ class WoocommerceSyncConnector(models.Model):
         if not isinstance(woocommerce_product, dict) or not woocommerce_product.get('id'):
             raise RetryableJobError(f'WooCommerce returned an invalid product payload for {woocommerce_product_id}', seconds=30)
 
-        try:
-            settings = self.woocommerce_webhook_settings_retrieve(woocommerce_api)
-        except (requests.RequestException, ValueError, KeyError, TypeError) as error:
-            raise RetryableJobError(f'Failed to retrieve WooCommerce settings for product {woocommerce_product_id}: {error}', seconds=30) from error
-
         odoo_product = (
             self.env['product.template']
             .with_context(active_test=False, lang=False)
@@ -5474,10 +5469,15 @@ class WoocommerceSyncConnector(models.Model):
         )
         odoo_products = {odoo_product[0]['woocommerce_id']: odoo_product[0]} if odoo_product else {}
 
-        # A product trashed before it ever reached Odoo has nothing to archive: do not import it
-        if woocommerce_product.get('status') == 'trash' and not odoo_products:
+        is_trashed = woocommerce_product.get('status') == 'trash'
+        if is_trashed and not odoo_products:
             _logger.info(f'Skipped import of WooCommerce product {woocommerce_product_id}: it is in the trash')
             return
+
+        try:
+            settings = self.woocommerce_webhook_settings_retrieve(woocommerce_api)
+        except (requests.RequestException, ValueError, KeyError, TypeError) as error:
+            raise RetryableJobError(f'Failed to retrieve WooCommerce settings for product {woocommerce_product_id}: {error}', seconds=30) from error
 
         self.woocommerce_to_odoo_product_sync(
             woocommerce_product,
@@ -5489,7 +5489,7 @@ class WoocommerceSyncConnector(models.Model):
             odoo_products,
         )
 
-        if woocommerce_product.get('type') == 'variable' and self.settings_woocommerce_to_odoo_products_variations_sync:
+        if woocommerce_product.get('type') == 'variable' and not is_trashed and self.settings_woocommerce_to_odoo_products_variations_sync:
             self.woocommerce_to_odoo_product_variations_sync(
                 woocommerce_product,
                 settings['woocommerce_currency'],

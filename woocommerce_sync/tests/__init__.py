@@ -44,8 +44,8 @@ from . import (
     test_webhook_archived_records,
     test_webhook_http,
     test_webhook_queue_job_dispatch,
-    test_webhook_trashed_products,
     test_webhook_signature,
+    test_webhook_trashed_products,
     test_woocommerce_client,
     test_woocommerce_to_odoo_product_sync,
 )
@@ -53,6 +53,7 @@ from . import (
 __all__ = [
     'test_barcodes',
     'test_chunk_job_payload',
+    'test_concurrent_creation',
     'test_customer_identity',
     'test_customer_shipping_address',
     'test_global_setups',
@@ -80,6 +81,7 @@ __all__ = [
     'test_webhook_http',
     'test_webhook_queue_job_dispatch',
     'test_webhook_signature',
+    'test_webhook_trashed_products',
     'test_woocommerce_client',
     'test_woocommerce_to_odoo_product_sync',
 ]

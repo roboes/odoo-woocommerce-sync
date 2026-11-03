@@ -138,7 +138,9 @@ class ProductTemplate(models.Model):
     woocommerce_date_created_gmt = fields.Datetime(string='Date Created', readonly=True)
     woocommerce_date_modified = fields.Datetime(string='Date Modified', readonly=True)
     woocommerce_date_modified_gmt = fields.Datetime(string='Date Modified', readonly=True)
-    woocommerce_status = fields.Selection(selection=[('draft', 'Draft'), ('pending', 'Pending'), ('private', 'Private'), ('publish', 'Published'), ('future', 'Scheduled'), ('trash', 'Trash')], string='Status', readonly=True)
+    woocommerce_status = fields.Selection(
+        selection=[('draft', 'Draft'), ('pending', 'Pending'), ('private', 'Private'), ('publish', 'Published'), ('future', 'Scheduled'), ('trash', 'Trash')], string='Status', readonly=True
+    )
     woocommerce_featured = fields.Boolean(string='Featured', readonly=True)
     woocommerce_catalog_visibility = fields.Selection(selection=[('visible', 'Visible'), ('catalog', 'Catalog'), ('search', 'Search'), ('hidden', 'Hidden')], string='Catalog Visibility', readonly=True)
     woocommerce_description = fields.Html(string='Description', readonly=True)
@@ -246,7 +248,9 @@ class ProductProduct(models.Model):
     woocommerce_date_created_gmt = fields.Datetime(string='Date Created', readonly=True)
     woocommerce_date_modified = fields.Datetime(string='Date Modified', readonly=True)
     woocommerce_date_modified_gmt = fields.Datetime(string='Date Modified', readonly=True)
-    woocommerce_status = fields.Selection(selection=[('draft', 'Draft'), ('pending', 'Pending'), ('private', 'Private'), ('publish', 'Published'), ('future', 'Scheduled'), ('trash', 'Trash')], string='Status', readonly=True)
+    woocommerce_status = fields.Selection(
+        selection=[('draft', 'Draft'), ('pending', 'Pending'), ('private', 'Private'), ('publish', 'Published'), ('future', 'Scheduled'), ('trash', 'Trash')], string='Status', readonly=True
+    )
     woocommerce_description = fields.Html(string='Description', readonly=True)
     woocommerce_sku = fields.Char(string='SKU', readonly=True)
     woocommerce_price = fields.Char(string='Price', readonly=True)
