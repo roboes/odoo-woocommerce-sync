@@ -1,5 +1,12 @@
 # Changelog
 
+## v16.0.6.1 / v18.0.6.1 / v19.0.6.1 - 2026-11-03
+
+### Fixes
+
+- Products, variations, orders and customers created by a concurrent sync job (e.g. the scheduled sync and a webhook a few seconds apart) no longer fail with `UniqueViolation` on the WooCommerce ID index: the job is retried and updates the existing record. Products and orders chunk jobs also refresh their lookup map, read when the chunk was enqueued, so records created since then are updated instead of duplicated. (#34)
+- Customer import now reuses an archived Odoo customer with the same WooCommerce ID instead of failing on the WooCommerce ID index.
+
 ## v16.0.6.0 / v18.0.6.0 / v19.0.6.0 - 2026-10-27
 
 ### Features
