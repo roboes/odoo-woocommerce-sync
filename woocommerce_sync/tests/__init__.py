@@ -44,6 +44,7 @@ from . import (
     test_webhook_archived_records,
     test_webhook_http,
     test_webhook_queue_job_dispatch,
+    test_webhook_trashed_products,
     test_webhook_signature,
     test_woocommerce_client,
     test_woocommerce_to_odoo_product_sync,

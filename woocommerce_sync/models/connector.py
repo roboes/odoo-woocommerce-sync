@@ -5474,6 +5474,11 @@ class WoocommerceSyncConnector(models.Model):
         )
         odoo_products = {odoo_product[0]['woocommerce_id']: odoo_product[0]} if odoo_product else {}
 
+        # A product trashed before it ever reached Odoo has nothing to archive: do not import it
+        if woocommerce_product.get('status') == 'trash' and not odoo_products:
+            _logger.info(f'Skipped import of WooCommerce product {woocommerce_product_id}: it is in the trash')
+            return
+
         self.woocommerce_to_odoo_product_sync(
             woocommerce_product,
             settings['woocommerce_currency'],
