@@ -2466,6 +2466,11 @@ class WoocommerceSyncConnector(models.Model):
         return product_values
 
     @api.model
+    def woocommerce_unique_violation_retry(self: models.Model, error: Exception, record_label: str) -> None:
+        """Turns a duplicate WooCommerce ID insert into a retry: another job (polling chunk or webhook) created the same record in a transaction this one could not see yet, and the retry finds and updates it."""
+        if isinstance(error, psycopg2.errors.UniqueViolation) and (error.diag.constraint_name or '').endswith('_woocommerce_site_url_id_uniq'):
+            raise RetryableJobError(f'{record_label} was created by a concurrent sync job; retrying to update it', seconds=10) from error
+
     def woocommerce_to_odoo_product_sync(
         self: models.Model,
         woocommerce_product: dict[str, Any],
@@ -2491,6 +2496,17 @@ class WoocommerceSyncConnector(models.Model):
         try:
             # Try to find the corresponding product in Odoo by its WooCommerce product ID
             odoo_product = odoo_products.get(str(woocommerce_product['id']))
+
+            # 'odoo_products' is read when the job is enqueued: a concurrent job may have created the product since
+            if not odoo_product:
+                odoo_product = next(
+                    iter(
+                        self.env['product.template']
+                        .with_context(active_test=False, lang=False)
+                        .search_read([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_product['id']))], fields=['id'], limit=1)
+                    ),
+                    None,
+                )
 
             # First import: link to an existing, not yet linked Odoo product with the same internal reference instead of creating a duplicate (only when it is unambiguous)
             if not odoo_product and woocommerce_product.get('sku'):
@@ -2670,12 +2686,13 @@ class WoocommerceSyncConnector(models.Model):
             if odoo_product and self.settings_woocommerce_images_sync and len(woocommerce_product['images']) > 0:
                 self.image_process_attachments(woocommerce_product['images'][1:], odoo_product)  # Skips the main image
 
-        except Exception:
+        except Exception as error:
             # Roll back only this record's changes, keeping other records already written in this chunk job
             savepoint.rollback()
             for cache in (odoo_brand_cache, odoo_category_cache, odoo_tag_cache, odoo_tax_rate_cache, odoo_uom_cache):
                 if cache is not None:
                     cache.clear()
+            self.woocommerce_unique_violation_retry(error, f'WooCommerce product {woocommerce_product["id"]}')
             _logger.exception(f'Error syncing WooCommerce product {woocommerce_product["name"]} (WooCommerce product ID: {woocommerce_product["id"]})')
             raise
         finally:
@@ -3636,10 +3653,11 @@ class WoocommerceSyncConnector(models.Model):
                 try:
                     with self.env.cr.savepoint():
                         odoo_customer = self.env['res.partner'].create(customer_values)
-                except Exception:
+                except Exception as error:
                     # A concurrent sync job (e.g. order sync creating the same customer from billing info) already created this customer - reuse it instead of failing
                     odoo_customer = self.env['res.partner'].search([('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', customer_values['woocommerce_id'])], limit=1)
                     if not odoo_customer:
+                        self.woocommerce_unique_violation_retry(error, f'WooCommerce customer {customer_values["woocommerce_id"]}')
                         raise
                     odoo_customer.write(customer_values_for_update)
                 sync_status = 'created'
@@ -3752,6 +3770,17 @@ class WoocommerceSyncConnector(models.Model):
         try:
             # Try to find the corresponding sale order in Odoo by its WooCommerce order ID
             odoo_sale_order = odoo_sale_orders.get(str(woocommerce_order['id']))
+
+            # 'odoo_sale_orders' is read when the job is enqueued: a concurrent job may have created the order since
+            if not odoo_sale_order:
+                odoo_sale_order = next(
+                    iter(
+                        self.env['sale.order'].search_read(
+                            [('woocommerce_site_url', '=', self.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_order['id']))], fields=['id'], limit=1
+                        )
+                    ),
+                    None,
+                )
 
             if odoo_sale_order:
                 odoo_sale_order = self.env['sale.order'].browse(odoo_sale_order['id'])
@@ -4429,9 +4458,10 @@ class WoocommerceSyncConnector(models.Model):
             # Refunds
             self.woocommerce_to_odoo_order_refunds_sync(odoo_sale_order, woocommerce_order)
 
-        except Exception:
+        except Exception as error:
             # Roll back only this record's changes, keeping other records already written in this chunk job
             savepoint.rollback()
+            self.woocommerce_unique_violation_retry(error, f'WooCommerce order {woocommerce_order["id"]}')
             _logger.exception(f'Error syncing WooCommerce order {woocommerce_order["id"]}')
             raise
         finally:
