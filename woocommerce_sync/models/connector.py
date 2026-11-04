@@ -1091,6 +1091,9 @@ class WoocommerceSyncConnector(models.Model):
         if not woocommerce_images:
             return
 
+        # Write the product's pending changes now, so their errors reach the product sync instead of being logged as image errors by the per-image savepoint below
+        self.env.flush_all()
+
         for image_data in woocommerce_images:
             if not image_data['src'] or not image_data['name']:
                 continue
@@ -1104,25 +1107,30 @@ class WoocommerceSyncConnector(models.Model):
                 img.convert('RGB').save(buffered, format='PNG')
                 img_base64 = b64encode(buffered.getvalue()).decode('utf-8')
 
-                # Multiple Images Base (requires 'base_multi_image' Odoo add-on)
-                if 'base_multi_image.image' in self.env:
-                    existing = self.env['base_multi_image.image'].with_context(lang=False).search([('owner_model', '=', 'product.template'), ('owner_id', '=', product.id), ('name', '=', image_data['name'])], limit=1)
+                # A failed query aborts the whole transaction: the savepoint keeps the product and the next images usable when this image is skipped below
+                with self.env.cr.savepoint():
+                    # Multiple Images Base (requires 'base_multi_image' Odoo add-on)
+                    if 'base_multi_image.image' in self.env:
+                        existing = self.env['base_multi_image.image'].with_context(lang=False).search([('owner_model', '=', 'product.template'), ('owner_id', '=', product.id), ('name', '=', image_data['name'])], limit=1)
 
-                    if not existing:
-                        if version_info[0] == 16:
-                            self.env['base_multi_image.image'].create({'owner_model': 'product.template', 'owner_id': product.id, 'name': image_data['name'], 'image_1920': img_base64})
+                        if not existing:
+                            if version_info[0] == 16:
+                                self.env['base_multi_image.image'].create({'owner_model': 'product.template', 'owner_id': product.id, 'name': image_data['name'], 'image_1920': img_base64})
 
-                        elif version_info[0] == 18:  # TODO Odoo v19: check https://github.com/OCA/server-tools/tree/19.0/base_multi_image when available
-                            self.env['base_multi_image.image'].create({'owner_model': 'product.template', 'owner_id': product.id, 'name': image_data['name'], 'storage': 'filestore', 'attachment_image': img_base64})
+                            elif version_info[0] == 18:  # TODO Odoo v19: check https://github.com/OCA/server-tools/tree/19.0/base_multi_image when available
+                                self.env['base_multi_image.image'].create({'owner_model': 'product.template', 'owner_id': product.id, 'name': image_data['name'], 'storage': 'filestore', 'attachment_image': img_base64})
 
-                else:
-                    existing = self.env['ir.attachment'].search([('res_model', '=', 'product.template'), ('res_id', '=', product.id), ('name', '=', image_data['name'])], limit=1)
+                    else:
+                        existing = self.env['ir.attachment'].search([('res_model', '=', 'product.template'), ('res_id', '=', product.id), ('name', '=', image_data['name'])], limit=1)
 
-                    if not existing:
-                        self.env['ir.attachment'].create({'name': image_data['name'], 'type': 'binary', 'datas': img_base64, 'mimetype': 'image/png', 'res_model': 'product.template', 'res_id': product.id})
+                        if not existing:
+                            self.env['ir.attachment'].create({'name': image_data['name'], 'type': 'binary', 'datas': img_base64, 'mimetype': 'image/png', 'res_model': 'product.template', 'res_id': product.id})
 
             except requests.exceptions.RequestException as error:
                 _logger.error(f'Failed to download image from {image_data["src"]}: {error}')
+            except (psycopg2.errors.SerializationFailure, psycopg2.errors.DeadlockDetected, psycopg2.errors.LockNotAvailable):
+                # A concurrent job updated the same rows: queue_job retries the whole job in a new transaction
+                raise
             except Exception as error:
                 _logger.error(f'Error processing image from {image_data["src"]}: {error}')
 
@@ -2766,7 +2774,7 @@ class WoocommerceSyncConnector(models.Model):
                 elif sync_status == 'skipped':
                     skipped_count += 1
             except Exception as error:
-                if isinstance(error, (RetryableJobError, psycopg2.errors.SerializationFailure, psycopg2.errors.DeadlockDetected)):
+                if isinstance(error, (RetryableJobError, psycopg2.errors.SerializationFailure, psycopg2.errors.DeadlockDetected, psycopg2.errors.LockNotAvailable)):
                     raise
                 _logger.exception(f'Error syncing WooCommerce product {woocommerce_product.get("id")} within chunk job')
                 errors.append(f'Product {woocommerce_product.get("id")}: {error}')
