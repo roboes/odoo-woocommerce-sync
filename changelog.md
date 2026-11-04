@@ -1,5 +1,11 @@
 # Changelog
 
+## v16.0.6.2 / v18.0.6.2 / v19.0.6.2 - 2026-11-04
+
+### Fixes
+
+- Gallery image database errors no longer leave the product sync transaction aborted: each image is stored in its own savepoint, while pending product writes are flushed beforehand so their errors reach the product sync. Serialization failures, deadlocks and unavailable locks propagate to `queue_job` for retry, including in scheduled product chunk jobs. (#36)
+
 ## v16.0.6.1 / v18.0.6.1 / v19.0.6.1 - 2026-11-03
 
 ### Fixes
