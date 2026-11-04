@@ -2774,7 +2774,7 @@ class WoocommerceSyncConnector(models.Model):
                 elif sync_status == 'skipped':
                     skipped_count += 1
             except Exception as error:
-                if isinstance(error, (RetryableJobError, psycopg2.errors.SerializationFailure, psycopg2.errors.DeadlockDetected)):
+                if isinstance(error, (RetryableJobError, psycopg2.errors.SerializationFailure, psycopg2.errors.DeadlockDetected, psycopg2.errors.LockNotAvailable)):
                     raise
                 _logger.exception(f'Error syncing WooCommerce product {woocommerce_product.get("id")} within chunk job')
                 errors.append(f'Product {woocommerce_product.get("id")}: {error}')

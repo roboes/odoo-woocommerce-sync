@@ -6,7 +6,11 @@ import psycopg2
 from odoo.tests.common import tagged
 from odoo.tools import mute_logger
 
-from .common import WoocommerceSyncCommon, make_fake_image_download
+from .common import (
+    WoocommerceSyncCommon,
+    make_fake_image_download,
+    make_woocommerce_product_payload,
+)
 
 
 @tagged('post_install', '-at_install')
@@ -60,12 +64,38 @@ class TestImageGalleryErrors(WoocommerceSyncCommon):
         image_download.assert_not_called()
 
     def test_concurrent_update_is_raised_for_queue_job_retry(self):
-        def create(records, values):
-            raise psycopg2.errors.SerializationFailure('could not serialize access due to concurrent update')
+        for error_class in (psycopg2.errors.SerializationFailure, psycopg2.errors.DeadlockDetected, psycopg2.errors.LockNotAvailable):
+            with (
+                self.subTest(error=error_class.__name__),
+                patch.object(type(self.connector), 'image_download', make_fake_image_download()),
+                patch.object(type(self.env[self.image_model]), 'create', side_effect=error_class('Concurrent gallery write')),
+                self.assertRaises(error_class),
+            ):
+                self.connector.image_process_attachments(self.images, self.product)
 
-        with (
-            patch.object(type(self.connector), 'image_download', make_fake_image_download()),
-            patch.object(type(self.env[self.image_model]), 'create', create),
-            self.assertRaises(psycopg2.errors.SerializationFailure),
-        ):
-            self.connector.image_process_attachments(self.images, self.product)
+    def test_gallery_concurrency_errors_escape_the_chunk_for_queue_job_retry(self):
+        self.connector.settings_woocommerce_images_sync = True
+        product = make_woocommerce_product_payload(id=91002, sku='TEST-GALLERY-RETRY', images=[self.images[0], self.images[1]])
+
+        for error_class in (psycopg2.errors.SerializationFailure, psycopg2.errors.DeadlockDetected, psycopg2.errors.LockNotAvailable):
+            with (
+                self.subTest(error=error_class.__name__),
+                patch.object(type(self.connector), 'image_download', make_fake_image_download()),
+                patch.object(type(self.env[self.image_model]), 'create', side_effect=error_class('Concurrent gallery write')) as image_create,
+                patch.object(type(self.connector), 'sync_summary_chunk_completed') as summary,
+                mute_logger('odoo.addons.woocommerce_sync.models.connector'),
+            ):
+                with self.assertRaises(error_class):
+                    self.connector.woocommerce_to_odoo_products_chunk_sync(
+                        [product],
+                        woocommerce_currency=None,
+                        woocommerce_tax_rates={},
+                        woocommerce_prices_include_tax=False,
+                        woocommerce_weight_unit='kg',
+                        woocommerce_dimension_unit='cm',
+                        odoo_products={},
+                    )
+
+                image_create.assert_called_once()
+                summary.assert_not_called()
+                self.assertFalse(self.env['product.template'].search([('woocommerce_site_url', '=', self.connector.settings_woocommerce_connection_url), ('woocommerce_id', '=', '91002')]))
