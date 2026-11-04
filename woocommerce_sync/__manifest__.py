@@ -6,9 +6,9 @@
     'author': 'roboes',
     'website': 'https://github.com/roboes/odoo-woocommerce-sync',
     'category': 'Connectors',
-    # 'version': '16.0.6.1',
-    # 'version': '18.0.6.1',
-    'version': '19.0.6.1',
+    # 'version': '16.0.6.2',
+    # 'version': '18.0.6.2',
+    'version': '19.0.6.2',
     'external_dependencies': {
         'python': ['filetype', 'phonenumbers', 'woocommerce'],
     },
