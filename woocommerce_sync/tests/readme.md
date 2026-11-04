@@ -10,6 +10,7 @@ Automated tests for the `woocommerce_sync` addon, using Odoo's standard `Transac
 | `test_woocommerce_client.py` | `WooCommerceClient`: batching, chunking, retry/backoff. No Odoo database needed, but Odoo must be importable. |
 | `test_webhook_signature.py` | Webhook HMAC signature validation (`WoocommerceSyncWebhookController._signature_valid`). |
 | `test_webhook_queue_job_dispatch.py` | `woocommerce_webhook_process()`: dispatches the correct `with_delay()` job per topic, with a stable `identity_key`, and is a no-op for missing resource ids/unsupported topics. |
+| `test_image_gallery_errors.py` | A database error while storing a gallery image only skips that image (the transaction stays usable), a failed pending product write reaches the product sync instead of being logged as an image error, and serialization failures, deadlocks and unavailable locks propagate through the gallery and scheduled product chunk handlers for queue_job retry. |
 | `test_savepoint_isolation.py` | Regression test: one product failing during a sync must not roll back other, already-processed products in the same batch. |
 | `test_refund_credit_note.py` | WooCommerce order refunds being converted into Odoo credit notes (full refund only; partial refunds are left untouched; idempotent on reprocessing). |
 | `test_odoo_to_woocommerce_values.py` | Odoo -> WooCommerce product payload building, including Odoo-version-specific fields and bounded WordPress media lookup/upload requests. |
