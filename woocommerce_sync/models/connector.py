@@ -4260,6 +4260,11 @@ class WoocommerceSyncConnector(models.Model):
                     woocommerce_line_subtotal = float(line_item.get('subtotal') or 0.0)
                     woocommerce_line_total = float(line_item.get('total') or 0.0)
                     odoo_order_line_item_price_unit = float(order_line_values['woocommerce_price'] or 0.0)
+                    # Tax-included Odoo taxes: use the gross amounts WooCommerce charged (line tax rounded per line) instead of grossing up the net in Odoo, whose per-unit tax rounding drifts (4.125 + 0.825 -> 4.96 instead of 4.95)
+                    if woocommerce_line_tax_rates and self.odoo_tax_calculation_price_include():
+                        woocommerce_line_subtotal += float(line_item.get('subtotal_tax') or 0.0)
+                        woocommerce_line_total += float(line_item.get('total_tax') or 0.0)
+                        odoo_order_line_item_price_unit = woocommerce_line_total / (woocommerce_line_quantity or 1.0)
                     odoo_order_line_item_discount = 0.0
                     if woocommerce_line_quantity and woocommerce_line_subtotal > 0 and woocommerce_line_total < woocommerce_line_subtotal:
                         price_digits = self.env['decimal.precision'].precision_get('Product Price')
@@ -4270,12 +4275,6 @@ class WoocommerceSyncConnector(models.Model):
                         if odoo_sale_order.currency_id.compare_amounts(float_round(undiscounted_price_unit, precision_digits=price_digits) * woocommerce_line_quantity * (1 - discount / 100), woocommerce_line_total) == 0:
                             odoo_order_line_item_price_unit = undiscounted_price_unit
                             odoo_order_line_item_discount = discount
-
-                    # Gross up with the attached taxes, including tax-on-tax, without premature currency rounding.
-                    if woocommerce_line_tax_rates and self.odoo_tax_calculation_price_include():
-                        odoo_order_line_item_price_unit = odoo_order_line_item_taxes.with_context(round=False).compute_all(
-                            odoo_order_line_item_price_unit, currency=odoo_sale_order.currency_id, handle_price_include=False
-                        )['total_included']
 
                     # Unit of measure - without the 'Units' setting, Odoo uses the product's own unit of measure
                     odoo_order_line_item_unit_of_measure = self.env.ref('uom.product_uom_unit') if self.settings_woocommerce_products_package_size_unit_default else None
