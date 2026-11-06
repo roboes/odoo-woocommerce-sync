@@ -153,3 +153,29 @@ class TestOrderLinePricingTaxIncluded(WoocommerceSyncCommon):
         self.assertEqual(order_line.discount, 10.0)
         self.assertAlmostEqual(odoo_sale_order.amount_untaxed, 90.0, places=2)
         self.assertAlmostEqual(odoo_sale_order.amount_total, 107.1, places=2)
+
+    def test_tax_included_line_uses_woocommerce_gross_amount(self):
+        # 4.95 incl. 20% VAT is 4.125 excl.: grossing up 4.125 in Odoo rounds the unit tax 0.825 to 0.83 (4.96), while WooCommerce rounds the tax per line
+        # Amounts as sent by the WooCommerce REST API: 'total' and 'total_tax' rounded to the store decimals, 'price' unrounded
+        cases = (
+            (1, '4.13', '0.82', 4.95),
+            (8, '33.00', '6.60', 39.6),
+            (5, '8.13', '1.62', 9.75),
+        )
+        for index, (quantity, total, total_tax, expected_total) in enumerate(cases):
+            with self.subTest(quantity=quantity):
+                order_id = 96020 + index
+                woocommerce_order = make_woocommerce_order_payload(
+                    id=order_id,
+                    number=str(order_id),
+                    line_items=[make_line_item(id=order_id, quantity=quantity, subtotal=total, total=total, price=expected_total / 1.2 / quantity, total_tax=total_tax, subtotal_tax=total_tax, taxes=[{'id': 7, 'total': total_tax, 'subtotal': total_tax}])],
+                    tax_lines=[{'id': 903, 'rate_code': 'FR-TVA-1', 'rate_id': 7, 'label': 'TVA', 'compound': False, 'tax_total': total_tax, 'shipping_tax_total': '0.00', 'rate_percent': 20.0, 'meta_data': []}],
+                )
+
+                self.connector.woocommerce_to_odoo_order_sync(woocommerce_order, woocommerce_tax_rates={'standard': 20.0}, woocommerce_weight_unit='kg', woocommerce_shipping_methods=[], odoo_sale_orders={})
+                odoo_sale_order = self.env['sale.order'].search([('woocommerce_id', '=', str(order_id))], limit=1)
+
+                order_line = odoo_sale_order.order_line.filtered(lambda line, order_id=order_id: line.woocommerce_id == str(order_id))
+                self.assertAlmostEqual(order_line.price_unit, round(expected_total / quantity, 2))
+                self.assertEqual(order_line.discount, 0.0)
+                self.assertAlmostEqual(odoo_sale_order.amount_total, expected_total, places=2)
