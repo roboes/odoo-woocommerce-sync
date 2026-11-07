@@ -1,5 +1,11 @@
 # Changelog
 
+## v16.0.6.3 / v18.0.6.3 / v19.0.6.3 - 2026-11-07
+
+### Fixes
+
+- Tax-included order lines now use WooCommerce's gross line amounts, including line taxes rounded by WooCommerce, instead of grossing up the net unit price in Odoo. This avoids per-unit rounding differences that could make the imported order total differ from the amount charged. (#37)
+
 ## v16.0.6.2 / v18.0.6.2 / v19.0.6.2 - 2026-11-04
 
 ### Fixes
