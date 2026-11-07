@@ -4254,14 +4254,15 @@ class WoocommerceSyncConnector(models.Model):
                     # Always explicit: an empty command list would let Odoo apply the product's default taxes to a line WooCommerce did not tax
                     odoo_order_line_item_tax_id = [(6, 0, odoo_order_line_item_taxes.ids)]
 
-                    # Price - WooCommerce line items report 'subtotal' (before coupons) and 'total' (after coupons) tax-excluded, regardless of the store's 'Prices entered with tax' setting; their 'price' is 'total / quantity', i.e. already discounted.
+                    # WooCommerce reports line 'subtotal' and 'total' tax-excluded, regardless of the store's price setting; 'price' is the discounted unit price and may be unrounded
                     # The coupon discount is carried by Odoo's own 'discount' column (coupon lines are informational only), so Odoo computes the tax on the discounted amount like WooCommerce
                     woocommerce_line_quantity = float(line_item['quantity'] or 0.0)
                     woocommerce_line_subtotal = float(line_item.get('subtotal') or 0.0)
                     woocommerce_line_total = float(line_item.get('total') or 0.0)
                     odoo_order_line_item_price_unit = float(order_line_values['woocommerce_price'] or 0.0)
-                    # Tax-included Odoo taxes: use the gross amounts WooCommerce charged (line tax rounded per line) instead of grossing up the net in Odoo, whose per-unit tax rounding drifts (4.125 + 0.825 -> 4.96 instead of 4.95)
-                    if woocommerce_line_tax_rates and self.odoo_tax_calculation_price_include():
+                    # Tax-included Odoo taxes: use WooCommerce's gross line amounts, which already include its per-line tax rounding
+                    odoo_order_line_item_tax_included = odoo_order_line_item_taxes.flatten_taxes_hierarchy().mapped('price_include')
+                    if odoo_order_line_item_tax_included and all(odoo_order_line_item_tax_included):
                         woocommerce_line_subtotal += float(line_item.get('subtotal_tax') or 0.0)
                         woocommerce_line_total += float(line_item.get('total_tax') or 0.0)
                         odoo_order_line_item_price_unit = woocommerce_line_total / (woocommerce_line_quantity or 1.0)

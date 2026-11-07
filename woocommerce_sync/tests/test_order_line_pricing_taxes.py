@@ -1,6 +1,7 @@
 """Tests for WooCommerce order line prices and taxes ('woocommerce_to_odoo_order_sync()' in connector.py):
 - Coupon discounts are carried by the line 'discount' column (WooCommerce line 'price' is already discounted), not deducted a second time.
 - The tax rate actually charged on each line ('tax_lines[].rate_percent', matched by 'taxes[].id') is used instead of the store's base rate for the tax class, and lines without tax get no Odoo tax.
+- Tax-included prices use WooCommerce's gross line totals to avoid per-unit tax rounding differences.
 """
 
 from typing import ClassVar
@@ -155,7 +156,6 @@ class TestOrderLinePricingTaxIncluded(WoocommerceSyncCommon):
         self.assertAlmostEqual(odoo_sale_order.amount_total, 107.1, places=2)
 
     def test_tax_included_line_uses_woocommerce_gross_amount(self):
-        # 4.95 incl. 20% VAT is 4.125 excl.: grossing up 4.125 in Odoo rounds the unit tax 0.825 to 0.83 (4.96), while WooCommerce rounds the tax per line
         # Amounts as sent by the WooCommerce REST API: 'total' and 'total_tax' rounded to the store decimals, 'price' unrounded
         cases = (
             (1, '4.13', '0.82', 4.95),
@@ -168,7 +168,18 @@ class TestOrderLinePricingTaxIncluded(WoocommerceSyncCommon):
                 woocommerce_order = make_woocommerce_order_payload(
                     id=order_id,
                     number=str(order_id),
-                    line_items=[make_line_item(id=order_id, quantity=quantity, subtotal=total, total=total, price=expected_total / 1.2 / quantity, total_tax=total_tax, subtotal_tax=total_tax, taxes=[{'id': 7, 'total': total_tax, 'subtotal': total_tax}])],
+                    line_items=[
+                        make_line_item(
+                            id=order_id,
+                            quantity=quantity,
+                            subtotal=total,
+                            total=total,
+                            price=expected_total / 1.2 / quantity,
+                            total_tax=total_tax,
+                            subtotal_tax=total_tax,
+                            taxes=[{'id': 7, 'total': total_tax, 'subtotal': total_tax}],
+                        )
+                    ],
                     tax_lines=[{'id': 903, 'rate_code': 'FR-TVA-1', 'rate_id': 7, 'label': 'TVA', 'compound': False, 'tax_total': total_tax, 'shipping_tax_total': '0.00', 'rate_percent': 20.0, 'meta_data': []}],
                 )
 
@@ -179,3 +190,29 @@ class TestOrderLinePricingTaxIncluded(WoocommerceSyncCommon):
                 self.assertAlmostEqual(order_line.price_unit, round(expected_total / quantity, 2))
                 self.assertEqual(order_line.discount, 0.0)
                 self.assertAlmostEqual(odoo_sale_order.amount_total, expected_total, places=2)
+
+    def test_tax_included_discount_uses_gross_amount_when_discount_rounds_to_zero(self):
+        order_id = 96024
+        woocommerce_order = make_woocommerce_order_payload(
+            id=order_id,
+            number=str(order_id),
+            line_items=[
+                make_line_item(
+                    id=order_id,
+                    subtotal='1000.00',
+                    subtotal_tax='200.00',
+                    total='999.99',
+                    total_tax='200.00',
+                    price=999.99,
+                    taxes=[{'id': 7, 'total': '200.00', 'subtotal': '200.00'}],
+                )
+            ],
+            tax_lines=[{'id': 903, 'rate_code': 'FR-TVA-1', 'rate_id': 7, 'label': 'TVA', 'compound': False, 'tax_total': '200.00', 'shipping_tax_total': '0.00', 'rate_percent': 20.0, 'meta_data': []}],
+        )
+
+        odoo_sale_order = self._sync_order(woocommerce_order, woocommerce_tax_rates={'standard': 20.0})
+
+        order_line = odoo_sale_order.order_line.filtered(lambda line: line.woocommerce_id == str(order_id))
+        self.assertAlmostEqual(order_line.price_unit, 1199.99)
+        self.assertEqual(order_line.discount, 0.0)
+        self.assertAlmostEqual(odoo_sale_order.amount_total, 1199.99, places=2)
