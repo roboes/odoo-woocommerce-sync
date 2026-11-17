@@ -1,5 +1,11 @@
 # Changelog
 
+## v16.0.6.4 / v18.0.6.4 / v19.0.6.4 - 2026-11-17
+
+### Fixes
+
+- The product deletion check no longer deletes or archives products still published in WooCommerce when products are trashed or deleted while it runs. It used to list the whole catalog page by page, and products removed from earlier pages shifted the later ones, so some products were never returned and were taken as deleted. Odoo products are now looked up by ID instead (`include`, 100 per request), which also needs fewer requests than listing the whole catalog. (#38)
+
 ## v16.0.6.3 / v18.0.6.3 / v19.0.6.3 - 2026-11-07
 
 ### Fixes
