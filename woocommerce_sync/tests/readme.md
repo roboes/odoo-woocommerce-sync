@@ -16,6 +16,7 @@ Automated tests for the `woocommerce_sync` addon, using Odoo's standard `Transac
 | `test_odoo_to_woocommerce_values.py` | Odoo -> WooCommerce product payload building, including Odoo-version-specific fields and bounded WordPress media lookup/upload requests. |
 | `test_woocommerce_to_odoo_product_sync.py` | `woocommerce_service` mapping from `virtual`/`downloadable`, and tax only applied when WooCommerce `tax_status` is `taxable`. |
 | `test_chunk_job_payload.py` | Chunk jobs only receive the slice of the Odoo lookup maps (products, customers, orders, stock) matching their records, instead of the whole map. |
+| `test_customer_company.py` | Customers with a WooCommerce billing company imported as Odoo companies, the person kept as a `type=contact` child updated on resync, a company type set in Odoo kept when WooCommerce has no company. |
 | `test_customer_shipping_address.py` | `odoo_customer_shipping_address_create_or_update()`: creates/updates a `type=delivery` child contact from WooCommerce shipping fields instead of duplicating it on resync. |
 | `test_order_fee_coupon_lines.py` | WooCommerce order fee lines/coupon lines synced as real `sale.order.line` rows, idempotent on resync; coupon lines are zero-amount, since the discount is already on the product lines. |
 | `test_order_shipping_lines.py` | Orders with multiple WooCommerce shipping lines: extra lines beyond the first are added as order lines, idempotent on resync. Real-cost carriers import string shipping totals without losing the amount paid. |

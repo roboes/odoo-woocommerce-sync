@@ -19,6 +19,7 @@ from . import (
     test_barcodes,
     test_chunk_job_payload,
     test_concurrent_creation,
+    test_customer_company,
     test_customer_identity,
     test_customer_shipping_address,
     test_global_setups,

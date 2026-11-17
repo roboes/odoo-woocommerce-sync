@@ -1793,6 +1793,39 @@ class WoocommerceSyncConnector(models.Model):
         return self.env['res.partner'].with_context(active_test=False, lang=False).search(domain, limit=1)
 
     @api.model
+    def odoo_customer_company_contact_create_or_update(self: models.Model, odoo_customer: models.Model, contact_name: str, email: str | None, phone: str | None) -> models.Model:
+        """Create or update the person behind a WooCommerce company account as a contact child of the company partner."""
+        if not odoo_customer or not odoo_customer.is_company or not contact_name:
+            return self.env['res.partner']
+
+        contact_values = {'name': contact_name, 'email': email or False, 'phone': phone or False}
+        odoo_contact = (
+            self.env['res.partner']
+            .with_context(active_test=False, lang=False)
+            .search(
+                [
+                    ('parent_id', '=', odoo_customer.id),
+                    ('type', '=', 'contact'),
+                    ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                ],
+                limit=1,
+            )
+        )
+        if odoo_contact:
+            changed_values = {key: value for key, value in contact_values.items() if (odoo_contact[key] or False) != value}
+            if changed_values:
+                odoo_contact.write(changed_values)
+            return odoo_contact
+
+        return self.env['res.partner'].create(
+            {
+                **contact_values,
+                'type': 'contact',
+                'parent_id': odoo_customer.id,
+                'woocommerce_site_url': self.settings_woocommerce_connection_url,
+            }
+        )
+
     def odoo_customer_shipping_address_create_or_update(self: models.Model, odoo_customer: models.Model, shipping_values: dict[str, Any], odoo_country_cache: dict[str, int] | None = None) -> models.Model:
         """Create or update the WooCommerce delivery child under 'odoo_customer', returning the billing customer when no distinct shipping address is present."""
         if not odoo_customer or not any(shipping_values.get(key) for key in ('woocommerce_shipping_address_1', 'woocommerce_shipping_city', 'woocommerce_shipping_postcode')):
@@ -3602,7 +3635,7 @@ class WoocommerceSyncConnector(models.Model):
                     'image_1920': odoo_avatar_url,
                     'ref': customer_values['woocommerce_id'],
                     'create_date': customer_values['woocommerce_date_created_gmt'],
-                    'company_type': 'person',
+                    'company_type': 'company' if customer_values['woocommerce_billing_company'] else 'person',
                     'customer_rank': 1 if customer_values['woocommerce_is_paying_customer'] else 0,
                     'email': customer_values['woocommerce_email'],
                     'phone': customer_values['woocommerce_billing_phone'],
@@ -3626,6 +3659,9 @@ class WoocommerceSyncConnector(models.Model):
             customer_values_for_update = customer_values.copy()
             if not customer_has_name:
                 customer_values_for_update.pop('name')
+            # Without a billing company, keep the partner type set in Odoo (e.g. a business customer marked as company by hand)
+            if not customer_values['woocommerce_billing_company']:
+                customer_values_for_update.pop('company_type')
 
             if odoo_customer:
                 if customer_values['woocommerce_date_modified_gmt'] > odoo_customer['write_date']:
@@ -3691,6 +3727,10 @@ class WoocommerceSyncConnector(models.Model):
                 _logger.info(f'Linked existing Odoo customer {odoo_customer.id} to WooCommerce customer {customer_values["woocommerce_id"]}')
 
             self.odoo_customer_brazil_vat_update(odoo_customer, woocommerce_customer['billing'])
+
+            # The partner carries the company name: keep the person's name as a contact of the company
+            if customer_values['woocommerce_billing_company']:
+                self.odoo_customer_company_contact_create_or_update(odoo_customer, customer_name, customer_values['woocommerce_email'], customer_values['woocommerce_billing_phone'])
 
             # Shipping address (only creates/updates a child contact when WooCommerce shipping fields are actually set)
             self.odoo_customer_shipping_address_create_or_update(odoo_customer, customer_values, odoo_country_cache)
@@ -3991,7 +4031,7 @@ class WoocommerceSyncConnector(models.Model):
                             # General information
                             'name': customer_values['woocommerce_billing_company'] or customer_name or 'Unknown',
                             'ref': customer_values['woocommerce_id'],
-                            'company_type': 'person',
+                            'company_type': 'company' if customer_values['woocommerce_billing_company'] else 'person',
                             'email': customer_values['woocommerce_billing_email'],
                             'phone': customer_values['woocommerce_billing_phone'],
                             'user_id': self.settings_woocommerce_user_responsible.id,
