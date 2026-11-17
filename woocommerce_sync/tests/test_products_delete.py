@@ -1,4 +1,4 @@
-"""Tests for 'woocommerce_to_odoo_products_delete()': products no longer published in WooCommerce (draft, private...) are archived in Odoo, and products missing from the paginated list are re-checked by ID before being deleted or archived. The delete-or-archive fallback for products gone from WooCommerce is covered in 'test_sync_robustness.py'."""
+"""Tests for 'woocommerce_to_odoo_products_delete()': products no longer published in WooCommerce (draft, private...) are archived in Odoo, and products are checked by ID in chunks of one page, so products trashed or deleted during the check cannot hide other products. The delete-or-archive fallback for products gone from WooCommerce is covered in 'test_sync_robustness.py'."""
 
 from unittest.mock import MagicMock, patch
 
@@ -41,18 +41,21 @@ class TestProductsDelete(WoocommerceSyncCommon):
         self.assertFalse(draft.product_variant_ids.active)
         self.assertFalse(private.active)
 
-    def test_product_skipped_by_pagination_is_rechecked_by_id(self):
-        listed = self._create_odoo_product(94011, 'Listed product')
-        skipped_published = self._create_odoo_product(94012, 'Published product skipped by pagination')
-        skipped_draft = self._create_odoo_product(94013, 'Draft product skipped by pagination')
-        deleted = self._create_odoo_product(94014, 'Product deleted in WooCommerce')
+    def test_products_are_checked_by_id_in_chunks(self):
+        # 101 products: 2 chunks of at most one page each, so products trashed or deleted during the check cannot shift a page and hide other products
+        woocommerce_ids = [str(woocommerce_id) for woocommerce_id in range(94100, 94201)]
+        products = self.env['product.template'].create(
+            [{'name': f'Product {woocommerce_id}', 'woocommerce_site_url': self.connector.settings_woocommerce_connection_url, 'woocommerce_id': woocommerce_id, 'woocommerce_status': 'publish'} for woocommerce_id in woocommerce_ids]
+        )
+        published, draft, deleted = products[0], products[1], products[-1]
+        woocommerce_statuses = dict.fromkeys(woocommerce_ids, 'publish') | {draft.woocommerce_id: 'draft'}
+        del woocommerce_statuses[deleted.woocommerce_id]
 
         def get_all_items(woocommerce_api, endpoint, params=None):
-            if 'include' in params:
-                self.assertEqual(params['include'], '94012,94013,94014')
-                self.assertEqual(params['status'], 'any')
-                return [{'id': 94012, 'status': 'publish'}, {'id': 94013, 'status': 'draft'}]
-            return [{'id': 94011, 'status': 'publish'}]
+            requested_ids = params['include'].split(',')
+            self.assertLessEqual(len(requested_ids), params['per_page'])
+            self.assertEqual(params['status'], 'any')
+            return [{'id': int(woocommerce_id), 'status': woocommerce_statuses[woocommerce_id]} for woocommerce_id in requested_ids if woocommerce_id in woocommerce_statuses]
 
         with (
             patch.object(type(self.connector), 'woocommerce_api_get', return_value=MagicMock()),
@@ -60,10 +63,10 @@ class TestProductsDelete(WoocommerceSyncCommon):
         ):
             self.connector.woocommerce_to_odoo_products_delete()
 
+        requested_ids = [woocommerce_id for call in mocked_get_all_items.call_args_list for woocommerce_id in call.kwargs['params']['include'].split(',')]
         self.assertEqual(mocked_get_all_items.call_count, 2)
-        self.assertTrue(listed.active)
-        self.assertTrue(skipped_published.active, 'A published product missing from the paginated list (shifted by concurrent deletions) is kept')
-        self.assertTrue(skipped_published.product_variant_ids.active)
-        self.assertFalse(skipped_draft.active, 'A product found by ID with a non-published status is archived with that status')
-        self.assertEqual(skipped_draft.woocommerce_status, 'draft')
-        self.assertFalse(deleted.exists(), 'A product found neither in the list nor by ID is deleted')
+        self.assertEqual(sorted(requested_ids), woocommerce_ids, 'Every Odoo product is requested by ID exactly once')
+        self.assertTrue(published.active)
+        self.assertFalse(draft.active, 'A product found by ID with a non-published status is archived with that status')
+        self.assertEqual(draft.woocommerce_status, 'draft')
+        self.assertFalse(deleted.exists(), 'A product not found by ID is deleted')

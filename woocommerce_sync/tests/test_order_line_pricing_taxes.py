@@ -210,7 +210,8 @@ class TestOrderLinePricingTaxIncluded(WoocommerceSyncCommon):
             tax_lines=[{'id': 903, 'rate_code': 'FR-TVA-1', 'rate_id': 7, 'label': 'TVA', 'compound': False, 'tax_total': '200.00', 'shipping_tax_total': '0.00', 'rate_percent': 20.0, 'meta_data': []}],
         )
 
-        odoo_sale_order = self._sync_order(woocommerce_order, woocommerce_tax_rates={'standard': 20.0})
+        self.connector.woocommerce_to_odoo_order_sync(woocommerce_order, woocommerce_tax_rates={'standard': 20.0}, woocommerce_weight_unit='kg', woocommerce_shipping_methods=[], odoo_sale_orders={})
+        odoo_sale_order = self.env['sale.order'].search([('woocommerce_id', '=', str(order_id))], limit=1)
 
         order_line = odoo_sale_order.order_line.filtered(lambda line: line.woocommerce_id == str(order_id))
         self.assertAlmostEqual(order_line.price_unit, 1199.99)

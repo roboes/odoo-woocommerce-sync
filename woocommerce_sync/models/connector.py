@@ -2320,19 +2320,12 @@ class WoocommerceSyncConnector(models.Model):
         )
         odoo_products = {odoo_product['woocommerce_id'] for odoo_product in odoo_products}
 
-        # WooCommerce REST API parameters to fetch only IDs and statuses
-        params = {'status': 'any', '_fields': 'id,status'}
-
-        # Get all product IDs and statuses from WooCommerce
-        woocommerce_products = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', params=params)
-        woocommerce_products = {str(woocommerce_product['id']): woocommerce_product.get('status') for woocommerce_product in woocommerce_products}
-
-        # Re-check the products missing from the list by ID: products trashed or deleted while the list is paginated by offset shift the following pages, so products still in WooCommerce can be skipped
-        odoo_products_missing_ids = sorted(odoo_products - woocommerce_products.keys())
-        for index in range(0, len(odoo_products_missing_ids), 100):
-            params = {'include': ','.join(odoo_products_missing_ids[index : index + 100]), 'status': 'any', '_fields': 'id,status'}
-            woocommerce_products_found = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', params=params)
-            woocommerce_products.update({str(woocommerce_product['id']): woocommerce_product.get('status') for woocommerce_product in woocommerce_products_found})
+        # Get the IDs and statuses of the Odoo products from WooCommerce, by ID in chunks of one page each: paginating the whole catalog by offset skips products whenever products are trashed or deleted during the listing (the following pages shift), and those products would be wrongly deleted or archived
+        woocommerce_products = {}
+        for odoo_products_ids_chunk in WooCommerceClient.list_chunks(sorted(odoo_products), 100):
+            params = {'include': ','.join(odoo_products_ids_chunk), 'status': 'any', '_fields': 'id,status', 'per_page': 100}
+            woocommerce_products_chunk = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='products', params=params)
+            woocommerce_products.update({str(woocommerce_product['id']): woocommerce_product.get('status') for woocommerce_product in woocommerce_products_chunk})
 
         # Archive products no longer published in WooCommerce (e.g. set back to draft): the product sync only reads published products, so without this they would stay active in Odoo whenever the 'product.updated' webhook is missed. A missing status is never treated as unpublished
         odoo_products_to_archive_statuses = {
