@@ -56,3 +56,32 @@ class TestOdooCustomerShippingAddress(WoocommerceSyncCommon):
 
         delivery_children = self.env['res.partner'].search([('parent_id', '=', self.odoo_customer.id), ('type', '=', 'delivery')])
         self.assertEqual(len(delivery_children), 1)
+
+    def test_brazilian_extensions_compare_normalized_addresses(self):
+        country = self.env.ref('base.br')
+        state = self.env['res.country.state'].search([('country_id', '=', country.id), ('code', '=', 'SP')], limit=1)
+        shipping = {'address_1': 'Rua A', 'address_2': '', 'number': '10', 'neighborhood': 'Centro', 'country': 'BR', 'state': 'SP', 'city': 'S\u00e3o Paulo', 'postcode': '12345-000'}
+        values = {'name': 'Brazilian Billing', 'street': 'Rua A', 'street2': '', 'city': shipping['city'], 'zip': shipping['postcode'], 'country_id': country.id, 'state_id': state.id}
+        self.connector.odoo_customer_brazil_values_update(values, shipping)
+        billing = self.env['res.partner'].create(values)
+        shipping_values = {f'woocommerce_shipping_{key}': value for key, value in shipping.items()}
+
+        result = self.connector.odoo_customer_shipping_address_create_or_update(billing, shipping_values, shipping=shipping)
+        self.assertEqual(result, billing, 'Composed Brazilian street/district must not create a spurious delivery child')
+
+        shipping['number'] = '20'
+        delivery = self.connector.odoo_customer_shipping_address_create_or_update(billing, shipping_values, shipping=shipping)
+        self.assertNotEqual(delivery, billing, 'A different street number requires a delivery child')
+        self.assertIn('20', delivery.street)
+        self.assertEqual(delivery.district if 'district' in delivery._fields else delivery.street2, 'Centro')
+
+    def test_different_state_requires_delivery_child(self):
+        country = self.env.ref('base.us')
+        states = self.env['res.country.state'].search([('country_id', '=', country.id)], limit=2)
+        self.odoo_customer.write({'street': 'Test Street', 'country_id': country.id, 'state_id': states[0].id})
+        shipping_values = {'woocommerce_shipping_address_1': 'Test Street', 'woocommerce_shipping_country': 'US', 'woocommerce_shipping_state': states[1].code}
+
+        delivery = self.connector.odoo_customer_shipping_address_create_or_update(self.odoo_customer, shipping_values)
+
+        self.assertNotEqual(delivery, self.odoo_customer)
+        self.assertEqual(delivery.state_id, states[1])
