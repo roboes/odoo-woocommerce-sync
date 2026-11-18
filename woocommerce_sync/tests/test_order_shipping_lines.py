@@ -15,6 +15,11 @@ from .common import (
 class TestOrderMultipleShippingLines(WoocommerceSyncCommon):
     connector_values: ClassVar[dict] = {'settings_woocommerce_orders_customers_map': False, 'settings_woocommerce_line_items_product_map': False}
 
+    def setUp(self):
+        super().setUp()
+        if 'fiscal_operation_id' in self.env['sale.order']._fields:
+            self.connector = self.connector.with_context(default_fiscal_operation_id=False)
+
     def _sync_order(self, woocommerce_order, odoo_sale_orders=None):
         self.connector.woocommerce_to_odoo_order_sync(woocommerce_order, woocommerce_tax_rates={}, woocommerce_weight_unit='kg', woocommerce_shipping_methods=[], odoo_sale_orders=odoo_sale_orders or {})
         return self.env['sale.order'].search([('woocommerce_site_url', '=', self.connector.settings_woocommerce_connection_url), ('woocommerce_id', '=', str(woocommerce_order['id']))], limit=1)
@@ -132,3 +137,50 @@ class TestOrderMultipleShippingLines(WoocommerceSyncCommon):
 
         self.assertTrue(manual_line.exists())
         self.assertTrue(odoo_sale_order.order_line.filtered(lambda line: line.woocommerce_id == '1101' and line.is_delivery))
+
+    def test_oca_fiscal_freight_is_charged_once_and_cleared_on_resync(self):
+        if 'amount_freight_value' not in self.env['sale.order']._fields:
+            self.skipTest('OCA l10n_br_sale is not installed')
+        operation = self.env['l10n_br_fiscal.operation'].create({'code': 'WC_TEST', 'name': 'WooCommerce Test Sale', 'fiscal_operation_type': 'out', 'fiscal_type': 'sale'})
+        self.connector.settings_woocommerce_line_items_product_map = True
+        self.connector = self.connector.with_context(default_fiscal_operation_id=operation.id)
+        line_items = []
+        for index, price in enumerate(('72.90', '89.80'), start=1):
+            self.env['product.template'].create({'name': f'Freight Test {index}', 'type': 'consu', 'woocommerce_id': str(94500 + index), 'woocommerce_site_url': self.connector.settings_woocommerce_connection_url})
+            line_items.append(
+                {
+                    'id': 1300 + index,
+                    'name': f'Freight Test {index}',
+                    'product_id': 94500 + index,
+                    'variation_id': 0,
+                    'quantity': 1,
+                    'tax_class': '',
+                    'subtotal': price,
+                    'total': price,
+                    'subtotal_tax': '0.00',
+                    'total_tax': '0.00',
+                    'taxes': [],
+                    'meta_data': [],
+                    'sku': '',
+                    'price': float(price),
+                }
+            )
+        payload = make_woocommerce_order_payload(id=94006, status='pending', line_items=line_items, shipping_total='40.97', shipping_lines=[{'id': 1303, 'method_title': 'Test Freight', 'total': '40.97'}])
+        order = self._sync_order(payload)
+
+        self.assertTrue(order)
+        self.assertFalse(order.order_line.filtered('is_delivery'))
+        self.assertFalse(order.order_line.filtered(lambda line: line.woocommerce_id == '1303'))
+        self.assertEqual(order.order_line.mapped('freight_value'), [18.36, 22.61])
+        self.assertAlmostEqual(order.amount_total, 203.67)
+
+        payload['line_items'][0].update({'total': '65.61', 'price': 65.61})
+        payload['discount_total'] = '7.29'
+        for freight in ('40.97', '0.01', '0.00'):
+            payload['shipping_total'] = freight
+            payload['shipping_lines'][0]['total'] = freight
+            payload['date_modified_gmt'] = bump_iso_datetime(payload['date_modified_gmt'])
+            self._sync_order(payload, {str(payload['id']): {'id': order.id}})
+            self.assertAlmostEqual(sum(order.order_line.mapped('freight_value')), float(freight))
+            self.assertAlmostEqual(order.amount_total, 155.41 + float(freight))
+            self.assertEqual(len(order.order_line), 2)

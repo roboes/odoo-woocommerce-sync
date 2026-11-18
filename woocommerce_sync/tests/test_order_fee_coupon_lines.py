@@ -2,6 +2,7 @@
 
 from typing import ClassVar
 
+from odoo.exceptions import ValidationError
 from odoo.tests.common import tagged
 
 from .common import (
@@ -86,3 +87,86 @@ class TestOrderFeeCouponLines(WoocommerceSyncCommon):
         odoo_sale_order = self._sync_order(woocommerce_order, odoo_sale_orders={str(woocommerce_order['id']): {'id': first_sale_order.id}})
 
         self.assertFalse(odoo_sale_order.order_line.filtered(lambda line: line.woocommerce_id == '801'))
+
+    def test_pagbank_quote_and_unknown_fee_keep_buyer_installment_charge(self):
+        payload = make_woocommerce_order_payload(
+            id=93005,
+            total='4.00',
+            payment_method='pagbank_credit_card',
+            meta_data=[{'key': '_pagbank_charge_id', 'value': 'CHAR_TEST'}],
+            fee_lines=[{'id': 901, 'name': 'Parcelamento', 'total': '4.00'}],
+        )
+        order = self._sync_order(payload)
+
+        self.assertTrue(order)
+        self.assertFalse(order.woocommerce_transaction_fee_known)
+        self.assertEqual(order.woocommerce_payment_method, 'pagbank_credit_card')
+        self.assertAlmostEqual(order.amount_untaxed, 4.0)
+        self.assertAlmostEqual(order.woocommerce_total, 4.0)
+
+        for fee in (16, 0, None):
+            payload['meta_data'] = [{'key': '_pagbank_charge_id', 'value': 'CHAR_TEST'}]
+            if fee is not None:
+                payload['meta_data'].append({'key': '_pagbank_seller_fee_quote', 'value': {'fee': fee, 'amount': 400, 'currency': payload['currency'], 'charge_id': 'CHAR_TEST'}})
+            payload['date_modified_gmt'] = bump_iso_datetime(payload['date_modified_gmt'])
+            self._sync_order(payload, {str(payload['id']): {'id': order.id}})
+
+            self.assertEqual(order.woocommerce_transaction_fee_known, fee is not None)
+            self.assertEqual(order.woocommerce_transaction_fee_estimated, fee is not None)
+            self.assertAlmostEqual(order.woocommerce_transaction_fee, fee / 100.0 if fee is not None else 0.0)
+            self.assertAlmostEqual(order.woocommerce_payout, 4.0 - fee / 100.0 if fee is not None else 0.0)
+            self.assertAlmostEqual(order.amount_untaxed, 4.0)
+
+    def test_fee_selection_follows_the_payment_method(self):
+        metadata = [
+            {'key': 'PayPal Transaction Fee', 'value': '1.00'},
+            {'key': '_stripe_fee', 'value': '2.00'},
+            {'key': '_pagbank_seller_fee_quote', 'value': {'fee': 99, 'amount': 10000, 'currency': 'BRL', 'charge_id': 'CHAR_TEST'}},
+        ]
+        for method, fee, estimated in [
+            ('paypal', 1.0, False),
+            ('ppcp-gateway', 1.0, False),
+            ('ppec_paypal', 1.0, False),
+            ('stripe', 2.0, False),
+            ('stripe_cc', 2.0, False),
+            ('pagbank_pix', 0.99, True),
+            ('bacs', None, False),
+        ]:
+            with self.subTest(method=method):
+                order = self.env['sale.order'].new({'woocommerce_payment_method': method, 'woocommerce_meta_data': metadata, 'woocommerce_currency': 'BRL', 'woocommerce_total': 100.0})
+                self.assertAlmostEqual(order.woocommerce_transaction_fee, fee if fee is not None else 0.0)
+                self.assertEqual(order.woocommerce_transaction_fee_known, fee is not None)
+                self.assertEqual(order.woocommerce_transaction_fee_estimated, estimated)
+                self.assertAlmostEqual(order.woocommerce_payout, 100.0 - fee if fee is not None else 0.0)
+
+    def test_invalid_fee_metadata_is_rejected(self):
+        for method, key, value in [
+            ('pagbank_pix', '_pagbank_seller_fee_quote', {'fee': 99, 'currency': 'USD'}),
+            ('pagbank_pix', '_pagbank_seller_fee_quote', {'fee': '99', 'currency': 'BRL'}),
+            ('stripe_cc', '_stripe_fee', 'not-an-amount'),
+        ]:
+            with self.subTest(method=method, value=value), self.assertRaises(ValidationError):
+                order = self.env['sale.order'].new({'woocommerce_payment_method': method, 'woocommerce_meta_data': [{'key': key, 'value': value}], 'woocommerce_currency': 'BRL'})
+                _ = order.woocommerce_transaction_fee
+
+    def test_known_zero_fee_and_resync_clears_missing_fee(self):
+        payload = make_woocommerce_order_payload(
+            id=93006,
+            total='4.00',
+            payment_method='paypal',
+            meta_data=[{'key': 'PayPal Transaction Fee', 'value': 0}, {'key': '_stripe_fee', 'value': '1.25'}],
+        )
+        order = self._sync_order(payload)
+        self.assertTrue(order.woocommerce_transaction_fee_known)
+        self.assertEqual(order.woocommerce_transaction_fee, 0.0)
+        self.assertEqual(order.woocommerce_payout, 4.0)
+
+        for metadata, known, fee, payout in [([{'key': '_stripe_fee', 'value': '1.25'}], True, 1.25, 2.75), ([], False, 0.0, 0.0)]:
+            payload['payment_method'] = 'stripe_cc'
+            payload['meta_data'] = metadata
+            payload['date_modified_gmt'] = bump_iso_datetime(payload['date_modified_gmt'])
+            self._sync_order(payload, {str(payload['id']): {'id': order.id}})
+            self.assertEqual(order.woocommerce_transaction_fee_known, known)
+            self.assertFalse(order.woocommerce_transaction_fee_estimated)
+            self.assertEqual(order.woocommerce_transaction_fee, fee)
+            self.assertEqual(order.woocommerce_payout, payout)

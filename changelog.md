@@ -1,5 +1,15 @@
 # Changelog
 
+## v16.0.6.5 / v18.0.6.5 / v19.0.6.5 - 2026-11-18
+
+### Fixes
+
+- Customers with a WooCommerce billing company are imported as Odoo companies, with the account person kept as an idempotently updated child contact. Order imports apply the same company/contact mapping, and Brazilian `persontype` values no longer override an explicit billing company. (#39)
+- Brazilian customer imports use `vat` with the Odoo Community Association (OCA) addon `l10n_br_base` on Odoo 16, 18 and 19, retain the official Odoo `l10n_br` localization's separate individual tax identifier field on Odoo 16 and identification types on Odoo 18/19, and map person/company, legal name and municipality where available. Invalid tax identifiers are logged without exposing the document number. Imports do not overwrite existing tax identifiers; no tax identifier migration is performed.
+- Delivery contacts now receive Brazilian street numbers and neighborhoods and compare normalized addresses, including the state, before deciding whether a separate contact is needed.
+- Fiscal orders configured with the Odoo Community Association (OCA) addon `l10n_br_sale` use its rounded freight distribution instead of charging both product freight and delivery lines. Free-shipping resyncs clear distributed freight; standard orders retain delivery lines.
+- Transaction-fee extraction follows the payment method for PayPal, Stripe and PagBank. Missing fees remain unknown, known zero fees are supported, and resyncs clear stale values. Available PagBank quotes are converted from cents and explicitly marked as estimated; no bank settlement is inferred.
+
 ## v16.0.6.4 / v18.0.6.4 / v19.0.6.4 - 2026-11-17
 
 ### Fixes
