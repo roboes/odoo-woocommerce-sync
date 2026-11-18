@@ -19,7 +19,7 @@ The **Odoo-WooCommerce Sync** add-on enables synchronization between WooCommerce
 - **Advanced Settings:** Support for multiple WooCommerce websites with specific configuration options for each instance (e.g. syncing only products from WooCommerce to Odoo).
 - **Image Synchronization:** Optionally synchronize product images from WooCommerce to Odoo and Odoo to WooCommerce. For products imported from WooCommerce that include multiple images/product image gallery, an additional product image gallery is added to the `product.template` view.
 - **Language Filtering:** Synchronize products by language (_requires Polylang_).
-- **Orders Transactions Fee Support:** Integrates additional fee fields into orders processed with PayPal and Stripe (_requires the respective plugins_).
+- **Orders Transactions Fee Support:** Imports reported PagBank/PayPal/Stripe fees into one transaction-fee field (_requires the respective plugins_).
 
 Some features require additional setup, as detailed in the [Requirements](#requirements) section.
 
@@ -103,8 +103,12 @@ While not mandatory, the following Odoo Community Association (OCA) add-ons are 
 
 Brazil:
 
-- **Módulo Fiscal Brasileiro** (`l10n_br_base`, `l10n_br_sale`): Supports Cadastro de Pessoa Física (CPF), Cadastro Nacional da Pessoa Jurídica (CNPJ), local taxes, shipping costs, and electronic fiscal documents.
+- **Módulo Fiscal Brasileiro** (`l10n_br_base`, `l10n_br_fiscal`, `l10n_br_sale`) from the Odoo Community Association (OCA): Supports Cadastro de Pessoas Físicas (CPF), Cadastro Nacional da Pessoa Jurídica (CNPJ), fiscal rules and sales freight integration.
   - [GitHub](https://github.com/OCA/l10n-brazil/tree/16.0) | [Odoo Apps Store](https://odoo-community.org/shop/brazilian-localization-base-1252)
+  - The connector detects available fields without requiring a Brazilian addon. The Odoo Community Association (OCA) addon `l10n_br_base` uses `vat` for both individual and company tax identifiers on Odoo 16, 18 and 19; the connector does not write its legacy `cnpj_cpf` alias on Odoo 16. With the official Odoo Brazilian localization (`l10n_br`), Odoo 16 uses `l10n_br_cpf_code` for individual tax identifiers and `vat` for company tax identifiers; Odoo 18/19 use `vat` with the corresponding identification type.
+  - Checkout `persontype` maps person/company; `company` (or the person's name) maps `legal_name` when available. Ensure the checkout company field contains the legal name (razão social), not just a trading name. Municipality lookup requires a unique `res.city` matching Brazil, the state and city name; missing/ambiguous municipality data stops that import with an error. Install the municipality data and correct the checkout address rather than relying on city text for a Nota Fiscal Eletrônica (NF-e).
+  - On fiscal orders using the Odoo Community Association (OCA) addon `l10n_br_sale` with a fiscal operation, shipping is distributed once using the addon's native product-line allocator (gross-price weights, currency rounding and final-line remainder), including zero on a free-shipping resync. No priced shipping product is added. Freight requires eligible non-service product lines. Without a fiscal operation, the standard delivery-line workflow is retained.
+  - Configure fiscal operations, product classification under the Nomenclatura Comum do Mercosul (NCM), fiscal product origin (such as domestic or imported goods), taxes, Imposto sobre Circulação de Mercadorias e Serviços (ICMS) taxpayer status, final-consumer status and Nota Fiscal Eletrônica (NF-e) payment modes in Odoo with your accountant. The fiscal engine provided by the Odoo Community Association (OCA) addon `l10n_br_fiscal` is authoritative; WooCommerce's generic tax-rate mapping is not a replacement for fiscal rules. Installing these addons without this setup is not a validated invoicing workflow. Importing checkout fields does not by itself guarantee a valid Nota Fiscal Eletrônica (NF-e).
 
 ### WordPress
 
@@ -115,14 +119,16 @@ Brazil:
   - Requires [Polylang for WooCommerce](https://polylang.pro/downloads/polylang-for-woocommerce/) and either [Polylang Pro](https://polylang.pro/downloads/polylang-pro/) (which enables the `lang` argument in the WooCommerce REST API); or the custom [woocommerce-rest-api-polylang-language-slug](./woocommerce-snippets/woocommerce-rest-api-polylang-language-slug.php) code snippet, saved either into the `functions.php` file or into a code snippet plugin (e.g. [WPCode](https://wordpress.org/plugins/insert-headers-and-footers/)).
 - **Product Stock Translation Sync**:
   - The custom [woocommerce-product-multilingual-stock-change-update](./woocommerce-snippets/woocommerce-product-multilingual-stock-change-update.php) code snippet automatically updates the modified date of all Polylang translations whenever a product's stock is changed.
-- **Orders Transactions Fee** (`woocommerce_order_transaction_fee` field): Requires the [WooCommerce PayPal Payments](https://wordpress.org/plugins/woocommerce-paypal-payments/) and/or [Payment Plugins for Stripe WooCommerce](https://wordpress.org/plugins/woo-stripe-payment/) plugin.
-  - For the [Payment Plugins for Stripe WooCommerce](https://wordpress.org/plugins/woo-stripe-payment/), the following setting needs to be changed in order to enable the Stripe transaction fee field: `WooCommerce` → `Stripe by Payment Plugins` → `Settings` → `Advanced Settings` → Enable `Display Stripe Fee`.
+- **Order Transaction Fee** (`woocommerce_transaction_fee` field): The payment-method ID selects the matching metadata: PagBank (`pagbank_*`) uses `_pagbank_seller_fee_quote`, PayPal (`paypal*`, `ppcp*`, `ppec*`) uses `PayPal Transaction Fee`, and Stripe (`stripe*`) uses `_stripe_fee`.
+  - Requires the [PagBank](https://wordpress.org/plugins/pagbank-for-woocommerce/), [WooCommerce PayPal Payments](https://wordpress.org/plugins/woocommerce-paypal-payments/) and/or [Payment Plugins for Stripe WooCommerce](https://wordpress.org/plugins/woo-stripe-payment/) plugin.
+  - For Stripe: `WooCommerce` → `Stripe by Payment Plugins` → `Settings` → `Advanced Settings` → Enable `Display Stripe Fee` and configure `Fee Display Currency` to match the order currency.
+  - `woocommerce_transaction_fee_known` distinguishes an actual zero fee from an unknown fee. When false, the fee/payout Float fields are storage placeholders, not zero-cost payment or payout estimates; both amounts are hidden. API consumers must check this flag. Known fees do not reduce customer invoice lines. A calculated payout is not evidence of bank settlement.
 
 ##### WordPress Localization (Optional)
 
 Brazil:
 
-- **Cadastro de Pessoa Física (CPF)** (`l10n_br_cpf_code` field) and **Cadastro Nacional da Pessoa Jurídica (CNPJ)** (`cnpj_cpf` field): Requires the [Calculadora de Frete e Campos Checkout para o Brasil](https://wordpress.org/plugins/woo-better-shipping-calculator-for-brazil/) plugin (the [Brazilian Market on WooCommerce](https://wordpress.org/plugins/woocommerce-extra-checkout-fields-for-brazil/) plugin, no longer maintained, also works, as both plugins expose the same `cpf`/`cnpj`/`rg`/`ie` billing fields).
+- **Brazilian checkout fields:** Requires the [Campos Checkout Brasileiro para WooCommerce](https://wordpress.org/plugins/woo-better-shipping-calculator-for-brazil/) plugin (the [Brazilian Market on WooCommerce](https://wordpress.org/plugins/woocommerce-extra-checkout-fields-for-brazil/) plugin, no longer maintained, also exposes these fields). The REST API must expose `billing.cpf`, `cnpj`, `persontype`, `rg`, `ie`, `number`, `neighborhood` and `shipping.number`/`neighborhood` directly. Tax identifiers map according to the installed localization above; address extensions use dedicated fields when available, otherwise street text.
 
 ## Installation
 

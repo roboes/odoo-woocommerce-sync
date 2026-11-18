@@ -1715,59 +1715,87 @@ class WoocommerceSyncConnector(models.Model):
 
     @api.model
     def odoo_customer_brazil_values_update(self: models.Model, customer_values: dict[str, Any], billing: dict[str, Any]) -> None:
-        """Maps the fields of Brazilian checkout plugins to the partner fields that exist in this database: OCA 'l10n_br_base' ('cnpj_cpf', 'l10n_br_rg_code', 'district') or Odoo 'l10n_br' ('l10n_br_ie_code', Odoo 16 'l10n_br_cpf_code'), street number and neighborhood (in the street texts without dedicated fields). CNPJ/CPF as 'vat' is set by 'odoo_customer_brazil_vat_update()'."""
+        """Map Brazilian checkout/address fields by capability; tax IDs are validated separately."""
         partner_fields = self.env['res.partner']._fields
+        if 'city_id' in partner_fields and any(key in customer_values for key in ('country_id', 'state_id', 'city')):
+            customer_values['city_id'] = False
+        if (billing.get('country') or 'BR') != 'BR':
+            return
 
-        # '_billing_persontype' meta: '1' = pessoa física (prefer CPF), '2' = pessoa jurídica (prefer CNPJ)
-        cpf_cnpj = (billing.get('cnpj') or billing.get('cpf')) if str(billing.get('persontype') or '') == '2' else (billing.get('cpf') or billing.get('cnpj'))
-        if cpf_cnpj and 'cnpj_cpf' in partner_fields:
-            customer_values['cnpj_cpf'] = cpf_cnpj
-        elif billing.get('cpf') and 'l10n_br_cpf_code' in partner_fields:
-            customer_values['l10n_br_cpf_code'] = billing['cpf']
+        person_type = str(billing.get('persontype') or '')
+        if person_type in ('1', '2') and not billing.get('company'):
+            customer_values['company_type'] = 'company' if person_type == '2' else 'person'
+        if 'legal_name' in partner_fields:
+            legal_name = billing.get('company') or f'{billing.get("first_name") or ""} {billing.get("last_name") or ""}'.strip()
+            if legal_name:
+                customer_values['legal_name'] = legal_name
         if billing.get('rg') and 'l10n_br_rg_code' in partner_fields:
             customer_values['l10n_br_rg_code'] = billing['rg']
         if billing.get('ie') and 'l10n_br_ie_code' in partner_fields:
             customer_values['l10n_br_ie_code'] = billing['ie']
 
         street_number = (billing.get('number') or '').strip()
+        street = customer_values.get('street', billing.get('address_1')) or ''
+        street_name, separator, suffix = street.rpartition(',')
+        if street_number and separator and suffix.strip() == street_number:
+            street = street_name.strip()
         if street_number and 'street_name' in partner_fields and 'street_number' in partner_fields:
             # 'base_address_extended' composes 'street' from its parts, so the parts are written instead of 'street'
-            customer_values['street_name'] = customer_values.pop('street', None)
+            customer_values.pop('street', None)
+            customer_values['street_name'] = street
             customer_values['street_number'] = street_number
         elif street_number and 'street_number' in partner_fields:
+            customer_values['street'] = street
             customer_values['street_number'] = street_number
-        elif street_number and customer_values.get('street'):
-            customer_values['street'] = f'{customer_values["street"]}, {street_number}'
+        elif street_number and street:
+            customer_values['street'] = f'{street}, {street_number}'
 
         neighborhood = (billing.get('neighborhood') or '').strip()
         if neighborhood and 'district' in partner_fields:
             customer_values['district'] = neighborhood
         elif neighborhood:
-            customer_values['street2'] = ', '.join(part for part in (customer_values.get('street2'), neighborhood) if part)
+            customer_values['street2'] = ', '.join(part for part in (customer_values.get('street2', billing.get('address_2')), neighborhood) if part)
+
+        if 'city_id' in partner_fields and (billing.get('city') or billing.get('country') == 'BR'):
+            country = self.odoo_country_retrieve(billing.get('country') or 'BR')
+            state = self.odoo_state_retrieve(country.id, billing.get('state'))
+            cities = (
+                self.env['res.city'].search([('country_id', '=', country.id), ('state_id', '=', state.id), ('name', '=ilike', billing['city'].strip())], limit=2) if state and billing.get('city') else self.env['res.city']
+            )
+            if len(cities) != 1:
+                raise ValidationError(_('A unique Brazilian municipality matching the checkout city and state is required. Check the municipality data and the WooCommerce address.'))
+            customer_values.update({'country_id': country.id, 'state_id': state.id, 'city_id': cities.id, 'city': cities.name})
 
     @api.model
     def odoo_customer_brazil_vat_update(self: models.Model, odoo_customer: models.Model, billing: dict[str, Any]) -> None:
-        """Stores the CNPJ/CPF in the partner 'vat' with Odoo 'l10n_br' (CPF and CNPJ identification types on Odoo 17+, CNPJ only on Odoo 16, whose CPF has its own field). Not done with OCA 'l10n_br_base' ('cnpj_cpf'), nor when the partner already has a tax ID. An invalid number is logged and skipped instead of failing the customer."""
+        """Use OCA's canonical vat, or the official localization's version-specific tax ID fields."""
         partner_fields = self.env['res.partner']._fields
         cpf_cnpj = (billing.get('cnpj') or billing.get('cpf')) if str(billing.get('persontype') or '') == '2' else (billing.get('cpf') or billing.get('cnpj'))
-        if not odoo_customer or not cpf_cnpj or odoo_customer.vat or 'cnpj_cpf' in partner_fields or (billing.get('country') or 'BR') != 'BR':
+        if not odoo_customer or not cpf_cnpj or odoo_customer.vat or (billing.get('country') or 'BR') != 'BR':
             return
 
-        is_cnpj = len(''.join(character for character in cpf_cnpj if character.isdigit())) == 14
+        oca_brazil = 'cnpj_cpf_stripped' in partner_fields
+        is_cnpj = len(''.join(character for character in cpf_cnpj if character.isalnum())) == 14
         values = {'vat': cpf_cnpj}
-        if 'l10n_latam_identification_type_id' in partner_fields:
-            identification_type = self.env.ref('l10n_br.cnpj' if is_cnpj else 'l10n_br.cpf', raise_if_not_found=False)
-            if not identification_type:
+        if not oca_brazil and not is_cnpj and 'l10n_br_cpf_code' in partner_fields:
+            if odoo_customer.l10n_br_cpf_code:
                 return
-            values['l10n_latam_identification_type_id'] = identification_type.id
-        elif not (is_cnpj and 'l10n_br_ie_code' in partner_fields):
+            values = {'l10n_br_cpf_code': cpf_cnpj}
+        elif 'l10n_latam_identification_type_id' in partner_fields:
+            identification_type = self.env.ref('l10n_br.cnpj' if is_cnpj else 'l10n_br.cpf', raise_if_not_found=False)
+            if identification_type:
+                values['l10n_latam_identification_type_id'] = identification_type.id
+            elif not oca_brazil:
+                _logger.warning('Skipped Brazilian tax ID for Odoo customer %s: the required identification type is not installed', odoo_customer.id)
+                return
+        elif not oca_brazil and not (is_cnpj and 'l10n_br_ie_code' in partner_fields):
             return
 
         try:
             with self.env.cr.savepoint():
                 odoo_customer.write(values)
-        except ValidationError as error:
-            _logger.warning(f'Skipped invalid Brazilian tax ID {cpf_cnpj} for Odoo customer {odoo_customer.id}: {error}')
+        except ValidationError:
+            _logger.warning('Skipped invalid Brazilian tax ID for Odoo customer %s', odoo_customer.id)
 
     @api.model
     def odoo_customer_match_by_name_and_address(self: models.Model, first_name: str | None, last_name: str | None, city: str | None, postcode: str | None) -> models.Model:
@@ -1793,7 +1821,42 @@ class WoocommerceSyncConnector(models.Model):
         return self.env['res.partner'].with_context(active_test=False, lang=False).search(domain, limit=1)
 
     @api.model
-    def odoo_customer_shipping_address_create_or_update(self: models.Model, odoo_customer: models.Model, shipping_values: dict[str, Any], odoo_country_cache: dict[str, int] | None = None) -> models.Model:
+    def odoo_customer_company_contact_create_or_update(self: models.Model, odoo_customer: models.Model, contact_name: str, email: str | None, phone: str | None) -> models.Model:
+        """Create or update the person behind a WooCommerce company account as a contact child of the company partner."""
+        if not odoo_customer or not odoo_customer.is_company or not contact_name:
+            return self.env['res.partner']
+
+        contact_values = {'name': contact_name, 'email': email or False, 'phone': phone or False}
+        odoo_contact = (
+            self.env['res.partner']
+            .with_context(active_test=False, lang=False)
+            .search(
+                [
+                    ('parent_id', '=', odoo_customer.id),
+                    ('type', '=', 'contact'),
+                    ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                ],
+                limit=1,
+            )
+        )
+        if odoo_contact:
+            changed_values = {key: value for key, value in contact_values.items() if (odoo_contact[key] or False) != value}
+            if changed_values:
+                odoo_contact.write(changed_values)
+            return odoo_contact
+
+        return self.env['res.partner'].create(
+            {
+                **contact_values,
+                'type': 'contact',
+                'parent_id': odoo_customer.id,
+                'woocommerce_site_url': self.settings_woocommerce_connection_url,
+            }
+        )
+
+    def odoo_customer_shipping_address_create_or_update(
+        self: models.Model, odoo_customer: models.Model, shipping_values: dict[str, Any], odoo_country_cache: dict[str, int] | None = None, shipping: dict[str, Any] | None = None
+    ) -> models.Model:
         """Create or update the WooCommerce delivery child under 'odoo_customer', returning the billing customer when no distinct shipping address is present."""
         if not odoo_customer or not any(shipping_values.get(key) for key in ('woocommerce_shipping_address_1', 'woocommerce_shipping_city', 'woocommerce_shipping_postcode')):
             return odoo_customer
@@ -1802,17 +1865,6 @@ class WoocommerceSyncConnector(models.Model):
 
         def _normalize(value: str | None) -> str:
             return (value or '').strip().casefold()
-
-        shipping_matches_billing = (
-            _normalize(shipping_values.get('woocommerce_shipping_address_1')) == _normalize(odoo_customer.street)
-            and _normalize(shipping_values.get('woocommerce_shipping_address_2')) == _normalize(odoo_customer.street2)
-            and _normalize(shipping_values.get('woocommerce_shipping_city')) == _normalize(odoo_customer.city)
-            and _normalize(shipping_values.get('woocommerce_shipping_postcode')) == _normalize(odoo_customer.zip)
-            and shipping_country_id == odoo_customer.country_id.id
-        )
-
-        if shipping_matches_billing:
-            return odoo_customer
 
         shipping_name = f'{shipping_values.get("woocommerce_shipping_first_name") or ""} {shipping_values.get("woocommerce_shipping_last_name") or ""}'.strip() or 'Shipping Address'
 
@@ -1825,10 +1877,18 @@ class WoocommerceSyncConnector(models.Model):
             'city': shipping_values.get('woocommerce_shipping_city'),
             'zip': shipping_values.get('woocommerce_shipping_postcode'),
             'country_id': shipping_country_id,
+            'state_id': False,
         }
         odoo_shipping_state = self.odoo_state_retrieve(shipping_country_id, shipping_values.get('woocommerce_shipping_state'))
         if odoo_shipping_state:
             shipping_partner_values['state_id'] = odoo_shipping_state.id
+        if shipping:
+            self.odoo_customer_brazil_values_update(shipping_partner_values, shipping)
+
+        address_fields = ('street', 'street2', 'street_name', 'street_number', 'district', 'city', 'zip')
+        shipping_matches_billing = all(_normalize(shipping_partner_values[field_name]) == _normalize(odoo_customer[field_name]) for field_name in address_fields if field_name in shipping_partner_values)
+        if shipping_matches_billing and shipping_partner_values['country_id'] == odoo_customer.country_id.id and shipping_partner_values['state_id'] == odoo_customer.state_id.id:
+            return odoo_customer
 
         odoo_shipping_partner = (
             self.env['res.partner']
@@ -3602,7 +3662,7 @@ class WoocommerceSyncConnector(models.Model):
                     'image_1920': odoo_avatar_url,
                     'ref': customer_values['woocommerce_id'],
                     'create_date': customer_values['woocommerce_date_created_gmt'],
-                    'company_type': 'person',
+                    'company_type': 'company' if customer_values['woocommerce_billing_company'] else 'person',
                     'customer_rank': 1 if customer_values['woocommerce_is_paying_customer'] else 0,
                     'email': customer_values['woocommerce_email'],
                     'phone': customer_values['woocommerce_billing_phone'],
@@ -3626,6 +3686,9 @@ class WoocommerceSyncConnector(models.Model):
             customer_values_for_update = customer_values.copy()
             if not customer_has_name:
                 customer_values_for_update.pop('name')
+            # Without a billing company, keep the partner type set in Odoo (e.g. a business customer marked as company by hand)
+            if not customer_values['woocommerce_billing_company']:
+                customer_values_for_update.pop('company_type')
 
             if odoo_customer:
                 if customer_values['woocommerce_date_modified_gmt'] > odoo_customer['write_date']:
@@ -3692,8 +3755,12 @@ class WoocommerceSyncConnector(models.Model):
 
             self.odoo_customer_brazil_vat_update(odoo_customer, woocommerce_customer['billing'])
 
+            # The partner carries the company name: keep the person's name as a contact of the company
+            if customer_values['woocommerce_billing_company']:
+                self.odoo_customer_company_contact_create_or_update(odoo_customer, customer_name, customer_values['woocommerce_email'], customer_values['woocommerce_billing_phone'])
+
             # Shipping address (only creates/updates a child contact when WooCommerce shipping fields are actually set)
-            self.odoo_customer_shipping_address_create_or_update(odoo_customer, customer_values, odoo_country_cache)
+            self.odoo_customer_shipping_address_create_or_update(odoo_customer, customer_values, odoo_country_cache, shipping=woocommerce_customer['shipping'])
 
         except Exception as error:
             # Roll back only this record's changes, keeping other records already written in this chunk job
@@ -3889,24 +3956,7 @@ class WoocommerceSyncConnector(models.Model):
                 },
             )
 
-            # Fees
-            woocommerce_transaction_fee = None
-
-            ## PayPal
-            woocommerce_transaction_fee_paypal = next((item['value'] for item in order_values['woocommerce_meta_data'] if item.get('key') == 'PayPal Transaction Fee'), None)
-
-            ## Stripe
-            woocommerce_transaction_fee_stripe = next((item['value'] for item in order_values['woocommerce_meta_data'] if item.get('key') == '_stripe_fee'), None)
-
-            woocommerce_transaction_fee = woocommerce_transaction_fee_paypal or woocommerce_transaction_fee_stripe
-
             # Custom fields
-            if woocommerce_transaction_fee:
-                order_values.update(
-                    {
-                        'woocommerce_transaction_fee': woocommerce_transaction_fee,
-                    },
-                )
             order_values.update(
                 {
                     'language_code': woocommerce_order.get('lang', None),  # Language (requires Polylang WordPress plugin)
@@ -3991,7 +4041,7 @@ class WoocommerceSyncConnector(models.Model):
                             # General information
                             'name': customer_values['woocommerce_billing_company'] or customer_name or 'Unknown',
                             'ref': customer_values['woocommerce_id'],
-                            'company_type': 'person',
+                            'company_type': 'company' if customer_values['woocommerce_billing_company'] else 'person',
                             'email': customer_values['woocommerce_billing_email'],
                             'phone': customer_values['woocommerce_billing_phone'],
                             'user_id': self.settings_woocommerce_user_responsible.id,
@@ -4071,17 +4121,37 @@ class WoocommerceSyncConnector(models.Model):
                             if not odoo_customer:
                                 raise
 
-                    if odoo_customer:
-                        self.odoo_customer_brazil_vat_update(odoo_customer, woocommerce_order['billing'])
-                    else:
+                    if not odoo_customer:
                         odoo_customer = self.odoo_customer_placeholder_create_or_retrieve()
 
                 else:
                     # Create/retrieve customer placeholder
                     odoo_customer = self.odoo_customer_placeholder_create_or_retrieve()
 
+            if self.settings_woocommerce_orders_customers_map and odoo_customer.ref != 'WooCommerce_Customer_Placeholder':
+                brazil_values = {}
+                self.odoo_customer_brazil_values_update(brazil_values, woocommerce_order['billing'])
+                if brazil_values:
+                    odoo_customer.write(brazil_values)
+                self.odoo_customer_brazil_vat_update(odoo_customer, woocommerce_order['billing'])
+                if order_values['woocommerce_billing_company']:
+                    company_values = {
+                        'name': order_values['woocommerce_billing_company'],
+                        'company_type': 'company',
+                    }
+                    company_values = {key: value for key, value in company_values.items() if odoo_customer[key] != value}
+                    if company_values:
+                        odoo_customer.write(company_values)
+                    contact_name = f'{order_values["woocommerce_billing_first_name"]} {order_values["woocommerce_billing_last_name"]}'.strip()
+                    self.odoo_customer_company_contact_create_or_update(
+                        odoo_customer,
+                        contact_name,
+                        order_values['woocommerce_billing_email'],
+                        order_values['woocommerce_billing_phone'],
+                    )
+
             # Shipping address - only differs from 'odoo_customer' (billing) when WooCommerce shipping fields are actually set on the order
-            odoo_customer_shipping_address = self.odoo_customer_shipping_address_create_or_update(odoo_customer, order_values, odoo_country_cache)
+            odoo_customer_shipping_address = self.odoo_customer_shipping_address_create_or_update(odoo_customer, order_values, odoo_country_cache, shipping=woocommerce_order['shipping'])
 
             # Odoo 'sale.order' model fields
             order_values.update(
@@ -4146,8 +4216,8 @@ class WoocommerceSyncConnector(models.Model):
                 _logger.info(f'Kept the order lines of {odoo_sale_order.name} (WooCommerce order ID: {odoo_sale_order["woocommerce_number"]}): already delivered or invoiced in Odoo')
 
             if not order_lines_frozen:
+                odoo_brazil_freight = 'amount_freight_value' in odoo_sale_order._fields and bool(odoo_sale_order.fiscal_operation_id)
                 # Order line items
-                order_line_items_total = sum(float(line_item['total']) for line_item in woocommerce_order['line_items'])
 
                 # WooCommerce 5.7+ stores the percentage actually charged on each order tax line ('rate_percent'), keyed by 'rate_id' (matching the line items' 'taxes[].id')
                 woocommerce_order_tax_components = {
@@ -4280,17 +4350,6 @@ class WoocommerceSyncConnector(models.Model):
                     # Unit of measure - without the 'Units' setting, Odoo uses the product's own unit of measure
                     odoo_order_line_item_unit_of_measure = self.env.ref('uom.product_uom_unit') if self.settings_woocommerce_products_package_size_unit_default else None
 
-                    # Localization
-
-                    ## Brazil (requires 'l10n_br_sale' Odoo add-on)
-                    if (
-                        self.env['ir.module.module'].with_context(lang=False).search([('name', '=', 'l10n_br_sale'), ('state', '=', 'installed')])
-                        and woocommerce_order['shipping_total']
-                        and order_line_items_total
-                        and 'freight_value' in self.env['sale.order.line']._fields
-                    ):
-                        order_line_values.update({'freight_value': float(woocommerce_order['shipping_total']) * (float(line_item['total']) / order_line_items_total)})
-
                     # Odoo 'sale.order.line' model fields
                     sale_order_line_fields = {
                         # General information
@@ -4305,6 +4364,10 @@ class WoocommerceSyncConnector(models.Model):
                         'price_unit': odoo_order_line_item_price_unit,
                         'discount': odoo_order_line_item_discount,
                     }
+                    if 'freight_value' in self.env['sale.order.line']._fields:
+                        sale_order_line_fields['freight_value'] = 0.0
+                    if odoo_brazil_freight:
+                        sale_order_line_fields['fiscal_operation_id'] = odoo_sale_order.fiscal_operation_id.id
 
                     # Dimensions
                     if odoo_order_line_item_unit_of_measure and version_info[0] in [16, 18]:
@@ -4359,6 +4422,8 @@ class WoocommerceSyncConnector(models.Model):
                             'product_uom_qty': 1,
                             'price_unit': float(fee_line['total']),
                         }
+                        if odoo_brazil_freight:
+                            fee_line_values['fiscal_operation_id'] = odoo_sale_order.fiscal_operation_id.id
                         if odoo_fee_order_line:
                             odoo_fee_order_line.write(fee_line_values)
                         else:
@@ -4386,7 +4451,9 @@ class WoocommerceSyncConnector(models.Model):
                         else:
                             self.env['sale.order.line'].with_context(tracking_disable=True, mail_create_nosubscribe=True).create(coupon_line_values)
 
-                # Delivery carrier(s) - the first shipping line uses the native 'set_delivery_line' (one carrier per order); any additional shipping lines are added as extra order lines on the same carrier's product, instead of silently dropping them
+                shipping_line_ids = {str(line['id']) for line in woocommerce_order['shipping_lines']}
+
+                # OCA fiscal orders distribute freight to product lines instead of charging delivery products too.
                 if woocommerce_order['shipping_lines']:
                     first_shipping_line, *extra_shipping_lines = woocommerce_order['shipping_lines']
 
@@ -4394,23 +4461,26 @@ class WoocommerceSyncConnector(models.Model):
 
                     if odoo_delivery_carrier:
                         previous_woocommerce_delivery_lines = odoo_sale_order.order_line.filtered(
-                            lambda line: line.is_delivery and line.woocommerce_site_url == self.settings_woocommerce_connection_url and line.woocommerce_id
+                            lambda line: (
+                                (line.is_delivery or (odoo_brazil_freight and line.woocommerce_id in shipping_line_ids)) and line.woocommerce_site_url == self.settings_woocommerce_connection_url and line.woocommerce_id
+                            )
                         )
                         protected_delivery_lines = previous_woocommerce_delivery_lines.filtered(lambda line: line.qty_invoiced or line.qty_delivered)
                         if protected_delivery_lines:
                             raise ValidationError('Cannot replace the WooCommerce delivery line because it has already been invoiced or delivered.')
                         previous_woocommerce_delivery_lines._woocommerce_sync_unlink_stale()
                         odoo_sale_order.carrier_id = odoo_delivery_carrier
-                        odoo_delivery_line = odoo_sale_order._create_delivery_line(odoo_delivery_carrier, float(first_shipping_line.get('total') or 0.0))
-                        odoo_delivery_line.write(
-                            {
-                                'woocommerce_site_url': self.settings_woocommerce_connection_url,
-                                'woocommerce_id': first_shipping_line['id'],
-                                'price_unit': self.woocommerce_order_line_total_to_odoo_price(first_shipping_line, odoo_delivery_line),
-                            }
-                        )
+                        if not odoo_brazil_freight:
+                            odoo_delivery_line = odoo_sale_order._create_delivery_line(odoo_delivery_carrier, float(first_shipping_line.get('total') or 0.0))
+                            odoo_delivery_line.write(
+                                {
+                                    'woocommerce_site_url': self.settings_woocommerce_connection_url,
+                                    'woocommerce_id': first_shipping_line['id'],
+                                    'price_unit': self.woocommerce_order_line_total_to_odoo_price(first_shipping_line, odoo_delivery_line),
+                                }
+                            )
 
-                    for shipping_line in extra_shipping_lines:
+                    for shipping_line in [] if odoo_brazil_freight else extra_shipping_lines:
                         extra_odoo_delivery_carrier = self.odoo_delivery_carrier_create_or_retrieve(woocommerce_shipping_methods, shipping_line)
                         if not extra_odoo_delivery_carrier:
                             continue
@@ -4455,6 +4525,12 @@ class WoocommerceSyncConnector(models.Model):
                 if protected_stale_lines:
                     raise ValidationError(f'Cannot remove WooCommerce order lines {protected_stale_lines.mapped("woocommerce_id")} because they have already been invoiced or delivered.')
                 stale_order_lines._woocommerce_sync_unlink_stale()
+
+                if odoo_brazil_freight:
+                    freight = float(woocommerce_order['shipping_total'] or 0.0)
+                    if freight and not odoo_sale_order._get_product_amount_lines():
+                        raise ValidationError(_('Brazilian fiscal freight requires an eligible non-service product line. Configure the products and fiscal operation before importing this order.'))
+                    odoo_sale_order.write({'force_compute_delivery_costs_by_total': True, 'amount_freight_value': freight})
 
             # Apply the order state only after all line and delivery mutations have completed.
             if order_values['woocommerce_status'] in ('processing', 'on-hold', 'completed') and odoo_sale_order.state in ('draft', 'sent'):

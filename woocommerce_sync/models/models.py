@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from math import isfinite
 from typing import Any, ClassVar
 
-from odoo import api, fields, models
+from odoo import _, api, fields, models
+from odoo.exceptions import ValidationError
 from odoo.modules.module import get_manifest
 from odoo.release import version_info
 from psycopg2 import sql
@@ -481,20 +483,59 @@ class SaleOrder(models.Model):
     # Custom fields
     woocommerce_site_url = fields.Char(string='WooCommerce Site URL', readonly=True, index=True)
     woocommerce_to_odoo_last_sync = fields.Datetime(string='WooCommerce to Odoo Last Sync', readonly=True)
-    woocommerce_transaction_fee = fields.Float(string='Transaction Fee', help='Transaction fees incurred from PayPal or Stripe.', readonly=True, default=0.0)
+    woocommerce_transaction_fee = fields.Float(string='Transaction Fee', help='Reported PayPal/Stripe fee or estimated PagBank fee, in the order currency.', compute='_compute_transaction_fee', store=True, readonly=True)
+    woocommerce_transaction_fee_known = fields.Boolean(
+        string='Transaction Fee Known', help='False means the fee and calculated payout are unknown, not zero. No bank settlement is inferred.', compute='_compute_transaction_fee', store=True
+    )
+    woocommerce_transaction_fee_estimated = fields.Boolean(string='Estimated Fee', help='The PagBank amount is a fee quote, not a confirmed settlement deduction.', compute='_compute_transaction_fee', store=True)
     language_code = fields.Char(string='Language', help='2-digit ISO 639-1 language code.', readonly=True)
 
     # Computed fields
-    woocommerce_payout = fields.Float(string='Payout', help='Total - Order Transaction Fee.', compute='payout_compute', store=True, readonly=True)
+    woocommerce_payout = fields.Float(
+        string='Calculated Payout', help='Total minus a known transaction fee; not a confirmed settlement. Only meaningful when Transaction Fee Known is true.', compute='payout_compute', store=True, readonly=True
+    )
 
     def init(self) -> None:
         super().init()
         woocommerce_id_unique_index_create(self.env.cr, self._table)
 
-    @api.depends('woocommerce_total', 'woocommerce_transaction_fee')
+    @api.depends('woocommerce_payment_method', 'woocommerce_meta_data', 'woocommerce_currency')
+    def _compute_transaction_fee(self: models.Model) -> None:
+        for order in self:
+            method = (order.woocommerce_payment_method or '').lower()
+            fee_key = None
+            if method.startswith(('paypal', 'ppcp', 'ppec')):
+                fee_key = 'PayPal Transaction Fee'
+            elif method.startswith('stripe'):
+                fee_key = '_stripe_fee'
+            elif method.startswith('pagbank_'):
+                # TODO - https://github.com/pagseguro/pagbank-for-woocommerce/pull/48
+                fee_key = '_pagbank_seller_fee_quote'
+
+            fee = next((item['value'] for item in (order.woocommerce_meta_data or []) if item.get('key') == fee_key and item.get('value') not in (None, '')), None) if fee_key else None
+            estimated = fee_key == '_pagbank_seller_fee_quote' and fee is not None
+            if estimated:
+                if not isinstance(fee, dict) or not isinstance(fee.get('fee'), int) or isinstance(fee['fee'], bool) or fee['fee'] < 0 or fee.get('currency') != order.woocommerce_currency:
+                    raise ValidationError(_('Invalid PagBank fee quote or currency mismatch.'))
+                fee = fee['fee'] / 100.0
+            if fee is not None:
+                try:
+                    if isinstance(fee, bool):
+                        raise TypeError('Boolean transaction fee')
+                    fee = float(fee)
+                except (TypeError, ValueError) as error:
+                    raise ValidationError(_('Invalid WooCommerce transaction fee metadata.')) from error
+                if not isfinite(fee):
+                    raise ValidationError(_('Invalid WooCommerce transaction fee metadata.'))
+
+            order.woocommerce_transaction_fee = fee if fee is not None else 0.0
+            order.woocommerce_transaction_fee_known = fee is not None
+            order.woocommerce_transaction_fee_estimated = estimated
+
+    @api.depends('woocommerce_total', 'woocommerce_transaction_fee', 'woocommerce_transaction_fee_known')
     def payout_compute(self: models.Model) -> None:
         for order in self:
-            order.woocommerce_payout = order.woocommerce_total - order.woocommerce_transaction_fee
+            order.woocommerce_payout = order.woocommerce_total - order.woocommerce_transaction_fee if order.woocommerce_transaction_fee_known else 0.0
 
     @api.ondelete(at_uninstall=False)
     def _unlink_except_draft_or_cancel(self: models.Model) -> None:

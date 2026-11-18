@@ -48,6 +48,20 @@ class TestOrderGuestCustomer(WoocommerceSyncCommon):
 
         self.assertEqual(odoo_sale_order.partner_id, self.earlier_guest)
 
+    def test_guest_company_order_creates_company_contact(self):
+        payload = self._guest_order_payload(98004, 'Jane', 'Doe', 'jane@example.test')
+        payload['billing']['company'] = 'Grand Hotel'
+
+        odoo_sale_order = self._sync_order(payload)
+
+        company = odoo_sale_order.partner_id
+        self.assertTrue(company.is_company)
+        self.assertEqual(company.name, 'Grand Hotel')
+        contact = self.env['res.partner'].search([('parent_id', '=', company.id), ('type', '=', 'contact')])
+        self.assertEqual(len(contact), 1)
+        self.assertEqual(contact.name, 'Jane Doe')
+        self.assertEqual(contact.email, 'jane@example.test')
+
     def test_guest_order_with_existing_guest_key_reuses_the_guest(self):
         # Guest whose email was edited in Odoo: the email match misses it and its guest key makes the creation fail, so the fallback must match it by guest key, not any partner without a WooCommerce ID
         same_guest = self.env['res.partner'].create(

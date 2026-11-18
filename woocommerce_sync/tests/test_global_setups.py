@@ -259,12 +259,12 @@ class TestGlobalSetups(WoocommerceSyncCommon):
 
 @tagged('post_install', '-at_install')
 class TestBrazilLocalization(WoocommerceSyncCommon):
-    """Only runs in a database where Odoo's 'l10n_br' is installed."""
+    """Runs with either the official or OCA Brazilian localization."""
 
     def setUp(self):
         super().setUp()
-        if self.env['ir.module.module'].search([('name', '=', 'l10n_br')]).state != 'installed':
-            self.skipTest("Odoo 'l10n_br' is not installed")
+        if 'cnpj_cpf_stripped' not in self.env['res.partner']._fields and self.env['ir.module.module'].search([('name', '=', 'l10n_br')]).state != 'installed':
+            self.skipTest('No Brazilian localization is installed')
 
     def _billing(self, **values):
         billing = {
@@ -292,9 +292,14 @@ class TestBrazilLocalization(WoocommerceSyncCommon):
         self.connector.woocommerce_to_odoo_customer_sync(woocommerce_customer, {})
 
         partner = self.env['res.partner'].search([('woocommerce_id', '=', '99951')])
+        self.assertFalse(partner.is_company)
         self.assertEqual(partner.l10n_br_ie_code, '110042490114')
         self.assertIn('1500', partner.street)
-        if 'l10n_br_cpf_code' in partner._fields:
+        if 'cnpj_cpf_stripped' in partner._fields:
+            self.assertEqual(partner.cnpj_cpf_stripped, '52998224725')
+            self.assertTrue(partner.city_id)
+            self.assertEqual(partner.legal_name, 'Maria Silva')
+        elif 'l10n_br_cpf_code' in partner._fields:
             self.assertEqual(partner.l10n_br_cpf_code, '529.982.247-25')
         else:
             self.assertEqual(partner.street_number, '1500')
@@ -303,13 +308,34 @@ class TestBrazilLocalization(WoocommerceSyncCommon):
 
     def test_company_customer_and_invalid_cnpj(self):
         self.connector.woocommerce_to_odoo_customer_sync(
-            make_woocommerce_customer_payload(id=99952, email='empresa@example.test', billing=self._billing(persontype='2', cnpj='11.222.333/0001-81', email='empresa@example.test')), {}
+            make_woocommerce_customer_payload(id=99952, email='empresa@example.test', billing=self._billing(persontype='2', company='Test Company', cnpj='11.222.333/0001-81', email='empresa@example.test')), {}
         )
         partner = self.env['res.partner'].search([('woocommerce_id', '=', '99952')])
         self.assertTrue(partner.vat, 'A valid CNPJ is stored as tax ID')
+        self.assertTrue(partner.is_company)
+        if 'legal_name' in partner._fields:
+            self.assertEqual(partner.legal_name, 'Test Company')
 
         self.connector.woocommerce_to_odoo_customer_sync(
             make_woocommerce_customer_payload(id=99953, email='invalida@example.test', billing=self._billing(persontype='2', cnpj='11.111.111/1111-11', email='invalida@example.test')), {}
         )
         invalid_partner = self.env['res.partner'].search([('woocommerce_id', '=', '99953')])
         self.assertTrue(invalid_partner, 'An invalid CNPJ must not prevent the customer import')
+        self.assertFalse(invalid_partner.vat)
+
+    def test_existing_tax_id_is_preserved(self):
+        values = {'name': 'Existing Company', 'country_id': self.env.ref('base.br').id, 'company_type': 'company'}
+        partner = self.env['res.partner'].create(values)
+        self.connector.odoo_customer_brazil_vat_update(partner, self._billing(persontype='2', cnpj='11.222.333/0001-81'))
+        original_vat = partner.vat
+
+        self.connector.odoo_customer_brazil_vat_update(partner, self._billing(persontype='1', cpf='529.982.247-25'))
+
+        self.assertTrue(original_vat)
+        self.assertEqual(partner.vat, original_vat)
+
+    def test_municipality_requires_unique_city_and_state(self):
+        if 'city_id' not in self.env['res.partner']._fields:
+            self.skipTest('No municipality relation is installed')
+        with self.assertRaises(ValidationError):
+            self.connector.odoo_customer_brazil_values_update({}, self._billing(city='Missing Municipality Test'))

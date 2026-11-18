@@ -6,8 +6,9 @@
     <field name="inherit_id" ref="sale.view_order_form"/>
     <field name="arch" type="xml">
       <xpath expr="//page[@name='order_lines']//group[@name='sale_total']" position="after">
-        <group class="oe_subtotal_footer oe_right" colspan="2" name="sale_total" attrs="{'invisible': [('woocommerce_transaction_fee', '=', 0.0)]}">
+        <group class="oe_subtotal_footer oe_right" colspan="2" name="sale_total" attrs="{'invisible': [('woocommerce_transaction_fee_known', '=', False)]}">
           <field name="woocommerce_transaction_fee" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+          <field name="woocommerce_transaction_fee_estimated" attrs="{'invisible': [('woocommerce_transaction_fee_estimated', '=', False)]}"/>
           <field name="woocommerce_payout" widget="monetary" options="{'currency_field': 'currency_id'}"/>
         </group>
       </xpath>
@@ -48,8 +49,10 @@
               <field name="woocommerce_cart_tax" widget="monetary" options="{'currency_field': 'currency_id'}"/>
               <field name="woocommerce_total_tax" widget="monetary" options="{'currency_field': 'currency_id'}"/>
               <field name="woocommerce_total" widget="monetary" options="{'currency_field': 'currency_id'}"/>
-              <field name="woocommerce_transaction_fee" widget="monetary" options="{'currency_field': 'currency_id'}" attrs="{'invisible': [('woocommerce_transaction_fee', '=', 0.0)]}"/>
-              <field name="woocommerce_payout" widget="monetary" options="{'currency_field': 'currency_id'}" attrs="{'invisible': [('woocommerce_transaction_fee', '=', 0.0)]}"/>
+              <field name="woocommerce_transaction_fee_known"/>
+              <field name="woocommerce_transaction_fee_estimated" attrs="{'invisible': [('woocommerce_transaction_fee_estimated', '=', False)]}"/>
+              <field name="woocommerce_transaction_fee" widget="monetary" options="{'currency_field': 'currency_id'}" attrs="{'invisible': [('woocommerce_transaction_fee_known', '=', False)]}"/>
+              <field name="woocommerce_payout" widget="monetary" options="{'currency_field': 'currency_id'}" attrs="{'invisible': [('woocommerce_transaction_fee_known', '=', False)]}"/>
             </group>
             <group string="Billing">
               <field name="woocommerce_billing_first_name"/>
