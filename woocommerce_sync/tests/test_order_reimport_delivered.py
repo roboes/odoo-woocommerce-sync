@@ -19,6 +19,11 @@ from .common import (
 class TestOrderReimportDelivered(WoocommerceSyncCommon):
     connector_values: ClassVar[dict] = {'settings_woocommerce_orders_customers_map': False, 'settings_woocommerce_line_items_product_map': False}
 
+    def setUp(self):
+        super().setUp()
+        if 'fiscal_operation_id' in self.env['sale.order']._fields:
+            self.connector = self.connector.with_context(default_fiscal_operation_id=False)
+
     def sync_order(self, woocommerce_order, odoo_sale_order=None):
         self.connector.woocommerce_to_odoo_order_sync(
             woocommerce_order,

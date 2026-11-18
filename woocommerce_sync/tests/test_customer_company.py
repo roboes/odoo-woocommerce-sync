@@ -40,6 +40,28 @@ class TestCustomerCompany(WoocommerceSyncCommon):
         self.assertEqual(contact.phone, '0102030405')
         self.assertFalse(contact.woocommerce_id)
 
+    def test_billing_company_takes_precedence_over_brazilian_individual_type(self):
+        payload = _company_payload(id=3206, first_name='Jane', last_name='Doe')
+        payload['billing'].update({'country': 'BR', 'persontype': '1'})
+
+        self.connector.woocommerce_to_odoo_customer_sync(payload, {})
+
+        partner = self._partner(3206)
+        self.assertTrue(partner.is_company)
+        self.assertEqual(partner.name, 'Grand Hotel')
+        self.assertEqual(self._contacts(partner).name, 'Jane Doe')
+
+    def test_billing_company_is_mapped_for_germany_and_us(self):
+        for customer_id, country_code in ((3207, 'DE'), (3208, 'US')):
+            payload = _company_payload(id=customer_id)
+            payload['billing']['country'] = country_code
+
+            self.connector.woocommerce_to_odoo_customer_sync(payload, {})
+
+            partner = self._partner(customer_id)
+            self.assertTrue(partner.is_company)
+            self.assertEqual(partner.country_id.code, country_code)
+
     def test_customer_without_billing_company_stays_person(self):
         self.connector.woocommerce_to_odoo_customer_sync(make_woocommerce_customer_payload(id=3201), {})
 
