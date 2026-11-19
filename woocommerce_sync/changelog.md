@@ -1,5 +1,12 @@
 # Changelog
 
+## v16.0.6.6 / v17.0.6.6 / v18.0.6.6 / v19.0.6.6 / v20.0.6.6 - 2026-11-19
+
+### Features
+
+- Initial support for Odoo 17 and Odoo 20: added version-specific view sets and Odoo 20 access-control data while keeping one shared Python implementation across Odoo 16-20. Each version branch must select its matching resources and dependencies.
+- Replaced several narrow version checks with ORM field/method capability checks and batched WooCommerce product and existing sale-line lookups while importing order lines.
+
 ## v16.0.6.5 / v18.0.6.5 / v19.0.6.5 - 2026-11-18
 
 ### Fixes

@@ -5,7 +5,6 @@ Re-imports happen whenever WooCommerce changes the order (e.g. the 'completed' s
 
 from typing import ClassVar
 
-from odoo.release import version_info
 from odoo.tests.common import tagged
 
 from .common import (
@@ -49,7 +48,7 @@ class TestOrderReimportDelivered(WoocommerceSyncCommon):
         self.assertEqual(odoo_sale_order.order_line, lines_before)
         self.assertEqual(delivery_line.price_unit, 0.0)
         self.assertEqual(odoo_sale_order.woocommerce_status, 'completed')
-        if version_info[0] in (18, 19):
+        if 'locked' in odoo_sale_order._fields:
             self.assertTrue(odoo_sale_order.locked)
 
     def test_undelivered_order_lines_are_still_updated(self):

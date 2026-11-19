@@ -6,7 +6,6 @@
 
 from typing import ClassVar
 
-from odoo.release import version_info
 from odoo.tests.common import tagged
 
 from .common import WoocommerceSyncCommon, make_woocommerce_order_payload
@@ -43,7 +42,7 @@ class TestOrderLinePricingTaxes(WoocommerceSyncCommon):
 
     @staticmethod
     def _line_taxes(order_line):
-        return order_line.tax_id if version_info[0] in (16, 18) else order_line.tax_ids
+        return order_line.tax_ids if 'tax_ids' in order_line._fields else order_line.tax_id
 
     def test_discounted_line_uses_undiscounted_price_and_discount(self):
         woocommerce_order = make_woocommerce_order_payload(id=96001, number='96001', line_items=[make_line_item(id=11, quantity=2, subtotal='50.00', total='40.00', price=20.0)])

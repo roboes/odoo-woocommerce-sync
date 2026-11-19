@@ -109,15 +109,6 @@ class StockMove(models.Model):
     #     )
 
 
-if version_info[0] in [16, 18]:
-
-    class StockValuationLayer(models.Model):
-        _inherit = 'stock.valuation.layer'
-
-        # Disabled: Cascading product deletion into valuation layers can erase valuation history
-        # product_id = fields.Many2one(comodel_name='product.product', string='Product', index=True, domain=lambda self: self._domain_product_id(), required=True, check_company=True, ondelete='cascade')
-
-
 # Product
 class ProductTemplate(models.Model):
     _name = 'product.template'
@@ -318,8 +309,14 @@ class ProductProduct(models.Model):
         self.env.cr.execute(query='UPDATE product_template SET woocommerce_stock_last_sync = %s WHERE id = %s', params=(timestamp, self.product_tmpl_id.id))
 
         # Invalidate the cache for the modified records to ensure consistency
-        self.env['product.product']._invalidate_cache(ids=[self.id])
-        self.env['product.template']._invalidate_cache(ids=[self.product_tmpl_id.id])
+        product = self.env['product.product'].browse(self.id)
+        template = self.env['product.template'].browse(self.product_tmpl_id.id)
+        for records in (product, template):
+            invalidate_recordset = getattr(records, 'invalidate_recordset', None)
+            if invalidate_recordset:
+                invalidate_recordset(['woocommerce_stock_last_sync'], flush=False)
+            else:
+                records._invalidate_cache(ids=records.ids)
 
 
 # Product attribute
@@ -357,6 +354,16 @@ class ProductTemplateAttributeLine(models.Model):
 # Customers
 class ResPartner(models.Model):
     _inherit = 'res.partner'
+
+    if version_info[0] >= 20:
+
+        @api.depends('has_vat', 'commercial_partner_id', 'woocommerce_billing_company')
+        def _compute_is_company(self) -> None:
+            """Keep imported billing companies classified as companies even without a VAT number."""
+            super()._compute_is_company()
+            for partner in self:
+                if partner.commercial_partner_id == partner and partner.woocommerce_billing_company:
+                    partner.is_company = True
 
     # WooCommerce REST API - Customer properties fields - https://woocommerce.github.io/woocommerce-rest-api-docs/#customer-properties
     woocommerce_id = fields.Char(string='WooCommerce Customer ID', readonly=True, index=True)

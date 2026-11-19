@@ -351,15 +351,14 @@ class WoocommerceSyncConnector(models.Model):
         """
         woocommerce_sync_partner = self.env.ref('woocommerce_sync.res_partner_woocommerce_sync')
         recipient_partners = (self.message_partner_ids | self.create_uid.partner_id) - woocommerce_sync_partner
-        # 'mail.channel' was renamed to 'discuss.channel' in Odoo 18; 'channel_get()' was renamed to '_get_or_create_chat()' in Odoo 19
-        discuss_channel_model = 'discuss.channel' if version_info[0] in [18, 19] else 'mail.channel'
-        channel_get_method_name = '_get_or_create_chat' if version_info[0] == 19 else 'channel_get'
+        discuss_channel_model = 'discuss.channel' if 'discuss.channel' in self.env else 'mail.channel'
         for target_user in recipient_partners.filtered('user_ids').mapped('user_ids'):
             try:
                 with self.env.cr.savepoint():
                     # Get/create the private chat between the *calling* user and 'partners_to', so impersonate the recipient here
-                    # On Odoo 16 ('mail.channel', 'channel_get') this returns a plain dict (channel_info); on 18/19 ('discuss.channel', 'channel_get'/'_get_or_create_chat') it returns the channel record itself - normalize both to an actual record before posting
-                    channel_get_method = getattr(self.env[discuss_channel_model].with_user(target_user).sudo(), channel_get_method_name)
+                    # Method names and return types differ by Odoo release
+                    discuss_channel = self.env[discuss_channel_model].with_user(target_user).sudo()
+                    channel_get_method = getattr(discuss_channel, '_get_or_create_chat', None) or discuss_channel.channel_get
                     channel_result = channel_get_method(partners_to=[woocommerce_sync_partner.id])
                     channel = channel_result if isinstance(channel_result, models.BaseModel) else self.env[discuss_channel_model].browse(channel_result['id'])
                     channel.sudo().message_post(body=body, message_type='comment', subtype_xmlid='mail.mt_comment', author_id=woocommerce_sync_partner.id)
@@ -658,35 +657,23 @@ class WoocommerceSyncConnector(models.Model):
     def cron_job_update(self: models.Model) -> None:
         self.ensure_one()
 
-        if version_info[0] == 16:
-            cron_values = {
-                'name': f'WooCommerce Auto-Sync - {self.settings_woocommerce_connection_url}',
-                'model_id': self.env['ir.model']._get(self._name).id,
-                'code': (
-                    f'model.with_context(cron_running=True).browse({self.id}).with_delay(max_retries={self.chunk_wait_max_retries(poll_seconds=60)}).woocommerce_sync()'
-                    if 'queue.job' in self.env
-                    else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
-                ),
-                'active': self.settings_woocommerce_sync_scheduled,
-                'interval_number': self.settings_woocommerce_sync_scheduled_interval_minutes,
-                'interval_type': 'minutes',
-                'numbercall': -1,
-                'doall': True,
-            }
-
-        elif version_info[0] in [18, 19]:
-            cron_values = {
-                'name': f'WooCommerce Auto-Sync - {self.settings_woocommerce_connection_url}',
-                'model_id': self.env['ir.model']._get(self._name).id,
-                'code': (
-                    f'model.with_context(cron_running=True).browse({self.id}).with_delay(max_retries={self.chunk_wait_max_retries(poll_seconds=60)}).woocommerce_sync()'
-                    if 'queue.job' in self.env
-                    else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
-                ),
-                'active': self.settings_woocommerce_sync_scheduled,
-                'interval_number': self.settings_woocommerce_sync_scheduled_interval_minutes,
-                'interval_type': 'minutes',
-            }
+        cron_values = {
+            'name': f'WooCommerce Auto-Sync - {self.settings_woocommerce_connection_url}',
+            'model_id': self.env['ir.model']._get(self._name).id,
+            'code': (
+                f'model.with_context(cron_running=True).browse({self.id}).with_delay(max_retries={self.chunk_wait_max_retries(poll_seconds=60)}).woocommerce_sync()'
+                if 'queue.job' in self.env
+                else f'model.with_context(cron_running=True).browse({self.id}).woocommerce_sync()'
+            ),
+            'active': self.settings_woocommerce_sync_scheduled,
+            'interval_number': self.settings_woocommerce_sync_scheduled_interval_minutes,
+            'interval_type': 'minutes',
+        }
+        cron_fields = self.env['ir.cron']._fields
+        if 'numbercall' in cron_fields:
+            cron_values['numbercall'] = -1
+        if 'doall' in cron_fields:
+            cron_values['doall'] = True
 
         # Update the existing cron job
         if self.ir_cron_id:
@@ -1114,11 +1101,13 @@ class WoocommerceSyncConnector(models.Model):
                         existing = self.env['base_multi_image.image'].with_context(lang=False).search([('owner_model', '=', 'product.template'), ('owner_id', '=', product.id), ('name', '=', image_data['name'])], limit=1)
 
                         if not existing:
-                            if version_info[0] == 16:
-                                self.env['base_multi_image.image'].create({'owner_model': 'product.template', 'owner_id': product.id, 'name': image_data['name'], 'image_1920': img_base64})
-
-                            elif version_info[0] == 18:  # TODO Odoo v19: check https://github.com/OCA/server-tools/tree/19.0/base_multi_image when available
-                                self.env['base_multi_image.image'].create({'owner_model': 'product.template', 'owner_id': product.id, 'name': image_data['name'], 'storage': 'filestore', 'attachment_image': img_base64})
+                            image_model = self.env['base_multi_image.image']
+                            image_values = {'owner_model': 'product.template', 'owner_id': product.id, 'name': image_data['name']}
+                            if 'storage' in image_model._fields:
+                                image_values.update({'storage': 'filestore', 'attachment_image': img_base64})
+                            else:
+                                image_values['image_1920'] = img_base64
+                            image_model.create(image_values)
 
                     else:
                         existing = self.env['ir.attachment'].search([('res_model', '=', 'product.template'), ('res_id', '=', product.id), ('name', '=', image_data['name'])], limit=1)
@@ -1597,10 +1586,35 @@ class WoocommerceSyncConnector(models.Model):
         measures = [float(dimensions['length']), float(dimensions['width']), float(dimensions['height'])]
         woocommerce_uom = self.woocommerce_unit_of_measure(woocommerce_dimension_unit)
         if woocommerce_uom:
-            volume_in_cubic_feet = self.env['ir.config_parameter'].sudo().get_param('product.volume_in_cubic_feet') == '1'
+            volume_in_cubic_feet = self.odoo_config_parameter_get_string('product.volume_in_cubic_feet') == '1'
             length_uom = self.env.ref('uom.product_uom_foot' if volume_in_cubic_feet else 'uom.product_uom_meter')
             measures = [woocommerce_uom._compute_quantity(measure, length_uom, round=False) for measure in measures]
         return measures[0] * measures[1] * measures[2]
+
+    @api.model
+    def odoo_config_parameter_get_string(self: models.Model, key: str, default: str = '') -> str:
+        """Reads a string system parameter through either generation of Odoo's config API."""
+        parameters = self.env['ir.config_parameter'].sudo()
+        get_str = getattr(parameters, 'get_str', None)
+        if callable(get_str):
+            return get_str(key, default)
+        return parameters.get_param(key, default)
+
+    @api.model
+    def odoo_uom_values_compare(self: models.Model, unit: models.Model, value1: float, value2: float) -> int:
+        """Compares quantities using the UoM's native precision API where available."""
+        compare = getattr(unit, 'compare', None)
+        if callable(compare):
+            return compare(value1, value2)
+        return float_compare(value1, value2, precision_rounding=unit.rounding)
+
+    @api.model
+    def odoo_uom_value_is_zero(self: models.Model, unit: models.Model, value: float) -> bool:
+        """Checks a quantity using the UoM's native precision API where available."""
+        is_zero = getattr(unit, 'is_zero', None)
+        if callable(is_zero):
+            return is_zero(value)
+        return float_is_zero(value, precision_rounding=unit.rounding)
 
     @api.model
     def odoo_unit_of_measure_create_or_retrieve(self: models.Model, unit_of_measure_name: str, cache: dict[str, int] | None = None) -> models.Model | bool:
@@ -1723,7 +1737,7 @@ class WoocommerceSyncConnector(models.Model):
             return
 
         person_type = str(billing.get('persontype') or '')
-        if person_type in ('1', '2') and not billing.get('company'):
+        if person_type in ('1', '2') and not billing.get('company') and 'company_type' in partner_fields:
             customer_values['company_type'] = 'company' if person_type == '2' else 'person'
         if 'legal_name' in partner_fields:
             legal_name = billing.get('company') or f'{billing.get("first_name") or ""} {billing.get("last_name") or ""}'.strip()
@@ -1756,15 +1770,17 @@ class WoocommerceSyncConnector(models.Model):
         elif neighborhood:
             customer_values['street2'] = ', '.join(part for part in (customer_values.get('street2', billing.get('address_2')), neighborhood) if part)
 
+        brazilian_localization_installed = any(field in partner_fields for field in ('cnpj_cpf_stripped', 'legal_name', 'l10n_br_cpf_code', 'l10n_br_ie_code', 'l10n_br_rg_code'))
         if 'city_id' in partner_fields and (billing.get('city') or billing.get('country') == 'BR'):
             country = self.odoo_country_retrieve(billing.get('country') or 'BR')
             state = self.odoo_state_retrieve(country.id, billing.get('state'))
             cities = (
                 self.env['res.city'].search([('country_id', '=', country.id), ('state_id', '=', state.id), ('name', '=ilike', billing['city'].strip())], limit=2) if state and billing.get('city') else self.env['res.city']
             )
-            if len(cities) != 1:
+            if len(cities) != 1 and brazilian_localization_installed:
                 raise ValidationError(_('A unique Brazilian municipality matching the checkout city and state is required. Check the municipality data and the WooCommerce address.'))
-            customer_values.update({'country_id': country.id, 'state_id': state.id, 'city_id': cities.id, 'city': cities.name})
+            if len(cities) == 1:
+                customer_values.update({'country_id': country.id, 'state_id': state.id, 'city_id': cities.id, 'city': cities.name})
 
     @api.model
     def odoo_customer_brazil_vat_update(self: models.Model, odoo_customer: models.Model, billing: dict[str, Any]) -> None:
@@ -2030,7 +2046,7 @@ class WoocommerceSyncConnector(models.Model):
         # WooCommerce stock is already net of its unshipped orders, which are still on hand in Odoo until delivered: compare and push the quantity left for sale
         available_quantity = odoo_product_in_location.qty_available - odoo_product_in_location.outgoing_qty
 
-        if float_compare(woocommerce_stock_quantity, available_quantity, precision_rounding=odoo_product.uom_id.rounding) == 0:
+        if self.odoo_uom_values_compare(odoo_product.uom_id, woocommerce_stock_quantity, available_quantity) == 0:
             return None
 
         # Get last update dates
@@ -2052,7 +2068,7 @@ class WoocommerceSyncConnector(models.Model):
 
         # If WooCommerce is the most recent source of truth, update Odoo
         if latest_timestamp == woocommerce_date_modified_gmt and not self.settings_woocommerce_products_stock_odoo_master:
-            if odoo_product.tracking != 'none':
+            if odoo_product.tracking and odoo_product.tracking != 'none':
                 raise ValidationError(f'Automatic WooCommerce stock adjustment is not supported for lot/serial-tracked product {odoo_product.display_name}.')
 
             quantity_delta = woocommerce_stock_quantity - available_quantity
@@ -2080,7 +2096,7 @@ class WoocommerceSyncConnector(models.Model):
 
         Unlike 'stock.quant.action_apply_inventory()', it requires no Stock Manager rights on Odoo 16 and never touches quantities being counted by users.
         """
-        if float_is_zero(quantity_delta, precision_rounding=odoo_product.uom_id.rounding):
+        if self.odoo_uom_value_is_zero(odoo_product.uom_id, quantity_delta):
             return
 
         company = self.env.company
@@ -2258,7 +2274,7 @@ class WoocommerceSyncConnector(models.Model):
         woocommerce_products_stock_map = temporary_sync_data_record.woocommerce_products_variations_data or {}
         run_token = run_token or self.sync_run_token()
 
-        if version_info[0] == 16:
+        if 'detailed_type' in self.env['product.product']._fields:
             odoo_products_batch = (
                 self.env['product.product']
                 .with_context(lang=False)
@@ -2272,7 +2288,7 @@ class WoocommerceSyncConnector(models.Model):
                     ],
                 )
             )
-        elif version_info[0] in [18, 19]:
+        else:
             odoo_products_batch = (
                 self.env['product.product']
                 .with_context(lang=False)
@@ -2709,15 +2725,16 @@ class WoocommerceSyncConnector(models.Model):
                 product_values['categ_id'] = odoo_product_categories_ids[0]
 
             # Product type
-            if version_info[0] == 16:
+            product_template_fields = self.env['product.template']._fields
+            if 'detailed_type' in product_template_fields:
                 product_values['detailed_type'] = 'service' if product_values['woocommerce_service'] else 'product' if product_values['woocommerce_manage_stock'] else 'consu'
-
-            elif version_info[0] in [18, 19]:
+            else:
                 product_values['type'] = 'service' if product_values['woocommerce_service'] else 'consu'
-                product_values['is_storable'] = bool(product_values['woocommerce_manage_stock'])
+                if 'is_storable' in product_template_fields:
+                    product_values['is_storable'] = bool(product_values['woocommerce_manage_stock'])
 
             # uom_po_id
-            if version_info[0] in [16, 18] and odoo_product_unit_of_measure:
+            if odoo_product_unit_of_measure and 'uom_po_id' in product_template_fields:
                 product_values['uom_po_id'] = odoo_product_unit_of_measure.id
 
             # Variable products carry their barcodes on the variations
@@ -3373,12 +3390,13 @@ class WoocommerceSyncConnector(models.Model):
                         product_variation_values['uom_id'] = odoo_product_variant_unit_of_measure.id
 
                     # Product type
-                    if version_info[0] == 16:
+                    product_template_fields = self.env['product.template']._fields
+                    if 'detailed_type' in product_template_fields:
                         product_variation_values['detailed_type'] = 'service' if product_variation_values['woocommerce_service'] else 'product' if product_variation_values['woocommerce_manage_stock'] else 'consu'
-
-                    elif version_info[0] in [18, 19]:
+                    else:
                         product_variation_values['type'] = 'service' if product_variation_values['woocommerce_service'] else 'consu'
-                        product_variation_values['is_storable'] = bool(product_variation_values['woocommerce_manage_stock'])
+                        if 'is_storable' in product_template_fields:
+                            product_variation_values['is_storable'] = bool(product_variation_values['woocommerce_manage_stock'])
 
                     attribute_values_recset = self.env['product.template.attribute.value'].with_context(lang=False).browse(odoo_product_template_attribute_value_ids)
                     odoo_product_variant = odoo_existing_variant or odoo_product._get_variant_for_combination(attribute_values_recset)
@@ -3662,7 +3680,6 @@ class WoocommerceSyncConnector(models.Model):
                     'image_1920': odoo_avatar_url,
                     'ref': customer_values['woocommerce_id'],
                     'create_date': customer_values['woocommerce_date_created_gmt'],
-                    'company_type': 'company' if customer_values['woocommerce_billing_company'] else 'person',
                     'customer_rank': 1 if customer_values['woocommerce_is_paying_customer'] else 0,
                     'email': customer_values['woocommerce_email'],
                     'phone': customer_values['woocommerce_billing_phone'],
@@ -3677,6 +3694,8 @@ class WoocommerceSyncConnector(models.Model):
                     'country_id': self.odoo_country_retrieve(customer_values['woocommerce_billing_country'], cache=odoo_country_cache).id,
                 },
             )
+            if 'company_type' in self.env['res.partner']._fields:
+                customer_values['company_type'] = 'company' if customer_values['woocommerce_billing_company'] else 'person'
             # Only set when found, so a state entered manually in Odoo is not erased
             odoo_customer_state = self.odoo_state_retrieve(customer_values['country_id'], customer_values['woocommerce_billing_state'])
             if odoo_customer_state:
@@ -3687,7 +3706,7 @@ class WoocommerceSyncConnector(models.Model):
             if not customer_has_name:
                 customer_values_for_update.pop('name')
             # Without a billing company, keep the partner type set in Odoo (e.g. a business customer marked as company by hand)
-            if not customer_values['woocommerce_billing_company']:
+            if not customer_values['woocommerce_billing_company'] and 'company_type' in customer_values_for_update:
                 customer_values_for_update.pop('company_type')
 
             if odoo_customer:
@@ -4041,7 +4060,6 @@ class WoocommerceSyncConnector(models.Model):
                             # General information
                             'name': customer_values['woocommerce_billing_company'] or customer_name or 'Unknown',
                             'ref': customer_values['woocommerce_id'],
-                            'company_type': 'company' if customer_values['woocommerce_billing_company'] else 'person',
                             'email': customer_values['woocommerce_billing_email'],
                             'phone': customer_values['woocommerce_billing_phone'],
                             'user_id': self.settings_woocommerce_user_responsible.id,
@@ -4055,6 +4073,8 @@ class WoocommerceSyncConnector(models.Model):
                             'country_id': self.odoo_country_retrieve(customer_values['woocommerce_billing_country'], cache=odoo_country_cache).id,
                         },
                     )
+                    if 'company_type' in self.env['res.partner']._fields:
+                        customer_values['company_type'] = 'company' if customer_values['woocommerce_billing_company'] else 'person'
                     odoo_customer_state = self.odoo_state_retrieve(customer_values['country_id'], customer_values['woocommerce_billing_state'])
                     if odoo_customer_state:
                         customer_values['state_id'] = odoo_customer_state.id
@@ -4137,8 +4157,9 @@ class WoocommerceSyncConnector(models.Model):
                 if order_values['woocommerce_billing_company']:
                     company_values = {
                         'name': order_values['woocommerce_billing_company'],
-                        'company_type': 'company',
                     }
+                    if 'company_type' in self.env['res.partner']._fields:
+                        company_values['company_type'] = 'company'
                     company_values = {key: value for key, value in company_values.items() if odoo_customer[key] != value}
                     if company_values:
                         odoo_customer.write(company_values)
@@ -4181,9 +4202,9 @@ class WoocommerceSyncConnector(models.Model):
             )
 
             if odoo_sale_order:
-                if version_info[0] == 16 and odoo_sale_order.state == 'done':
+                if odoo_sale_order.state == 'done' and hasattr(odoo_sale_order, 'action_unlock'):
                     odoo_sale_order.action_unlock()
-                elif version_info[0] in (18, 19) and odoo_sale_order.locked:
+                elif 'locked' in odoo_sale_order._fields and odoo_sale_order.locked:
                     odoo_sale_order.locked = False
                 odoo_sale_order.write(order_values)
                 sync_status = 'updated'
@@ -4218,6 +4239,70 @@ class WoocommerceSyncConnector(models.Model):
             if not order_lines_frozen:
                 odoo_brazil_freight = 'amount_freight_value' in odoo_sale_order._fields and bool(odoo_sale_order.fiscal_operation_id)
                 # Order line items
+                woocommerce_order_line_items = woocommerce_order['line_items']
+                mapped_product_ids = {
+                    line_item['product_id'] for line_item in woocommerce_order_line_items if self.settings_woocommerce_line_items_product_map and line_item['variation_id'] == 0 and line_item['product_id']
+                }
+                mapped_variation_ids = {
+                    line_item['variation_id'] for line_item in woocommerce_order_line_items if self.settings_woocommerce_line_items_product_map and line_item['variation_id'] != 0 and line_item['variation_id']
+                }
+                odoo_product_templates_by_woocommerce_id = {}
+                if mapped_product_ids:
+                    odoo_product_templates = (
+                        self.env['product.template']
+                        .with_context(lang=False)
+                        .search(
+                            [
+                                ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                                ('active', '=', True),
+                                ('woocommerce_id', 'in', list(mapped_product_ids)),
+                            ]
+                        )
+                    )
+                    for product_template in odoo_product_templates:
+                        odoo_product_templates_by_woocommerce_id.setdefault(str(product_template.woocommerce_id), product_template)
+
+                odoo_products_by_woocommerce_variation_id = {}
+                if mapped_variation_ids:
+                    odoo_products = (
+                        self.env['product.product']
+                        .with_context(lang=False)
+                        .search(
+                            [
+                                ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                                ('active', '=', True),
+                                ('woocommerce_id', 'in', list(mapped_variation_ids)),
+                            ]
+                        )
+                    )
+                    for product in odoo_products:
+                        odoo_products_by_woocommerce_variation_id.setdefault(str(product.woocommerce_id), product)
+
+                woocommerce_line_ids = [line_item['id'] for line_item in woocommerce_order_line_items]
+                odoo_order_lines_by_woocommerce_id = {}
+                if woocommerce_line_ids:
+                    odoo_order_lines = self.env['sale.order.line'].search(
+                        [
+                            ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
+                            ('order_id', '=', odoo_sale_order.id),
+                            ('woocommerce_id', 'in', woocommerce_line_ids),
+                        ]
+                    )
+                    for order_line in odoo_order_lines:
+                        odoo_order_lines_by_woocommerce_id.setdefault(str(order_line.woocommerce_id), order_line)
+
+                if self.settings_woocommerce_line_items_product_map:
+                    needs_product_placeholder = any(
+                        (
+                            str(line_item['product_id']) not in odoo_product_templates_by_woocommerce_id
+                            if line_item['variation_id'] == 0
+                            else str(line_item['variation_id']) not in odoo_products_by_woocommerce_variation_id
+                        )
+                        for line_item in woocommerce_order_line_items
+                    )
+                else:
+                    needs_product_placeholder = bool(woocommerce_order_line_items)
+                odoo_product_placeholder = self.odoo_product_placeholder_create_or_retrieve() if needs_product_placeholder else None
 
                 # WooCommerce 5.7+ stores the percentage actually charged on each order tax line ('rate_percent'), keyed by 'rate_id' (matching the line items' 'taxes[].id')
                 woocommerce_order_tax_components = {
@@ -4226,7 +4311,7 @@ class WoocommerceSyncConnector(models.Model):
                     if tax_line.get('rate_id') and tax_line.get('rate_percent') not in (None, '')
                 }
 
-                for line_item in woocommerce_order['line_items']:
+                for line_item in woocommerce_order_line_items:
                     # Tax rate(s) actually charged on this line: the store's base rate for the tax class is only a fallback for orders without 'rate_percent', since it ignores the customer's location (EU OSS, US states...)
                     woocommerce_line_rate_ids = [str(line_tax['id']) for line_tax in line_item.get('taxes') or [] if line_tax.get('id')]
                     if woocommerce_line_rate_ids and all(rate_id in woocommerce_order_tax_components for rate_id in woocommerce_line_rate_ids):
@@ -4273,53 +4358,32 @@ class WoocommerceSyncConnector(models.Model):
                     )
 
                     # Odoo product default code
-                    odoo_product_mapped = None
-
                     if self.settings_woocommerce_line_items_product_map:
-                        # Product
                         if line_item['variation_id'] == 0:
-                            odoo_product_mapped = (
-                                self.env['product.template']
-                                .with_context(lang=False)
-                                .search(
-                                    [
-                                        ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                                        ('active', '=', True),
-                                        ('woocommerce_id', '=', order_line_values['woocommerce_product_id']),
-                                    ],
-                                    limit=1,
-                                )
-                            )
-
-                        # Product variation
+                            odoo_product_mapped = odoo_product_templates_by_woocommerce_id.get(str(order_line_values['woocommerce_product_id']))
                         else:
-                            odoo_product_mapped = (
-                                self.env['product.product']
-                                .with_context(lang=False)
-                                .search(
-                                    [
-                                        ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                                        ('active', '=', True),
-                                        ('woocommerce_id', '=', order_line_values['woocommerce_variation_id']),
-                                    ],
-                                    limit=1,
-                                )
-                            )
+                            odoo_product_mapped = odoo_products_by_woocommerce_variation_id.get(str(order_line_values['woocommerce_variation_id']))
+                    else:
+                        odoo_product_mapped = None
 
                     if not odoo_product_mapped:
-                        # Create/retrieve product placeholder
-                        odoo_product = self.odoo_product_placeholder_create_or_retrieve()
+                        odoo_product = odoo_product_placeholder
 
                     if odoo_product_mapped:
                         if line_item['variation_id'] == 0:
-                            product_id = odoo_product_mapped.product_variant_ids[:1].id  # product.template → product.product
+                            odoo_product_variant = odoo_product_mapped.product_variant_ids[:1]
                         else:
-                            product_id = odoo_product_mapped.id  # Already product.product
+                            odoo_product_variant = odoo_product_mapped
                     else:
-                        product_id = odoo_product.product_variant_ids[:1].id
+                        odoo_product_variant = odoo_product.product_variant_ids[:1]
+
+                    product_id = odoo_product_variant.id
+                    if product_id and not odoo_product_variant.exists():
+                        _logger.warning(f'Skipping order line: product.product({product_id},) does not exist in Odoo')
+                        continue
 
                     # Tax
-                    odoo_order_line_item_tax_scope = 'service' if self.env['product.product'].browse(product_id).type == 'service' else 'consu'
+                    odoo_order_line_item_tax_scope = 'service' if odoo_product_variant.type == 'service' else 'consu'
                     odoo_order_line_item_taxes = self.odoo_order_line_taxes_retrieve(woocommerce_line_tax_components, odoo_order_line_item_tax_scope, odoo_tax_rate_cache)
                     # Always explicit: an empty command list would let Odoo apply the product's default taxes to a line WooCommerce did not tax
                     odoo_order_line_item_tax_id = [(6, 0, odoo_order_line_item_taxes.ids)]
@@ -4370,34 +4434,17 @@ class WoocommerceSyncConnector(models.Model):
                         sale_order_line_fields['fiscal_operation_id'] = odoo_sale_order.fiscal_operation_id.id
 
                     # Dimensions
-                    if odoo_order_line_item_unit_of_measure and version_info[0] in [16, 18]:
-                        sale_order_line_fields['product_uom'] = odoo_order_line_item_unit_of_measure.id
-
-                    elif odoo_order_line_item_unit_of_measure and version_info[0] == 19:
-                        sale_order_line_fields['product_uom_id'] = odoo_order_line_item_unit_of_measure.id
+                    if odoo_order_line_item_unit_of_measure:
+                        sale_order_line_uom_field = 'product_uom_id' if 'product_uom_id' in self.env['sale.order.line']._fields else 'product_uom'
+                        sale_order_line_fields[sale_order_line_uom_field] = odoo_order_line_item_unit_of_measure.id
 
                     # Tax
-                    if version_info[0] in [16, 18]:
-                        sale_order_line_fields['tax_id'] = odoo_order_line_item_tax_id
-                    elif version_info[0] == 19:
-                        sale_order_line_fields['tax_ids'] = odoo_order_line_item_tax_id
+                    sale_order_line_tax_field = 'tax_ids' if 'tax_ids' in self.env['sale.order.line']._fields else 'tax_id'
+                    sale_order_line_fields[sale_order_line_tax_field] = odoo_order_line_item_tax_id
 
                     order_line_values.update(sale_order_line_fields)
 
-                    odoo_sale_order_line = self.env['sale.order.line'].search(
-                        [
-                            ('woocommerce_site_url', '=', self.settings_woocommerce_connection_url),
-                            ('order_id', '=', odoo_sale_order.id),
-                            ('woocommerce_id', '=', order_line_values['woocommerce_id']),
-                        ],
-                        limit=1,
-                    )
-
-                    # Verify if product exists
-                    product_id = order_line_values['product_id']
-                    if product_id and not self.env['product.product'].browse(product_id).exists():
-                        _logger.warning(f'Skipping order line: product.product({product_id},) does not exist in Odoo')
-                        continue
+                    odoo_sale_order_line = odoo_order_lines_by_woocommerce_id.get(str(order_line_values['woocommerce_id']))
 
                     # Update the sale order line
                     if odoo_sale_order_line:
@@ -4539,10 +4586,11 @@ class WoocommerceSyncConnector(models.Model):
                 # Odoo 16/18 only open the cancellation wizard for confirmed orders unless 'disable_cancel_warning' is set; Odoo 19 cancels directly and ignores it
                 odoo_sale_order.with_context(disable_cancel_warning=True).action_cancel()
 
-            if odoo_sale_order.state == 'sale' and version_info[0] == 16 and order_values['woocommerce_status'] == 'completed':
-                odoo_sale_order.action_done()
-            elif odoo_sale_order.state == 'sale' and version_info[0] in (18, 19):
-                odoo_sale_order.locked = order_values['woocommerce_status'] == 'completed'
+            if odoo_sale_order.state == 'sale' and order_values['woocommerce_status'] == 'completed':
+                if 'locked' in odoo_sale_order._fields:
+                    odoo_sale_order.locked = True
+                elif hasattr(odoo_sale_order, 'action_done'):
+                    odoo_sale_order.action_done()
 
             # Refunds
             self.woocommerce_to_odoo_order_refunds_sync(odoo_sale_order, woocommerce_order)
@@ -4856,7 +4904,14 @@ class WoocommerceSyncConnector(models.Model):
 
         # Binary fields may return base64 as bytes or str depending on the source: normalize to str so duplicates are detected
         def normalize(image):
-            return image.decode() if isinstance(image, bytes) else image
+            if isinstance(image, bytes):
+                return image.decode()
+            if isinstance(image, str):
+                return image
+            content = getattr(image, 'content', None)
+            if isinstance(content, bytes):
+                return b64encode(content).decode('utf-8')
+            return image
 
         if odoo_product.image_1920:
             images.append(normalize(odoo_product.image_1920))
@@ -4889,7 +4944,7 @@ class WoocommerceSyncConnector(models.Model):
         if self.settings_odoo_to_woocommerce_orders_completed_on_delivery and odoo_sale_order.state == 'sale' and self.odoo_sale_order_fully_delivered(odoo_sale_order):
             return 'completed'
 
-        if version_info[0] == 16:
+        if 'locked' not in odoo_sale_order._fields:
             if odoo_sale_order.state == 'done':
                 return 'completed'
             if odoo_sale_order.state == 'sale':
@@ -4899,20 +4954,15 @@ class WoocommerceSyncConnector(models.Model):
 
         return None
 
-    @staticmethod
-    def odoo_sale_order_fully_delivered(odoo_sale_order: models.Model) -> bool:
+    def odoo_sale_order_fully_delivered(self: models.Model, odoo_sale_order: models.Model) -> bool:
         """True when every goods line is fully delivered. Relies on the delivered quantity rather than the order's pickings, so deliveries made outside them also count (e.g. an order settled at the POS cancels its picking and ships from the POS)."""
         goods_lines = odoo_sale_order.order_line.filtered(lambda line: not line.display_type and line.product_uom_qty > 0 and line.product_id.type in ('consu', 'product'))
         if not goods_lines:
             return False
 
         for line in goods_lines:
-            if version_info[0] in (16, 18):
-                line_uom_rounding = line.product_uom.rounding
-            else:
-                line_uom_rounding = line.product_uom_id.rounding
-
-            if float_compare(line.qty_delivered, line.product_uom_qty, precision_rounding=line_uom_rounding) < 0:
+            line_uom = line.product_uom_id if 'product_uom_id' in line._fields else line.product_uom
+            if self.odoo_uom_values_compare(line_uom, line.qty_delivered, line.product_uom_qty) < 0:
                 return False
 
         return True
@@ -5219,10 +5269,9 @@ class WoocommerceSyncConnector(models.Model):
         product_values['meta_data'] = woocommerce_product_meta_data
 
         # Manage stock
-        if version_info[0] == 16:
+        if 'detailed_type' in odoo_product._fields:
             product_values['manage_stock'] = odoo_product.detailed_type == 'product'
-
-        elif version_info[0] in [18, 19]:
+        else:
             product_values['manage_stock'] = bool(odoo_product.is_storable)
 
         # Check if product has multiple variants
@@ -5405,10 +5454,9 @@ class WoocommerceSyncConnector(models.Model):
             variation_data['meta_data'] = woocommerce_product_variation_meta_data
 
             # Manage stock
-            if version_info[0] == 16:
+            if 'detailed_type' in odoo_product._fields:
                 variation_data['manage_stock'] = odoo_product.detailed_type == 'product'
-
-            elif version_info[0] in [18, 19]:
+            else:
                 variation_data['manage_stock'] = bool(odoo_product.is_storable)
 
             odoo_variants_by_sku[odoo_product_variant.default_code] = odoo_product_variant
@@ -5471,7 +5519,7 @@ class WoocommerceSyncConnector(models.Model):
         if not self.settings_woocommerce_webhooks_secret:
             self.settings_woocommerce_webhooks_secret = secrets.token_hex(32)
 
-        base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url')
+        base_url = self.odoo_config_parameter_get_string('web.base.url')
         delivery_url = f'{base_url}/woocommerce_sync/webhook/{self.id}'
 
         existing_webhooks = self.woocommerce_api_get_all_items(woocommerce_api, endpoint='webhooks', params={'status': 'active'})

@@ -29,28 +29,28 @@ Automated tests for the `woocommerce_sync` addon, using Odoo's standard `Transac
 | `test_stock_available_quantity.py` | Stock sync compares and pushes the quantity left for sale (on hand minus undelivered outgoing moves), so undelivered WooCommerce orders are not decremented twice; with "Odoo is the stock master?", newer WooCommerce stock never overwrites Odoo. |
 | `test_tax_rates.py` | WooCommerce tax rates matched to existing localized Odoo sale taxes by percentage (scope, fiscal country, tax account, default sale tax, exact name), store location (country/state) rate selection per tax class, decimal rates kept. |
 | `test_order_line_pricing_taxes.py` | Order line prices and taxes: coupon discounts carried by the line `discount` column (net price kept when the rounded percentage cannot reproduce the WooCommerce total), the tax rate actually charged (`tax_lines[].rate_percent`) instead of the store's base rate, equal-rate tax components kept distinct and compound taxes applied on top of the previous ones, no Odoo tax on untaxed lines, tax-included prices taken from the gross line amounts WooCommerce charged (no per-unit tax rounding drift). |
-| `test_order_status_lifecycle.py` | Orders cancelled in WooCommerce are cancelled in Odoo (no cancellation wizard on Odoo 16/18), custom WooCommerce order statuses are imported, only WooCommerce orders bypass Odoo's confirmed order deletion restriction. |
+| `test_order_status_lifecycle.py` | Orders cancelled in WooCommerce are cancelled in Odoo without relying on a version-specific cancellation wizard, custom WooCommerce order statuses are imported, only WooCommerce orders bypass Odoo's confirmed order deletion restriction. |
 | `test_product_pricing_identity.py` | Per-variation prices mapped to the template list price + attribute extra prices, regular price instead of sale price, tax conversion only for taxable products, export price conversion to the store's tax convention, first import linking an existing product by SKU, related product IDs parsing. |
 | `test_sync_robustness.py` | Products deleted in WooCommerce but referenced in Odoo are archived instead of failing the sync, customer/shipping states mapped from WooCommerce state codes or names, internal connector writes do not rewrite the scheduled action. |
 | `test_global_setups.py` | Managers adding custom order statuses, weight/volume unit conversion (kg/lb, m³), product unit of measure kept, stock changes as inventory moves without Stock Manager rights, foreign currency orders and pricelists, jobs in the connector's company and orders in its warehouse, webhook settings cache, order status push dispatch, chunked stock variation retrieval. Brazilian fields without localization and, when the official Odoo `l10n_br` localization or the Odoo Community Association (OCA) addon `l10n_br_base` is installed, individual/company tax identifiers, company classification, legal name, municipality errors and preserving existing tax identifiers. |
 
 ## Running the tests
 
-Run against whichever Odoo version/database you're testing (16, 18 or 19 - the tests read `odoo.release.version_info` to adapt expectations automatically):
+Run against whichever Odoo version/database you're testing (16, 17, 18, 19 or 20 - the tests read `odoo.release.version_info` and field availability to adapt expectations):
 
 Brazilian localization cases are conditional: use a database initialized with `woocommerce_sync,l10n_br` for official Odoo, or `woocommerce_sync,l10n_br_sale` for the Odoo Community Association (OCA) localization (with its addon/Python dependencies available). Test these stacks separately. Standard-delivery fixtures explicitly disable the localization's default fiscal operation; the fiscal-freight case opts into one and verifies paid/free shipping, discounts and a one-cent remainder.
 
 ### Disposable Docker run (no host Odoo installation)
 
-Run from the repository root. The Docker runner defaults to the active manifest's major/minor version (for example, `18.0` for `18.0.5.11`); reading the manifest requires `python3` on the host:
+Run from the repository root. The Docker runner defaults to the active manifest's major/minor version (for example, `19.0` for `19.0.6.6`); reading the manifest requires `python3` on the host:
 
 ```sh
 bash tests/docker-tests.sh
 ```
 
-`ODOO_VERSION=18.0 bash tests/docker-tests.sh` explicitly overrides the Docker image and OCA branch versions; it does not change the module manifest.
+`ODOO_VERSION=19.0 bash tests/docker-tests.sh` explicitly overrides the Docker image and OCA branch versions; it does not change the module manifest.
 
-Each version-specific checkout should already have matching manifest version, dependency and view entries. To test Odoo 16 or 19 from the `18.0` checkout, use a temporary copy and select the matching manifest version and views; for 19, also select the dependency list without `base_multi_image`. Do not switch the `18.0` checkout's manifest to another Odoo version just for testing. The Docker runner installs `openupgradelib`, declared as a Python dependency by OCA `queue_job` on Odoo 19.
+Each version-specific checkout should already have matching manifest version, dependency and view entries. To test another Odoo version from the `19.0` checkout, use a temporary copy and select the matching manifest version and views; for 17/19/20, also select the dependency list without `base_multi_image`. Do not switch the `19.0` checkout's manifest to another Odoo version just for testing. The Docker runner installs `openupgradelib`, declared as a Python dependency by OCA `queue_job` on Odoo 19.
 
 ### Existing Odoo installation
 

@@ -1,0 +1,9 @@
+id,name,model_id,group_id/id,operation,domain
+access_woocommerce_sync_connector_operator,woocommerce.sync.connector operator access,woocommerce.sync.connector,woocommerce_sync.group_woocommerce_sync_operator,r,
+access_woocommerce_sync_connector,woocommerce.sync.connector access,woocommerce.sync.connector,woocommerce_sync.group_woocommerce_sync_manager,crud,
+access_woocommerce_sync_order_status,access.woocommerce.sync.order.status access,woocommerce.sync.order.status,base.group_user,r,
+access_woocommerce_sync_order_status_manager,woocommerce.sync.order.status manager access,woocommerce.sync.order.status,woocommerce_sync.group_woocommerce_sync_manager,crud,
+access_woocommerce_sync_log,woocommerce.sync.log access,woocommerce.sync.log,woocommerce_sync.group_woocommerce_sync_manager,crud,
+access_woocommerce_sync_stock_log,woocommerce.sync.stock.log access,woocommerce.sync.stock.log,woocommerce_sync.group_woocommerce_sync_manager,crud,
+access_woocommerce_sync_data_temp,woocommerce.sync.data.temp access,woocommerce.sync.data.temp,woocommerce_sync.group_woocommerce_sync_manager,crud,
+access_woocommerce_sync_summary_event,woocommerce.sync.summary.event access,woocommerce.sync.summary.event,woocommerce_sync.group_woocommerce_sync_manager,crud,
