@@ -1,0 +1,17 @@
+{
+    'name': 'Odoo-WooCommerce Sync - Brazilian NF-e',
+    'summary': """Send authorized Brazilian Nota Fiscal Eletrônica (NF-e) access keys to WooCommerce orders.""",
+    'description': """This optional Odoo-WooCommerce Sync add-on connects OCA's Brazilian Nota Fiscal Eletrônica (NF-e) localization to WooCommerce. When a company-issued model 55 NF-e is authorized, it sends the access key as a private WooCommerce order note. It also provides a manual send and retry action with sync status tracking.""",
+    # 'version': '16.0.1.0',
+    'version': '18.0.1.0',
+    # 'version': '19.0.1.0',
+    'license': 'AGPL-3',
+    'author': 'roboes',
+    'website': 'https://github.com/roboes/odoo-woocommerce-sync',
+    'category': 'Connectors',
+    'depends': ['l10n_br_account_nfe', 'woocommerce_sync'],
+    'data': ['views/account_move_views.xml'],
+    'installable': True,
+    'application': False,
+    'auto_install': False,
+}
