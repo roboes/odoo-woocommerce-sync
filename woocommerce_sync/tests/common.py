@@ -44,7 +44,7 @@ def bump_iso_datetime(iso_string: str, seconds: int = 60) -> str:
 
 def storable_product_values(is_storable: bool = True) -> dict[str, Any]:
     """Returns the version-specific field(s) that mark a 'product.template'/'product.product' as stock-managed, matching the branching in models.py/connector.py."""
-    if version_info[0] == 16:
+    if version_info[0] <= 17:
         return {'detailed_type': 'product' if is_storable else 'consu'}
 
     return {'is_storable': is_storable}

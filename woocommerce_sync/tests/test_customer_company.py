@@ -96,7 +96,10 @@ class TestCustomerCompany(WoocommerceSyncCommon):
     def test_company_set_in_odoo_is_kept_when_woocommerce_has_no_company(self):
         self.connector.woocommerce_to_odoo_customer_sync(make_woocommerce_customer_payload(id=3204), {})
         partner = self._partner(3204)
-        partner.company_type = 'company'
+        if 'company_type' in partner._fields:
+            partner.company_type = 'company'
+        else:
+            partner.vat = 'MANUAL-COMPANY'
 
         self.connector.woocommerce_to_odoo_customer_sync(_later(make_woocommerce_customer_payload(id=3204, last_name='Renamed')), {'3204': partner.read(['id', 'name', 'active', 'write_date', 'woocommerce_id'])[0]})
 

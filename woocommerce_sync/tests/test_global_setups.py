@@ -76,7 +76,12 @@ class TestGlobalSetups(WoocommerceSyncCommon):
         self.assertAlmostEqual(self.connector.odoo_weight_to_woocommerce_weight(0.5, 'g'), 500.0)
 
     def test_weight_converted_to_pounds_when_odoo_uses_pounds(self):
-        self.env['ir.config_parameter'].sudo().set_param('product.weight_in_lbs', '1')
+        config_parameters = self.env['ir.config_parameter'].sudo()
+        set_str = getattr(config_parameters, 'set_str', None)
+        if callable(set_str):
+            set_str('product.weight_in_lbs', '1')
+        else:
+            config_parameters.set_param('product.weight_in_lbs', '1')
 
         self.assertAlmostEqual(self.connector.woocommerce_weight_to_odoo_weight('1', 'kg'), 2.20462262, places=4)
         self.assertAlmostEqual(self.connector.odoo_weight_to_woocommerce_weight(2.20462262, 'kg'), 1.0, places=4)
@@ -324,7 +329,11 @@ class TestBrazilLocalization(WoocommerceSyncCommon):
         self.assertFalse(invalid_partner.vat)
 
     def test_existing_tax_id_is_preserved(self):
-        values = {'name': 'Existing Company', 'country_id': self.env.ref('base.br').id, 'company_type': 'company'}
+        values = {'name': 'Existing Company', 'country_id': self.env.ref('base.br').id}
+        if 'company_type' in self.env['res.partner']._fields:
+            values['company_type'] = 'company'
+        else:
+            values['vat'] = 'MANUAL-COMPANY'
         partner = self.env['res.partner'].create(values)
         self.connector.odoo_customer_brazil_vat_update(partner, self._billing(persontype='2', cnpj='11.222.333/0001-81'))
         original_vat = partner.vat
