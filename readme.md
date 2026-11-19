@@ -17,11 +17,15 @@ The **Odoo-WooCommerce Sync** add-on enables synchronization between WooCommerce
 - **Extended Models and Views:** Enhance existing Odoo models and views for `product.template`, `product.product`, `res.partner`, `sale.order`, and `sale.order.line` to accommodate corresponding WooCommerce REST API fields.
 - **Automated and Manual Synchronization:** A built-in cron job scheduler enables regular synchronization, complemented by a dedicated button for manually triggering updates. Optional WooCommerce webhooks (order/product/customer create and update events) can also be registered for near-real-time sync, in addition to the regular polling.
 - **Advanced Settings:** Support for multiple WooCommerce websites with specific configuration options for each instance (e.g. syncing only products from WooCommerce to Odoo).
-- **Image Synchronization:** Optionally synchronize product images from WooCommerce to Odoo and Odoo to WooCommerce. For products imported from WooCommerce that include multiple images/product image gallery, an additional product image gallery is added to the `product.template` view.
+- **Image Synchronization:** Optionally synchronize product images from WooCommerce to Odoo and Odoo to WooCommerce. Odoo 16/18 use the `base_multi_image` gallery view; Odoo 17/19/20 store gallery images as attachments because that addon is not available in the selected dependency set, so there is no dedicated gallery widget on those versions.
 - **Language Filtering:** Synchronize products by language (_requires Polylang_).
 - **Orders Transactions Fee Support:** Imports reported PagBank/PayPal/Stripe fees into one transaction-fee field (_requires the respective plugins_).
 
 Some features require additional setup, as detailed in the [Requirements](#requirements) section.
+
+### Odoo version compatibility
+
+The add-on uses one shared Python implementation for Odoo 16, 17, 18, 19 and 20. The manifest keeps separate view files for each major version because Odoo changed view syntax and list-view naming, and a separate access-control CSV for Odoo 20's security model. When preparing a version branch, select that version's manifest and view entries, and its matching dependency/security files where applicable. These version-specific resources do not represent separate Python codebases.
 
 > [!WARNING]  
 > This add-on is provided without any warranty and may contain bugs as it is a recently developed solution. Testing in a controlled environment is recommended before deployment, and usage is at one's own risk.

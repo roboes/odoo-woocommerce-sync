@@ -2,7 +2,7 @@
 
 These are standard Odoo tests (odoo.tests.common.TransactionCase / unittest), auto-discovered by Odoo's test runner - they need a real Odoo instance + database to run, they are NOT plain pytest (except test_woocommerce_client.py, which has no Odoo dependency and can also run standalone).
 
-Run against the currently installed Odoo version (16/18/19) - version-specific behavior (e.g. 'detailed_type' vs 'is_storable') is exercised automatically via 'odoo.release.version_info', matching the branching used in the add-on itself. No need to run the suite once per version unless you maintain multiple Odoo versions; each run only exercises the branch for the Odoo version it is actually running against.
+Run against the currently installed Odoo version (16/17/18/19/20) - version-specific behavior is exercised automatically against the installed framework APIs. No need to run the suite once per version unless you maintain multiple Odoo versions; each run only exercises the branch for the Odoo version it is actually running against.
 
 To run (adapt the database/module name to your setup, e.g. see tests/odoo-tests.sh):
     odoo-bin -d <database> -i woocommerce_sync --test-enable --test-tags /woocommerce_sync --stop-after-init

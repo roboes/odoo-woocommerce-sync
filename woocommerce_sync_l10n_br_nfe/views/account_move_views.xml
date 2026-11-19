@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <record id="view_account_move_form_woocommerce_nfe_sync" model="ir.ui.view">
+    <field name="name">account.move.form.woocommerce.nfe.sync</field>
+    <field name="model">account.move</field>
+    <field name="inherit_id" ref="account.view_move_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//sheet" position="inside">
+        <group string="WooCommerce NF-e">
+          <field name="woocommerce_nfe_sync_state" readonly="1"/>
+          <field name="woocommerce_nfe_sync_key" readonly="1"/>
+          <field name="woocommerce_nfe_sync_date" readonly="1"/>
+          <field name="woocommerce_nfe_sync_error" readonly="1"/>
+        </group>
+      </xpath>
+    </field>
+  </record>
+  <record id="action_send_woocommerce_nfe_access_key" model="ir.actions.server">
+    <field name="name">Send NF-e access key to WooCommerce</field>
+    <field name="model_id" ref="account.model_account_move"/>
+    <field name="binding_model_id" ref="account.model_account_move"/>
+    <field name="binding_view_types">form,list</field>
+    <field name="groups_id" eval="[(4, ref('woocommerce_sync.group_woocommerce_sync_manager'))]"/>
+    <field name="state">code</field>
+    <field name="code">action = records.action_send_woocommerce_nfe_access_key()</field>
+  </record>
+</odoo>
