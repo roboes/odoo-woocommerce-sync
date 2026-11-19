@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-from odoo.release import version_info
 from odoo.tests.common import tagged
 
 from .common import WoocommerceSyncCommon, stock_move_values, storable_product_values
@@ -78,7 +77,7 @@ class TestOrderCompletedOnDelivery(WoocommerceSyncCommon):
 
     def deliver(self):
         for move in self.order.picking_ids.move_ids:
-            if version_info[0] == 16:
+            if 'quantity_done' in move._fields:
                 move.quantity_done = move.product_uom_qty
             else:
                 move.quantity = move.product_uom_qty
@@ -129,7 +128,7 @@ class TestOrderCompletedOnDelivery(WoocommerceSyncCommon):
             }
         )
         picking.action_confirm()
-        if version_info[0] == 16:
+        if 'quantity_done' in picking.move_ids._fields:
             picking.move_ids.quantity_done = 1
         else:
             picking.move_ids.quantity = 1
